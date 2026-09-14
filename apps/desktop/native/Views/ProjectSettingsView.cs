@@ -111,6 +111,8 @@ public sealed partial class ProjectSettingsView : WorkspaceView
         modelSelector.Width = double.NaN;
         concurrencyInput.Width = 78;
         System.Windows.Automation.AutomationProperties.SetName(concurrencyInput, "任务并发");
+        System.Windows.Automation.AutomationProperties.SetName(consistencySwitch, "连续性检查");
+        System.Windows.Automation.AutomationProperties.SetName(modelSelector, "文字任务默认路由");
         // Wire once per instance: the controls above are fresh on every Render.
         consistencySwitch.Checked += (_, _) => Dirty();
         consistencySwitch.Unchecked += (_, _) => Dirty();
@@ -145,6 +147,10 @@ public sealed partial class ProjectSettingsView : WorkspaceView
             };
             if (mode == project.Text("workflow_mode", "SEMI_AUTO")) card.IsChecked = true;
             card.Checked += (_, _) => Dirty();
+            // RadioButton 的 Content 是双行面板，UIA 从 Content 推导的名字会退化成
+            // 面板类型名——显式命名，读屏才能读出这是哪种工作方式。
+            System.Windows.Automation.AutomationProperties.SetName(card,
+                Labels.Map(Labels.WorkflowModeShort, mode) + (mode == "DIRECTOR" ? "模式" : ""));
             modeGroup.Children.Add(card);
         }
         settings.Children.Add(Section("工作方式", "WORKFLOW MODE", modeGroup));
@@ -210,7 +216,7 @@ public sealed partial class ProjectSettingsView : WorkspaceView
         selector.SelectedIndex = 0;
     }
 
-    private static void BuildSegment(StackPanel group, string[] options, string current)
+    private static void BuildSegment(StackPanel group, string[] options, string current, string namePrefix)
     {
         group.Children.Clear();
         group.Orientation = Orientation.Horizontal;
@@ -222,7 +228,8 @@ public sealed partial class ProjectSettingsView : WorkspaceView
                 Content = option, Style = (Style)Application.Current.FindResource("Pill"),
                 IsChecked = option == current, Margin = new Thickness(0), MinWidth = 48, MinHeight = 36,
             };
-            toggle.Click += (_, _) => { if (toggle.IsChecked != true) toggle.IsChecked = true; };
+            System.Windows.Automation.AutomationProperties.SetName(toggle, $"{namePrefix}{option}");
+            toggle.Click += (_, _) => { if (toggle.IsChecked != true) RecheckWithoutDirty(toggle); };
             toggle.Checked += (_, _) =>
             {
                 foreach (var other in group.Children.OfType<ToggleButton>())
@@ -234,13 +241,26 @@ public sealed partial class ProjectSettingsView : WorkspaceView
         _ = previous;
     }
 
+    // 点击已选中的 Pill：WPF 先把它翻成未选中再进 Click，这里把值按回去。按回
+    // 触发的 Checked 不代表值变化（选中项没变），不能标脏——否则点一下已选项就
+    // 会弹出「未保存修改」的离开确认。
+    private static void RecheckWithoutDirty(ToggleButton toggle)
+    {
+        suppressSegmentDirty = true;
+        try { toggle.IsChecked = true; }
+        finally { suppressSegmentDirty = false; }
+    }
+
+    [ThreadStatic]
+    private static bool suppressSegmentDirty;
+
     private void BuildSegments(string draft, string final)
     {
-        BuildSegment(draftGroup, ["1K", "2K"], draft);
-        BuildSegment(finalGroup, ["1K", "2K", "4K"], final);
+        BuildSegment(draftGroup, ["1K", "2K"], draft, "草稿清晰度 ");
+        BuildSegment(finalGroup, ["1K", "2K", "4K"], final, "正式清晰度 ");
         // 分辨率 Pill 选中即编辑（互斥处理器只负责收起兄弟项，不标脏）。
         foreach (var toggle in draftGroup.Children.OfType<ToggleButton>().Concat(finalGroup.Children.OfType<ToggleButton>()))
-            toggle.Checked += (_, _) => Dirty();
+            toggle.Checked += (_, _) => { if (!suppressSegmentDirty) Dirty(); };
     }
 
     private static StackPanel Labelled(string label, FrameworkElement control)
@@ -351,14 +371,16 @@ public sealed partial class ProjectSettingsView : WorkspaceView
         {
             // #471-1: DELETE 同样可能已被服务端执行。导航已在进行中，弹模态只会
             // 打断它；用全局状态条说明结果未知。危险区按钮只在构造时创建、不随
-            // Render 重建，必须恢复可用，否则缓存视图会留下永远禁用的删除按钮。
+            // Render 重建，必须恢复可用，否则缓存视图会留下永远禁用的删除按钮——
+            // 但走门禁重算而不是无条件启用：在途期间用户改了确认名时，名称不再
+            // 匹配，按钮必须保持禁用。
             State.Status = "项目删除已取消，提交结果未知，请刷新后确认";
-            ((Button)sender).IsEnabled = true;
+            UpdateDeleteAvailability();
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
-            ((Button)sender).IsEnabled = true;
+            UpdateDeleteAvailability();
         }
     }
 

@@ -276,7 +276,7 @@ public partial class MainWindow : Window
                 else if (ProjectPages.FindBySection(section) is { } definition)
                 {
                     // Home cards pass "project:{id}" to switch identity before opening the section.
-                    if (query.StartsWith("project:", StringComparison.Ordinal))
+                    if (query is not null && query.StartsWith("project:", StringComparison.Ordinal))
                     {
                         var id = query["project:".Length..];
                         var target = state.Projects.FirstOrDefault(p => p.Id == id);
@@ -298,7 +298,7 @@ public partial class MainWindow : Window
                     // Web deep links (?view=/?character=/?outfit=/?style=/?page=, applied in
                     // project-workspace.tsx + use-assets-workspace.ts) land here: the assets
                     // view preselects the entity, the storyboard view locates the page.
-                    var parameters = System.Web.HttpUtility.ParseQueryString(query.TrimStart('?'));
+                    var parameters = System.Web.HttpUtility.ParseQueryString((query ?? "").TrimStart('?'));
                     if (section == "assets" && ContentHost.Content is AssetsView assets)
                     {
                         if (parameters["view"] is { } assetView) assets.Switch(assetView);

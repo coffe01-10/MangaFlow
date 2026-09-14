@@ -126,7 +126,45 @@ internal static class NativeProjectSettingsPageChecks
             fixture.FailRead = false;
             Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "重试"))); await Until(() => save.IsEnabled);
             Require(Field<TextBox>(view, "concurrencyInput").Text == "8", "retry reloads server state");
-            Console.WriteLine("PASS: project settings 1240/940/650/360 layouts, pinned save/feedback, exclusive resolutions, input validation, PATCH payload/version, pending deduplication, conflict, exact delete-name gate, rerender and read retry.");
+
+            // 无障碍：每个可交互控件必须有可用的 UIA 名——AutomationProperties
+            // 显式名或字符串 Content 至少其一。基线数量防止「树没走到」的空转绿灯。
+            var interactives = Desc(view).OfType<Control>().Where(c => c is Button or ToggleButton or RadioButton or CheckBox or ComboBox or TextBox).ToArray();
+            Require(interactives.Length >= 12, $"expected the full settings form's controls, found {interactives.Length}");
+            foreach (var control in interactives)
+            {
+                var named = System.Windows.Automation.AutomationProperties.GetName(control);
+                var contentName = (control as ContentControl)?.Content as string;
+                Require(!string.IsNullOrWhiteSpace(named) || !string.IsNullOrWhiteSpace(contentName),
+                    $"{control.GetType().Name} exposes no UIA name (AutomationProperties or string Content)");
+            }
+            Require(interactives.OfType<RadioButton>().All(r => !string.IsNullOrWhiteSpace(System.Windows.Automation.AutomationProperties.GetName(r))),
+                "workflow-mode cards need explicit names (panel Content degrades to a type name)");
+
+            // 返回工作区：干净表单直接导航；query 必须非空（MainWindow 深链解析
+            // 解引用它，null 即 NRE 崩溃）。脏表单先过离开确认：拒绝则不导航。
+            var navigations = new List<(string Section, string Query)>();
+            view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!,
+                Project = new("layout", "我最讨厌妹妹了", "", 0, 0),
+                NavigateSection = (section, query) => { navigations.Add((section, query)); return Task.CompletedTask; },
+                OpenDashboard = () => Task.CompletedTask });
+            await Until(() => save.IsEnabled);
+            var back = Desc(view).OfType<Button>().Single(b => Equals(b.Content, "返回工作区"));
+            Click(back);
+            await Until(() => navigations.Count == 1);
+            Require(navigations[0].Section == "source" && navigations[0].Query != null,
+                "back navigates to source with a non-null query");
+            Field<TextBox>(view, "concurrencyInput").Text = "5";
+            view.LeaveConfirmOverride = () => Task.FromResult(false);
+            Click(back); await Task.Delay(100);
+            Require(navigations.Count == 1, "blocked leave confirmation suppresses navigation");
+            view.LeaveConfirmOverride = () => Task.FromResult(true);
+            Click(back);
+            await Until(() => navigations.Count == 2);
+            Require(navigations[1].Section == "source" && navigations[1].Query != null,
+                "confirmed leave navigates with a non-null query");
+
+            Console.WriteLine("PASS: project settings 1240/940/650/360 layouts, pinned save/feedback, exclusive resolutions, input validation, PATCH payload/version, pending deduplication, conflict, exact delete-name gate, rerender, read retry, UIA names, back navigation.");
             Console.WriteLine("Offscreen WPF and HTTP fixtures only; live backend, deletion, providers, high-DPI windows and frame timing NOT RUN.");
         }
         finally { Field<System.Timers.Timer?>(view, "successTimer")?.Dispose(); view.Deactivate(); }
