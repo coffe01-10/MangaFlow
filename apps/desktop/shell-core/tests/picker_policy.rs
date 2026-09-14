@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use mangaflow_desktop_shell_core::picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
-    PickedRegistry,
+    PickedFile, PickedRegistry,
 };
 use mangaflow_desktop_shell_core::protocol::{
     new_token, JOURNAL_NAME, RUNTIME_DIR_PREFIX,
@@ -592,8 +592,6 @@ fn registry_kind_swap_updates_the_read_policy() {
     fs::create_dir_all(&dir).unwrap();
     let text_file = dir.join("doc.txt");
     fs::write(&text_file, b"text").unwrap();
-    let image_file = dir.join("img.png");
-    fs::write(&image_file, b"png").unwrap();
 
     let registry = PickedRegistry::new();
     let text_picked = validate_picked_file(&text_file, PickKind::SourceText)
@@ -607,16 +605,6 @@ fn registry_kind_swap_updates_the_read_policy() {
         .expect("registered text read");
     assert_eq!(bytes, b"text");
 
-    // The user re-picks the SAME canonical path as an image: the suffix
-    // differs but register() keys on the path — the entry is replaced.
-    let image_picked = validate_picked_file(&image_file, PickKind::ReferenceImage)
-        .expect("a .png is a valid reference-image pick");
-    let same_canonical = validate_picked_file(&text_file, PickKind::ReferenceImage)
-        .map(|p| p.path)
-        .ok(); // the real flow would rename the file; registry-wise the
-               // path key is what matters, so drive the registry directly
-               // with the text path but the image kind:
-    let _ = same_canonical;
     // A DIFFERENT path with the same kind family must not contaminate the
     // first entry: each canonical path keeps its own kind.
     let second = dir.join("other.txt");
@@ -636,4 +624,31 @@ fn registry_kind_swap_updates_the_read_policy() {
     let (_, first_bytes) = read_registered_file(&registry, text_picked.path.as_path())
         .expect("registered text read");
     assert_eq!(first_bytes, b"text");
+
+    // The swap leg the test name promises: the SAME canonical path is
+    // re-registered under a different kind (constructed directly — the
+    // real flow renames the file so the suffix differs; registry-wise the
+    // canonical path key is what matters). The entry must be REPLACED:
+    // kind_of flips, and read-back now follows the LATEST kind's suffix
+    // policy — the .txt suffix is forbidden for a ReferenceImage pick, so
+    // the previously readable file is refused. A "first pick wins"
+    // regression would keep this read succeeding.
+    let swapped = PickedFile {
+        path: text_picked.path.clone(),
+        name: text_picked.name.clone(),
+        size_bytes: text_picked.size_bytes,
+        kind: PickKind::ReferenceImage,
+    };
+    registry.register(&swapped);
+    assert_eq!(
+        registry.kind_of(text_picked.path.as_path()),
+        Some(PickKind::ReferenceImage),
+        "the latest pick must win"
+    );
+    match read_registered_file(&registry, text_picked.path.as_path()) {
+        Err(PickError::ForbiddenSuffix { .. }) => {}
+        other => panic!("read must follow the latest kind's suffix policy: {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(&dir);
 }
