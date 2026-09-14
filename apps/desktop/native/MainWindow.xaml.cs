@@ -321,7 +321,22 @@ public partial class MainWindow : Window
                 preferences.RecentProject = null;
                 ProjectList.SelectedItem = null;
                 await NavigateAsync("home");
-                if (api != null) await LoadDashboardAsync(lifetime.Token);
+                // 自捕获契约：该委托被交给所有视图，而视图侧（如 HelpView 的返回
+                // 按钮）在 async void 处理器里直接 await 它——未捕获异常会击穿
+                // 无 DispatcherUnhandledException 兜底的进程。导航已完成，这里
+                // 只需把仪表盘读取失败呈现在状态条上。
+                if (api != null)
+                {
+                    try { await LoadDashboardAsync(lifetime.Token); }
+                    catch (OperationCanceledException) { }
+                    catch (Exception error)
+                    {
+                        state.Connected = false;
+                        state.ConnectionLabel = "本地服务未连接";
+                        state.Error = ErrorText(error);
+                        state.Status = "已返回主页，但仪表盘读取失败，可点击重新连接";
+                    }
+                }
             },
         };
         if (ContentHost.Content is IWorkspaceView view)

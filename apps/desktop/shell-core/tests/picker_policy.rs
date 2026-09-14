@@ -580,13 +580,13 @@ fn runtime_sweep_ignores_a_planted_runtime_root_link() {
 
 #[test]
 fn registry_kind_swap_updates_the_read_policy() {
-    /// Re-picking the same canonical path under a different kind must
-    /// replace the registry entry: read-back validation follows the LATEST
-    /// pick's suffix policy (a stale first-pick kind would keep a .txt
-    /// readable after the user re-picked the same path as an image, or
-    /// block a text file that became a text pick). Uses real suffixed
-    /// files; the swap leg is driven via register() directly because the
-    /// suffix IS the kind boundary (a single path cannot legally be both).
+    // Re-picking the same canonical path under a different kind must
+    // replace the registry entry: read-back validation follows the LATEST
+    // pick's suffix policy (a stale first-pick kind would keep a .txt
+    // readable after the user re-picked the same path as an image, or
+    // block a text file that became a text pick). Uses real suffixed
+    // files; the swap leg is driven via register() directly because the
+    // suffix IS the kind boundary (a single path cannot legally be both).
 
     let dir = temp_dir("kind-swap");
     fs::create_dir_all(&dir).unwrap();
