@@ -148,16 +148,20 @@ class WindowsSpawnWorker(Worker):
         # timeout marker can fence on ownership instead of lease expiry —
         # a busy-but-slow horse still heartbeats, so expiry would skip the
         # marker's legitimate row, while a reclaimed+redispatched row must
-        # NOT receive this horse's timeout cause.
+        # NOT receive this horse's timeout cause. Travels in the EXPLICIT
+        # child env (Popen's env= ignores os.environ mutations, and touching
+        # os.environ here would leak into this process's later _worker_id()
+        # calls — test-worker identity collisions).
         self._horse_lease_owner = f"rq-{self.name}-{self.execution.id}"
         os.environ["RQ_WORKER_ID"] = self.name
         os.environ["RQ_JOB_ID"] = job.id
         os.environ["RQ_EXECUTION_ID"] = self.execution.id
-        os.environ["MANGAFLOW_LEASE_OWNER"] = self._horse_lease_owner
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        horse_env = self._horse_environment(queue)
+        horse_env["MANGAFLOW_LEASE_OWNER"] = self._horse_lease_owner
         self._horse_popen = subprocess.Popen(
             self._horse_spawn_command(job, queue),
-            env=self._horse_environment(queue),
+            env=horse_env,
             creationflags=creationflags,
         )
         self._horse_pid = self._horse_popen.pid
@@ -194,7 +198,12 @@ class WindowsSpawnWorker(Worker):
                     self.heartbeat(self.job_monitoring_interval + 60)
                     # Record why the horse is about to die while the parent can
                     # still write it; the kill itself must happen regardless.
-                    _persist_timeout_marker(job.id, self._horse_lease_owner)
+                    # getattr: test doubles construct via __new__ and skip
+                    # __init__; without a known owner the marker cannot fence
+                    # and stamps nothing (a no-op, never a crash).
+                    _persist_timeout_marker(
+                        job.id, getattr(self, "_horse_lease_owner", None)
+                    )
                     self.kill_horse()
                     self._horse_popen.wait()
                     ret_val = self._horse_popen.returncode
