@@ -626,7 +626,20 @@ pathlib.Path(sys.argv[3]).write_text(json.dumps(pids), encoding="utf-8")
         [str(ROOT / "scripts"), str(port), str(verify_result)],
         environment=child_environment(runtime, node=shutil.which("node")),
     )
-    assert verifier.wait(timeout=20) == 0, (
+    try:
+        verifier_code = verifier.wait(timeout=20)
+    except TimeoutError:
+        pytest.fail(
+            "verifier timed out; diagnostics: "
+            + (
+                verify_result.read_text(encoding="utf-8")
+                if verify_result.exists()
+                else "(none written)"
+            )
+            + "; api log: "
+            + (log.read_text(encoding="utf-8") if log.exists() else "(none)")
+        )
+    assert verifier_code == 0, (
         verify_result.read_text(encoding="utf-8")
         if verify_result.exists()
         else "verifier exited without writing diagnostics"
@@ -690,7 +703,18 @@ else:
             [str(ROOT / "scripts"), str(port), str(result)],
             environment=child_environment(runtime, node=shutil.which("node")),
         )
-        assert child.wait(timeout=20) == 0, (
+        try:
+            child_code = child.wait(timeout=20)
+        except TimeoutError:
+            pytest.fail(
+                "listener check timed out; diagnostics: "
+                + (
+                    result.read_text(encoding="utf-8")
+                    if result.exists()
+                    else "(none written)"
+                )
+            )
+        assert child_code == 0, (
             result.read_text(encoding="utf-8")
             if result.exists()
             else "child exited without writing diagnostics"
