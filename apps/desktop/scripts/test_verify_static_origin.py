@@ -193,6 +193,13 @@ def test_plan_b_api_evidence_filters_by_path_not_origin():
         "the origin-wide prefix must not come back: in plan-B it spans the "
         "whole web origin (document + assets), not the API surface"
     )
+    # Same-origin constraint (round-30 follow-up): the path filter alone
+    # let a loopback cross-origin /api/ call satisfy the gate while the
+    # relay carried nothing.
+    assert ".origin === new URL(target).origin" in code, (
+        "plan-B API evidence must require the web origin, not just the "
+        "/api/ path"
+    )
 
 
 def test_kill_failure_outcomes_are_distinguished_from_already_gone():
