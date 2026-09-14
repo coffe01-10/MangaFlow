@@ -14,6 +14,7 @@ from app.models import (
     JobDependency,
     ModelCallAttempt,
     PageCandidate,
+    Project,
     WorkflowNodeRun,
     WorkflowRun,
     utcnow,
@@ -134,6 +135,14 @@ def list_jobs(
     archived: bool = Query(default=False),
     db: Session = Depends(get_db),
 ) -> list[JobRead]:
+    # Issue #246-3 family: every sibling project listing (exports, assets,
+    # library, characters, outfits, styles) 404s on a soft-deleted project —
+    # the jobs listing must not be the one route that keeps answering for a
+    # filed-away project (per-object job routes already fail closed via
+    # ensure_project_scope's liveness check).
+    project = db.get(Project, project_id)
+    if not project or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
     # 活跃任务排在最前再按创建时间倒序：列表截断在 100 条，若活跃任务
     # 掉到窗口之外，前端队列坞的轮询门（activePollInterval）会误判「没有
     # 活跃任务」而停止刷新（#P3 jobs-100-cap）。

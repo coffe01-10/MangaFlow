@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -48,6 +49,8 @@ from app.services.storyboard_edits import (
     restore_scene_snapshot,
     snapshot_fields,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 TERMINAL_COMMAND = {
     CommandStatus.EXECUTED,
@@ -1017,9 +1020,15 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
         # PREVIEWED, so every re-accept re-ran the same crash (a 500 loop).
         # Persist the failure; the FAILED replay branch at the top of
         # accept_command then returns the recorded error idempotently.
+        # Sanitization rule (worker_tasks/provider precedent): the raw
+        # exception text (SQL with bound values, filesystem paths) stays in
+        # the exception chain and the log only — never in stored or
+        # returned text. The replay branch re-serves whatever is stored
+        # here, so it must be a fixed message plus the type name at most.
+        LOGGER.exception("director command %s execution failed", row.id)
         row.error = {
             "code": "EXECUTION_ERROR",
-            "message": f"{type(exc).__name__}: {exc}"[:500],
+            "message": f"指令执行出现未分类异常（{type(exc).__name__}），已记录诊断日志",
             "status": 500,
         }
         row.status = CommandStatus.FAILED.value

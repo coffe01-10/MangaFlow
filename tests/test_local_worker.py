@@ -535,6 +535,31 @@ def test_diagnostics_route_reports_embedded_auto_as_ok(client, monkeypatch):
     )
     assert queue_check["status"] == "OK", queue_check
     assert "按设计本地执行" in queue_check["message"], queue_check
+    assert "AUTO" in queue_check["message"], queue_check
+
+
+def test_diagnostics_embedded_message_names_the_stored_mode(client, db_session, monkeypatch):
+    """Round-9: the embedded interception message must echo the STORED mode.
+    With #746 an explicit REDIS (e.g. a desktop DB restored from a server
+    deployment) is intercepted the same way as AUTO — reporting the
+    hardcoded AUTO while the settings UI says REDIS would be a lie about
+    the user's own configuration."""
+
+    _set_queue_mode(db_session, "REDIS")
+    monkeypatch.setattr(
+        "app.api.routes.settings.get_settings",
+        lambda: Settings(
+            environment="development", mangaflow_desktop_embedded=True
+        ),
+    )
+    response = client.get("/api/v1/settings/diagnostics")
+    assert response.status_code == 200, response.text
+    queue_check = next(
+        check for check in response.json()["checks"] if check["id"] == "queue"
+    )
+    assert queue_check["status"] == "OK", queue_check
+    assert "REDIS" in queue_check["message"], queue_check
+    assert "拦截" in queue_check["message"], queue_check
 
 
 def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
