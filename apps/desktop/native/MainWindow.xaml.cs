@@ -264,6 +264,59 @@ public partial class MainWindow : Window
     private async Task ActivateCurrentViewAsync(bool preserveDrafts = false)
     {
         if (api == null || !state.Connected) return;
+        // 自捕获契约（#752 教训推广到两个交给视图的委托）：视图侧在 async void
+        // 处理器里直接 await 它们——未捕获异常会击穿无
+        // DispatcherUnhandledException 兜底的进程。失败呈现到状态条；取消
+        // （导航中切换/关窗）是正常路径，静默。连接状态不在这里翻转：单次
+        // 读取超时不是服务死亡，清掉 Connected 会永久停掉轮询（#471-3 的
+        // Refresh 处理器同款口径），真正的死亡由 Poll 的 backend.IsRunning
+        // 判定。
+        async Task NavigateCore(string section, string query)
+        {
+            if (section == "settings-global") await NavigateAsync("settings-global");
+            else if (ProjectPages.FindBySection(section) is { } definition)
+            {
+                // Home cards pass "project:{id}" to switch identity before opening the section.
+                if (query.StartsWith("project:", StringComparison.Ordinal))
+                {
+                    var id = query["project:".Length..];
+                    var target = state.Projects.FirstOrDefault(p => p.Id == id);
+                    if (target != null && state.CurrentProject?.Id != id)
+                    {
+                        // Record the destination section first: OpenProjectAsync
+                        // navigates to Navigation.Current, so without this the
+                        // requested section would be dropped after the switch.
+                        state.Navigation.Select(definition);
+                        ProjectList.SelectedItem = target;   // triggers OpenProjectAsync
+                        return;
+                    }
+                }
+                await EnsureProjectAsync();
+                await NavigateAsync(section);
+                if (page != (section == "settings" ? "project-settings" : section)) return;
+                state.Navigation.Select(definition);
+                ProjectSections.SelectedItem = definition;
+                // Web deep links (?view=/?character=/?outfit=/?style=/?page=, applied in
+                // project-workspace.tsx + use-assets-workspace.ts) land here: the assets
+                // view preselects the entity, the storyboard view locates the page.
+                var parameters = System.Web.HttpUtility.ParseQueryString(query.TrimStart('?'));
+                if (section == "assets" && ContentHost.Content is AssetsView assets)
+                {
+                    if (parameters["view"] is { } assetView) assets.Switch(assetView);
+                    assets.ApplyDeepLink(parameters["character"], parameters["outfit"], parameters["style"]);
+                }
+                else if (section == "storyboard" && ContentHost.Content is StoryboardView storyboard &&
+                         parameters["page"] is { Length: > 0 } pageId)
+                {
+                    // LoadPagesAsync picks the remembered page after the chapter switch;
+                    // ?character= focuses the first outfit-less VISIBLE panel of that
+                    // character (web storyboard-editor focusCharacterId).
+                    KeyValueStore.Set("storyboard:page:" + state.CurrentProject?.Id, pageId);
+                    _ = storyboard.LocatePageAsync(pageId, parameters["character"]);
+                }
+            }
+        }
+
         var context = new WorkspaceContext
         {
             Api = api,
@@ -272,47 +325,12 @@ public partial class MainWindow : Window
             Project = state.CurrentProject,
             NavigateSection = async (section, query) =>
             {
-                if (section == "settings-global") await NavigateAsync("settings-global");
-                else if (ProjectPages.FindBySection(section) is { } definition)
+                try { await NavigateCore(section, query ?? ""); }
+                catch (OperationCanceledException) { }
+                catch (Exception error)
                 {
-                    // Home cards pass "project:{id}" to switch identity before opening the section.
-                    if (query is not null && query.StartsWith("project:", StringComparison.Ordinal))
-                    {
-                        var id = query["project:".Length..];
-                        var target = state.Projects.FirstOrDefault(p => p.Id == id);
-                        if (target != null && state.CurrentProject?.Id != id)
-                        {
-                            // Record the destination section first: OpenProjectAsync
-                            // navigates to Navigation.Current, so without this the
-                            // requested section would be dropped after the switch.
-                            state.Navigation.Select(definition);
-                            ProjectList.SelectedItem = target;   // triggers OpenProjectAsync
-                            return;
-                        }
-                    }
-                    await EnsureProjectAsync();
-                    await NavigateAsync(section);
-                    if (page != (section == "settings" ? "project-settings" : section)) return;
-                    state.Navigation.Select(definition);
-                    ProjectSections.SelectedItem = definition;
-                    // Web deep links (?view=/?character=/?outfit=/?style=/?page=, applied in
-                    // project-workspace.tsx + use-assets-workspace.ts) land here: the assets
-                    // view preselects the entity, the storyboard view locates the page.
-                    var parameters = System.Web.HttpUtility.ParseQueryString((query ?? "").TrimStart('?'));
-                    if (section == "assets" && ContentHost.Content is AssetsView assets)
-                    {
-                        if (parameters["view"] is { } assetView) assets.Switch(assetView);
-                        assets.ApplyDeepLink(parameters["character"], parameters["outfit"], parameters["style"]);
-                    }
-                    else if (section == "storyboard" && ContentHost.Content is StoryboardView storyboard &&
-                             parameters["page"] is { Length: > 0 } pageId)
-                    {
-                        // LoadPagesAsync picks the remembered page after the chapter switch;
-                        // ?character= focuses the first outfit-less VISIBLE panel of that
-                        // character (web storyboard-editor focusCharacterId).
-                        KeyValueStore.Set("storyboard:page:" + state.CurrentProject?.Id, pageId);
-                        _ = storyboard.LocatePageAsync(pageId, parameters["character"]);
-                    }
+                    state.Error = ErrorText(error);
+                    state.Status = "页面导航未完成，可重试或重新连接";
                 }
             },
             OpenDashboard = async () =>
@@ -321,20 +339,14 @@ public partial class MainWindow : Window
                 preferences.RecentProject = null;
                 ProjectList.SelectedItem = null;
                 await NavigateAsync("home");
-                // 自捕获契约：该委托被交给所有视图，而视图侧（如 HelpView 的返回
-                // 按钮）在 async void 处理器里直接 await 它——未捕获异常会击穿
-                // 无 DispatcherUnhandledException 兜底的进程。导航已完成，这里
-                // 只需把仪表盘读取失败呈现在状态条上。
                 if (api != null)
                 {
                     try { await LoadDashboardAsync(lifetime.Token); }
                     catch (OperationCanceledException) { }
                     catch (Exception error)
                     {
-                        state.Connected = false;
-                        state.ConnectionLabel = "本地服务未连接";
                         state.Error = ErrorText(error);
-                        state.Status = "已返回主页，但仪表盘读取失败，可点击重新连接";
+                        state.Status = "已返回主页，但仪表盘读取失败，可重试或重新连接";
                     }
                 }
             },
