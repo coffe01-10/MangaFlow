@@ -489,3 +489,7 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 硬边确认：native/** 与 native-tests/** 零触碰；web/api 面不入围；
   sidecar 少动（留 N2）。
 - 夜间计划：shell-core 相邻面继续收割、审查轮次 ≥6、每轮追加账本。
+- 新增 #781（night/pr-unix-now-monotonicity-pin）：unix_now 的单调不减
+  抽取钉（跨真实抽取的方向性；clamp 钉管下限，本钉管方向）。
+  169 全绿。
+- PR 计数（本 Goal）：2 枚（#781 + 账本开篇）。
