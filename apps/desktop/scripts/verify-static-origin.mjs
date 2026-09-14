@@ -460,13 +460,23 @@ const api_bad = [];
 const page_errors = [];
 let document_csp = "";
 // The API surface differs by form: static calls the API origin directly
-// (CORS), plan-B goes same-origin through the relay — both must be seen.
-const api_prefix = PLAN_B ? target : ready.api_origin;
+// (CORS — everything on that dedicated origin is API traffic), plan-B
+// goes same-origin through the relay where the web origin ALSO serves
+// the document and assets — only /api/ paths count there, or the
+// document fetch itself would satisfy the "direct API request" gate and
+// any asset 3xx/4xx (a missing favicon) would fail it (#690 evidence).
+const isApiRequest = (url) => {
+  if (PLAN_B) {
+    try { return new URL(url).pathname.startsWith("/api/"); }
+    catch { return false; }
+  }
+  return url.startsWith(ready.api_origin);
+};
 page.on("request", (request) => {
-  if (request.url().startsWith(api_prefix)) api_requests.push(request.url());
+  if (isApiRequest(request.url())) api_requests.push(request.url());
 });
 page.on("response", (response) => {
-  if (response.url().startsWith(api_prefix) && response.status() >= 300) {
+  if (isApiRequest(response.url()) && response.status() >= 300) {
     api_bad.push(`${response.status()} ${response.url()}`);
   }
 });

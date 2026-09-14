@@ -178,6 +178,23 @@ def test_reaped_helper_guard_precedes_platform_kill_branches():
     )
 
 
+def test_plan_b_api_evidence_filters_by_path_not_origin():
+    """Plan-B's API-evidence filter must select /api/ PATHS, not the web
+    origin prefix (round-8 review): in plan-B the page origin also serves
+    the document and assets, so the old origin-wide prefix let the document
+    fetch itself satisfy the 'direct API request observed' gate and let any
+    asset 3xx/4xx (a missing favicon) fail it — vacuous in one direction,
+    spurious in the other."""
+    code = _code_text(_source())
+    assert 'pathname.startsWith("/api/")' in code, (
+        "plan-B must count only /api/ paths as API evidence"
+    )
+    assert "PLAN_B ? target : ready.api_origin" not in code, (
+        "the origin-wide prefix must not come back: in plan-B it spans the "
+        "whole web origin (document + assets), not the API surface"
+    )
+
+
 def test_kill_failure_outcomes_are_distinguished_from_already_gone():
     """ESRCH (and taskkill exit 128, "process not found") after a real
     attempt is already-gone and stays silent; every OTHER failure gets a
