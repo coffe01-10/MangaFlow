@@ -9,11 +9,9 @@ input shape, including scalars no current caller sends.
 import json
 
 import pytest
-from pydantic import ValidationError
-
 from app.config import Settings
 from app.services.prompt_compiler import _bound_structured_block
-
+from pydantic import ValidationError
 
 # ---------------------------------------------------------------- lease geometry
 

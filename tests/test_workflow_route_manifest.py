@@ -11,11 +11,10 @@ semantics therefore fails these tests.
 
 import re
 
-from fastapi.routing import APIRoute
-
 from app.api.routes.workflow import router as workflow_router
 from app.config import get_settings
 from app.main import app
+from fastapi.routing import APIRoute
 
 PINNED_ROUTES = [
     {"method": "GET", "path": "/chapters/{chapter_id}/pages", "name": "list_pages", "status_code": None, "response_model": "list", "operationId": "list_pages_api_v1_chapters__chapter_id__pages_get", "responses": ["200", "422"], "schemas": ["HTTPValidationError"]},

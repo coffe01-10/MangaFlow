@@ -13,8 +13,6 @@ resumes from the breakpoint when the key still matches.
 import json
 
 import pytest
-from sqlalchemy import select
-
 from app.domain.states import JobStatus
 from app.model_adapters.base import ProviderAdapterError
 from app.models import (
@@ -29,6 +27,7 @@ from app.services.ai_schemas import (
     StoryParseOutput,
 )
 from app.services.worker_handlers.story_parse import _run_story_parse
+from sqlalchemy import select
 
 # Three ~460-char paragraphs: 460+460 > STORY_PARSE_CHUNK_MAX_CHARS (800), so
 # each paragraph is its own segment and its own paid chunk (3 chunks total).

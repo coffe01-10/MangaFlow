@@ -7,9 +7,8 @@ route therefore 500'd on every asset candidate after already committing the
 favorite flag.
 """
 
-from sqlalchemy import select
-
 from app.models import Asset, AssetCandidate, GenerationBatch, Project
+from sqlalchemy import select
 
 
 def _asset_candidate(db, project_id: str) -> AssetCandidate:

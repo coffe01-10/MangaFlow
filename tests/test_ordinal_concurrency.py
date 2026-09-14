@@ -3,11 +3,6 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import create_engine, select, update
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import sessionmaker
-
 from app.database import Base
 from app.domain.states import PageStatus, Resolution
 from app.models import (
@@ -40,6 +35,10 @@ from app.services.ordinal_allocator import (
     create_page_candidate,
     is_sqlite_lock_error,
 )
+from fastapi import HTTPException
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture
@@ -667,6 +666,7 @@ def test_create_page_candidate_retry_rejects_stale_storyboard_version(file_sessi
         batch_id = batch.id
 
     from contextlib import contextmanager
+
     from app.services import ordinal_allocator as allocator
 
     original_savepoint = allocator.ordinal_savepoint
@@ -717,10 +717,10 @@ def test_create_page_candidate_retry_rejects_stale_storyboard_version(file_sessi
 
 def test_workflow_approval_endpoint_maps_ordinal_conflict_to_409(monkeypatch):
     """Verify that BatchOrdinalConflictError from approve_node is mapped to HTTP 409 in the route."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
     from app.api.routes.workflow_definitions import router as workflow_router
     from app.database import get_db
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
     app = FastAPI()
     app.include_router(workflow_router)
@@ -877,6 +877,7 @@ def test_concurrent_batch_allocation_serializes_before_read(
 ):
     """Two simultaneous requests reserve SQLite's writer before reading max."""
     from contextlib import contextmanager
+
     from app.services import ordinal_allocator as allocator
 
     factory = app_default_sqlite_sessions
@@ -990,24 +991,23 @@ def test_character_sheet_job_failure_rolls_back_batch_and_candidate_completely(a
 
     monkeypatch.setattr("app.services.ordinal_allocator.create_job", fail_create_job)
 
-    with factory() as db:
-        with pytest.raises(RuntimeError):
-            try:
-                generate_complete_character_sheet(
-                    character_id=seeded["character_id"],
-                    payload=CharacterSheetCreate(
-                        model_alias="image.nano_banana_2",
-                        resolution=Resolution.DRAFT_1K,
-                        generation_mode="CONCEPT",
-                        appearance_description="测试外观",
-                        outfit_name="日常制服",
-                        outfit_description="日常制服描述",
-                    ),
-                    db=db,
-                )
-            except Exception:
-                db.rollback()
-                raise
+    with factory() as db, pytest.raises(RuntimeError):
+        try:
+            generate_complete_character_sheet(
+                character_id=seeded["character_id"],
+                payload=CharacterSheetCreate(
+                    model_alias="image.nano_banana_2",
+                    resolution=Resolution.DRAFT_1K,
+                    generation_mode="CONCEPT",
+                    appearance_description="测试外观",
+                    outfit_name="日常制服",
+                    outfit_description="日常制服描述",
+                ),
+                db=db,
+            )
+        except Exception:
+            db.rollback()
+            raise
 
     with factory() as verify_db:
         batches = list(
@@ -1028,7 +1028,12 @@ def test_character_sheet_job_failure_rolls_back_batch_and_candidate_completely(a
 def test_approve_node_final_commit_failure_rolls_back_and_allows_subsequent_retry(app_default_sqlite_sessions):
     """Verify that if approve_node's final db.commit() fails after job creation, rollback leaves zero orphan records, run status is preserved, and subsequent retry succeeds."""
     from app.models import WorkflowDefinition, WorkflowNodeRun
-    from app.services.workflow_engine import approve_node, create_workflow_run, default_graph, publish_workflow
+    from app.services.workflow_engine import (
+        approve_node,
+        create_workflow_run,
+        default_graph,
+        publish_workflow,
+    )
 
     factory = app_default_sqlite_sessions
     seeded = _seed_test_hierarchy(factory)

@@ -18,8 +18,6 @@ a live parse on the same chapter.
 from datetime import timedelta
 
 import pytest
-from fastapi import HTTPException
-
 from app.domain.states import JobStatus
 from app.models import (
     AppSetting,
@@ -33,6 +31,7 @@ from app.models import (
     utcnow,
 )
 from app.services import job_service
+from fastapi import HTTPException
 
 
 def _set_queue_mode(db, mode: str) -> None:

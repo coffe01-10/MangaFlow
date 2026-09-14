@@ -6,10 +6,9 @@ which read to clients as "retry accepted". Only genuinely retryable statuses
 may pass; the service-level guard stays as defense in depth.
 """
 
-from sqlalchemy import select
-
 from app.domain.states import JobStatus
 from app.models import GenerationJob, Project, utcnow
+from sqlalchemy import select
 
 
 def _seed_job(db, status: JobStatus, **kwargs) -> GenerationJob:

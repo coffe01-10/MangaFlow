@@ -22,9 +22,6 @@ pass:
 """
 
 import pytest
-from pydantic import ValidationError
-from sqlalchemy import select
-
 from app.database import _strict_json_serializer
 from app.domain.states import JobStatus, Resolution
 from app.models import (
@@ -70,6 +67,8 @@ from app.services.workflow_engine.reconciliation import (
     _create_inspection_job,
 )
 from app.workflow_schemas import WorkflowGraph, WorkflowNodeConfig
+from pydantic import ValidationError
+from sqlalchemy import select
 
 # --------------------------------------------------------------------- #197
 
@@ -708,7 +707,7 @@ def test_non_finite_text_inside_string_is_not_rejected(client):
 
     response = client.post(
         "/api/v1/projects",
-        content='{"name": "NaN 与 Infinity 用法说明"}'.encode("utf-8"),
+        content='{"name": "NaN 与 Infinity 用法说明"}'.encode(),
         headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 201, response.text
@@ -721,7 +720,7 @@ def test_non_finite_text_inside_string_is_not_rejected(client):
         (b'[Infinity]', True),
         (b'{"a": -Infinity}', True),
         (b'{"a": "NaN"}', False),
-        ('{"a": "包含 Infinity 字样"}'.encode("utf-8"), False),
+        ('{"a": "包含 Infinity 字样"}'.encode(), False),
         (b'{"NaN": 1}', False),
         (b'{"a": 1e999}', False),  # overflow literal: schema validators own it
         (b'{}', False),

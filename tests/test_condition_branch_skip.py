@@ -15,8 +15,6 @@ pure function of the seeded node_run/job states.
 """
 
 import pytest
-from sqlalchemy import select
-
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import (
@@ -31,6 +29,7 @@ from app.models import (
 from app.services.workflow_engine import reconcile_run
 from app.services.workflow_engine.catalog import _edge, _node, graph_checksum
 from app.services.workflow_engine.validation import validate_graph
+from sqlalchemy import select
 
 
 def _seed_graph_run(db, name: str, graph: dict):

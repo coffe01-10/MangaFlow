@@ -10,7 +10,6 @@ record DEGRADED + error code, never disable, never start a cooldown.
 
 
 import httpx
-
 from app.config import get_settings
 from app.models import ProviderConnection, ProviderKey, ProviderProfile
 from app.services.credential_crypto import encrypt_secret, mark_key_failure
@@ -78,9 +77,8 @@ def test_balance_failure_keeps_generation_key_enabled(db_session):
     db_session.add(key)
     db_session.commit()
 
-    from fastapi import HTTPException
-
     from app.services.provider_catalog import read_balance
+    from fastapi import HTTPException
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, text="billing scope denied")

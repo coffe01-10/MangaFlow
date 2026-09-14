@@ -15,8 +15,6 @@ a concurrent session has bumped the row and committed, so the route's
 committed, while its writes land on the current database.
 """
 
-from sqlalchemy.orm import sessionmaker
-
 from app.domain.states import Resolution
 from app.models import (
     Asset,
@@ -32,6 +30,7 @@ from app.models import (
     WorkflowDefinition,
     WorkflowVersion,
 )
+from sqlalchemy.orm import sessionmaker
 
 
 def _project(client, name):

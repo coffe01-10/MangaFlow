@@ -14,10 +14,9 @@ import struct
 import zlib
 from io import BytesIO
 
-from PIL import Image
-
 from app.config import get_settings
 from app.services.media import sanitize_stored_filename
+from PIL import Image
 
 
 def _png_bytes(size: tuple[int, int] = (8, 8)) -> bytes:

@@ -14,10 +14,6 @@ import hashlib
 import io
 
 import pytest
-from PIL import Image
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-
 from app.config import get_settings
 from app.domain.states import Resolution
 from app.models import (
@@ -33,6 +29,9 @@ from app.models import (
 )
 from app.services.worker_handlers.asset_generate import _save_asset_candidate
 from app.services.worker_handlers.page_generate import _save_generated_asset
+from PIL import Image
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 
 def _png_bytes(color: int = 100) -> bytes:

@@ -17,11 +17,9 @@ no pages, no paid jobs), per tests/test_run_creation_guard.py.
 
 import logging
 
-from sqlalchemy import select
-
 from app.models import Project, WorkflowDefinition, WorkflowRun
-from app.services.workflow_engine import create_workflow_run, publish_workflow
-from app.services.workflow_engine import planning
+from app.services.workflow_engine import create_workflow_run, planning, publish_workflow
+from sqlalchemy import select
 
 
 def _failure_records(caplog, message: str) -> list[logging.LogRecord]:

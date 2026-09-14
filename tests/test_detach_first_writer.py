@@ -17,8 +17,6 @@ route's writes still land after the retry:
   a partial teardown (asset gone, candidate alive).
 """
 
-from sqlalchemy import select
-
 from app.domain.states import Resolution
 from app.models import (
     Asset,
@@ -30,6 +28,7 @@ from app.models import (
     GenerationBatch,
 )
 from app.services.character_packages import detach_draft_package_references_for_asset
+from sqlalchemy import select
 
 
 def _project(client, name: str) -> dict:
@@ -236,7 +235,7 @@ def test_delete_outfit_multi_asset_detach_atomic_across_lock_retry(
             is None
         )
     for candidate, token_before in zip(
-        (candidate_first, candidate_second), candidate_versions_before
+        (candidate_first, candidate_second), candidate_versions_before, strict=False
     ):
         candidate_row = db_session.get(AssetCandidate, candidate.id)
         assert candidate_row.deleted_at is not None

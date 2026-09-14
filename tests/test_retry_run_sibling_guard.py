@@ -10,8 +10,6 @@ workflow PAGE_GENERATE jobs are not.
 """
 
 import pytest
-from fastapi import HTTPException
-
 from app.domain.states import JobStatus
 from app.models import (
     AppSetting,
@@ -24,6 +22,7 @@ from app.models import (
     WorkflowVersion,
 )
 from app.services import job_service
+from fastapi import HTTPException
 
 
 def _set_queue_mode(db, mode: str) -> None:

@@ -7,12 +7,9 @@ paid-call boundaries: success, retryable failure, terminal failure, route
 switch, fail-closed begin, finalize failure and multi-chunk numbering.
 """
 
-import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
-
 import app.services.worker_handlers.model_call_audit as audit
 import app.services.worker_handlers.provider as provider
+import pytest
 from app.database import Base
 from app.model_adapters.base import ModelResponse, ProviderAdapterError
 from app.models import (
@@ -26,6 +23,8 @@ from app.models import (
 )
 from app.services.credential_crypto import SelectedProviderKey
 from app.services.model_router import AdapterBinding, ResolvedModel
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture
@@ -375,10 +374,9 @@ def test_successful_audit_survives_caller_rollback(env):
 
 
 def test_job_with_ledger_is_blocked_from_delete_but_can_archive(env):
-    from fastapi import HTTPException
-
     from app.api.routes.workflow.jobs import archive_job, delete_job
     from app.domain.states import JobStatus
+    from fastapi import HTTPException
 
     caller_factory, rows = env
     adapter = _FakeAdapter()

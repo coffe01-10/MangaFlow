@@ -8,12 +8,11 @@ path instead of being rejected or ignored.
 """
 
 import pytest
-from fastapi.testclient import TestClient
-from pydantic import ValidationError
-
 from app.models import AIModel
 from app.provider_schemas import ProviderModelCreate, ProviderModelUpdate
 from app.services.model_capabilities import capability_reference_limit
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 
 def test_capability_reference_limit_reads_declared_values():

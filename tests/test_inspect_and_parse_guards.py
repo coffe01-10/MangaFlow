@@ -5,10 +5,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import create_engine, select, update
-from sqlalchemy.orm import sessionmaker
-
 from app import worker_tasks
 from app.config import get_settings
 from app.database import Base
@@ -42,6 +38,9 @@ from app.services.workflow_engine import (
 from app.services.workflow_engine.reconciliation import _create_inspection_job, reconcile_run
 from app.worker_tasks import _mark_worker_failure
 from app.workflow_schemas import WorkflowGraph, WorkflowNodeDefinition
+from fastapi import HTTPException
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.orm import sessionmaker
 
 
 def _own_lease(db, job, owner="owner-inspect-guard"):

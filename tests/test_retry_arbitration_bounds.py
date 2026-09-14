@@ -10,7 +10,6 @@ compensable, so arbitration now runs for it too.
 """
 
 import pytest
-
 from app.domain.states import JobStatus
 from app.models import GenerationJob, Project
 from app.services.job_service import (
@@ -95,9 +94,8 @@ def test_compensation_restores_terminal_preimage(db_session):
 def test_verify_arbitrates_queued_loser(db_session):
     from datetime import timedelta
 
-    from fastapi import HTTPException
-
     from app.models import utcnow
+    from fastapi import HTTPException
 
     older = _job(
         db_session,

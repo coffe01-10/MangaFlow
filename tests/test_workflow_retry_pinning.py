@@ -12,8 +12,6 @@ reconcile-complete instantly.
 from copy import deepcopy
 
 import pytest
-from sqlalchemy import select
-
 from app.config import get_settings
 from app.models import (
     Chapter,
@@ -30,6 +28,7 @@ from app.services.workflow_engine import (
     publish_workflow,
     retry_run,
 )
+from sqlalchemy import select
 
 
 def _chapter_with_revision(db) -> Chapter:

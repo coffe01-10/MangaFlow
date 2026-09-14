@@ -20,10 +20,6 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import sessionmaker
-
 from app.database import Base
 from app.domain.states import Resolution
 from app.models import (
@@ -40,6 +36,9 @@ from app.models import (
     SourceSegment,
 )
 from app.services.content_workflow import plan_chapter_pages
+from fastapi import HTTPException
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import sessionmaker
 
 BEAT_TEXTS = [f"「{index}」他说。" for index in range(1, 8)]
 SEVEN_BEAT_SEGMENT_TEXT = "".join(BEAT_TEXTS) + "窗外雨声渐大，灯影摇晃。"

@@ -1,6 +1,4 @@
 import pytest
-from sqlalchemy import text
-
 from app.config import get_settings
 from app.domain.states import JobStatus, PageStatus, Resolution
 from app.models import (
@@ -19,6 +17,7 @@ from app.models import (
     StyleProfile,
 )
 from app.worker_tasks import StaleStoryboardVersionError, _run_page_generate
+from sqlalchemy import text
 
 
 def _project(client, name: str = "稳定化项目") -> dict:

@@ -1,6 +1,5 @@
-import pytest
-
 import app.domain.states as states_module
+import pytest
 from app.domain.states import ensure_unlocked
 
 

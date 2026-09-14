@@ -8,7 +8,6 @@ to observe that drift, so the flag write now rides with a single-statement
 """
 
 import pytest
-
 from app.domain.states import Resolution
 from app.models import (
     Asset,

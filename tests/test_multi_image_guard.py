@@ -9,10 +9,8 @@ produces a warning while only the first image is persisted.
 
 import json
 
-import pytest
-
 import httpx
-
+import pytest
 from app.model_adapters.base import ImageRequest
 from app.model_adapters.compatible import CompatibleRuntime, OpenAICompatibleAdapter
 
@@ -113,10 +111,8 @@ def test_page_handler_warns_and_persists_only_first_image(
     import io
     import logging
 
-    from PIL import Image
-    from sqlalchemy import select as sa_select
-
     from app.domain.states import PageStatus, Resolution
+    from app.model_adapters.base import ModelResponse as MR
     from app.models import (
         Asset,
         Chapter,
@@ -128,8 +124,9 @@ def test_page_handler_warns_and_persists_only_first_image(
         Project,
         utcnow,
     )
-    from app.model_adapters.base import ModelResponse as MR
     from app.worker_tasks import _run_page_generate
+    from PIL import Image
+    from sqlalchemy import select as sa_select
 
     def _png(seed: int) -> bytes:
         out = io.BytesIO()

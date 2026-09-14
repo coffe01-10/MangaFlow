@@ -1,7 +1,5 @@
 from datetime import timedelta
 
-from sqlalchemy import select
-
 from app.domain.states import PageStatus, Resolution
 from app.models import (
     Asset,
@@ -14,6 +12,7 @@ from app.models import (
     utcnow,
 )
 from app.services.page_completion import build_page_production_readiness
+from sqlalchemy import select
 
 
 def _ready_page(db_session, *, candidate_status="INSPECTED", continuity="PASSED"):

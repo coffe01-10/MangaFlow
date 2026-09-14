@@ -12,7 +12,6 @@ SOURCE_PARSE_CONFLICT before any paid call.
 from datetime import timedelta
 
 import pytest
-
 from app.domain.states import JobStatus
 from app.model_adapters.base import ProviderAdapterError
 from app.models import GenerationJob, utcnow

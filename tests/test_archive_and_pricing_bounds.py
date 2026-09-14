@@ -8,12 +8,11 @@ and _active_price tie-broke equal pricing windows by list order, letting
 the same attempt flip price versions between calls.
 """
 
-from sqlalchemy import update as sa_update
-
 from app.domain.states import JobStatus
 from app.models import GenerationJob, ModelPricingVersion, Project
 from app.services.job_service import mark_job_failed
 from app.services.model_costs import _active_price
+from sqlalchemy import update as sa_update
 
 
 def _job(db, name: str, *, project: Project | None = None, **overrides) -> GenerationJob:

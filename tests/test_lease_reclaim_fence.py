@@ -14,14 +14,13 @@ has been cold beyond a grace window sized from the heartbeat cadence.
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import update
-from sqlalchemy.orm import sessionmaker
-
 from app import database, worker_tasks
 from app.config import Settings, get_settings
 from app.domain.states import JobStatus
 from app.models import AppSetting, GenerationJob, Project
 from app.services import job_service
+from sqlalchemy import update
+from sqlalchemy.orm import sessionmaker
 
 
 def _session_factory(db_session):

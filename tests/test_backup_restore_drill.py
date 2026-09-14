@@ -15,8 +15,8 @@ import backup_restore as backup_restore_mod  # noqa: E402
 import backup_restore_fixture as backup_restore_fixture_mod  # noqa: E402
 from backup_restore import (  # noqa: E402
     DATABASE_REL,
-    OWNER_MARKER_NAME,
     FIXTURE_MARKER_NAME,
+    OWNER_MARKER_NAME,
     BackupRestoreError,
     backup,
     cleanup_owned_fixture,

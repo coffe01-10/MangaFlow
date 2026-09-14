@@ -5,10 +5,6 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from PIL import Image
-from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
-
 from app.config import Settings, get_settings
 from app.model_adapters.base import ImageRequest, ProviderAdapterError
 from app.model_adapters.grok_build_cli import (
@@ -30,6 +26,9 @@ from app.services.cli_executor import CLIExecutionController, CLIProcessOutcome
 from app.services.model_router import AdapterBinding, ResolvedModel, bind_adapter
 from app.services.provider_presets import ensure_provider_presets
 from app.services.worker_handlers import provider as provider_handler
+from PIL import Image
+from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 
 def _jpeg_bytes() -> bytes:

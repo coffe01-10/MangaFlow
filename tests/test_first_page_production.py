@@ -11,8 +11,8 @@ from app.models import (
     MangaPage,
     Outfit,
     PageCandidate,
-    StyleProfile,
     Scene,
+    StyleProfile,
 )
 
 

@@ -18,8 +18,6 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from pydantic import BaseModel
-
 from app.config import Settings, get_settings
 from app.model_adapters.base import (
     ImageRequest,
@@ -43,6 +41,7 @@ from app.models import (
     ProviderKey,
     ProviderProfile,
 )
+from app.provider_schemas import ConnectionUpdate
 from app.services.credential_crypto import (
     CredentialDecryptError,
     encrypt_secret,
@@ -66,7 +65,7 @@ from app.services.vertex_credentials import (
     classify_vertex_failure,
 )
 from app.settings_schemas import RuntimeSettingsUpdate
-from app.provider_schemas import ConnectionUpdate
+from pydantic import BaseModel
 
 
 class SmokeReply(BaseModel):
@@ -802,7 +801,6 @@ def test_google_sdk_namespace_error_stays_retryable():
 
 def test_google_client_factory_pins_sdk_retry_attempts(monkeypatch):
     import google.genai as genai_module
-
     from app.model_adapters.google import GoogleRuntime, GoogleTextAdapter
 
     captured: dict[str, object] = {}

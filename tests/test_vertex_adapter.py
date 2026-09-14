@@ -1,12 +1,11 @@
 import weakref
 from pathlib import Path
 
-from pydantic import BaseModel
-
 from app.config import Settings
 from app.model_adapters.base import StructuredRequest
 from app.model_adapters.vertex import VertexTextAdapter
 from app.services.model_registry import build_registry
+from pydantic import BaseModel
 
 
 class SmokeReply(BaseModel):

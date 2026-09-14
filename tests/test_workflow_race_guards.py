@@ -23,10 +23,6 @@ The queue stays disabled throughout — no provider call can run.
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import update
-from sqlalchemy.orm import sessionmaker
-
 from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
 from app.models import (
@@ -47,6 +43,9 @@ from app.services.workflow_engine import approve_node
 from app.services.workflow_engine import lifecycle as workflow_lifecycle
 from app.services.workflow_engine.catalog import _node, graph_checksum
 from app.services.workflow_engine.scope import _candidate_for_run
+from fastapi import HTTPException
+from sqlalchemy import update
+from sqlalchemy.orm import sessionmaker
 
 
 def _session_factory(db_session):

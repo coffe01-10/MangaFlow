@@ -11,12 +11,10 @@ earlier bundle rows still point at (stale integrity metadata; on Windows
 import zipfile
 from io import BytesIO
 
-from PIL import Image
-
-
 from app.api.routes import exports as exports_module
 from app.config import get_settings
 from app.models import Asset, Chapter, Project
+from PIL import Image
 
 
 def test_safe_archive_name_flattens_separators_and_controls():

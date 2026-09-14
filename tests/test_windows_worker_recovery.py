@@ -13,16 +13,15 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-from sqlalchemy.orm import sessionmaker
-
 import app.rq_windows as rq_windows
+import pytest
 from app import database
 from app.config import Settings
 from app.domain.states import JobStatus
 from app.models import AppSetting, GenerationJob, ModelCallAttempt, Project
 from app.rq_windows import horse_environment
 from app.services import job_service
+from sqlalchemy.orm import sessionmaker
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 API_ROOT = str(Path(rq_windows.__file__).resolve().parents[1])

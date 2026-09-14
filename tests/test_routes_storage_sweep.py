@@ -25,10 +25,6 @@ from io import BytesIO
 from types import SimpleNamespace
 from uuid import uuid4
 
-from PIL import Image
-from sqlalchemy import func, select, update
-from sqlalchemy.sql.dml import Delete, Update
-
 from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
 from app.models import (
@@ -57,6 +53,9 @@ from app.models import (
     WorkflowVersion,
     utcnow,
 )
+from PIL import Image
+from sqlalchemy import func, select, update
+from sqlalchemy.sql.dml import Delete, Update
 
 
 def _png_bytes(size: tuple[int, int] = (16, 12)) -> bytes:
@@ -1127,15 +1126,14 @@ def test_assign_scene_outfits_version_token_mismatch_returns_409(client, db_sess
 
 
 def test_orphan_sweep_covers_upload_root(tmp_path):
-    from datetime import timedelta
     import os
     import time as time_module
-
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
+    from datetime import timedelta
 
     from app.database import Base
     from app.services.media import sweep_orphan_generated_files
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
 
     engine = create_engine(f"sqlite:///{(tmp_path / 'sweep.db').as_posix()}")
     Base.metadata.create_all(engine)

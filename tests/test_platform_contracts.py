@@ -1,11 +1,10 @@
 import pytest
-from pydantic import ValidationError
-
 from app.database import Base
 from app.domain.states import CharacterPresence
 from app.schemas import PanelUpdate
 from app.settings_schemas import RuntimeSettingsUpdate, VertexVerifyRequest
 from app.workflow_schemas import WorkflowGraph
+from pydantic import ValidationError
 
 
 def test_platform_tables_are_registered():

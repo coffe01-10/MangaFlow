@@ -10,14 +10,11 @@ caller must not let a recovery failure abort API boot.
 """
 
 import logging
-import pytest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
+import pytest
 from app import database, worker_tasks
 from app.config import Settings
 from app.database import Base
@@ -33,6 +30,8 @@ from app.models import (
 )
 from app.services import job_service, workflow_engine
 from app.services.workflow_engine import default_graph
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 def _failure_records(caplog, message: str) -> list[logging.LogRecord]:
@@ -326,11 +325,13 @@ def test_reconcile_failure_after_final_failure_is_isolated_and_original_error_ra
 
             monkeypatch.setattr(workflow_engine, "reconcile_run", poisoned_reconcile)
 
-            with caplog.at_level(logging.ERROR, logger="mangaflow.worker"):
-                # The ORIGINAL provider error must be what propagates; pre-fix
-                # the poisoned reconcile's RuntimeError escaped instead.
-                with pytest.raises(ProviderAdapterError):
-                    worker_tasks.execute_job(job_id)
+            # The ORIGINAL provider error must be what propagates; pre-fix
+            # the poisoned reconcile's RuntimeError escaped instead.
+            with (
+                caplog.at_level(logging.ERROR, logger="mangaflow.worker"),
+                pytest.raises(ProviderAdapterError),
+            ):
+                worker_tasks.execute_job(job_id)
 
             with testing_session() as db:
                 failed = db.get(GenerationJob, job_id)
@@ -424,9 +425,11 @@ def test_reconcile_failure_isolation_on_stale_and_generic_handlers(
 
             monkeypatch.setattr(workflow_engine, "reconcile_run", poisoned_reconcile)
 
-            with caplog.at_level(logging.ERROR, logger="mangaflow.worker"):
-                with pytest.raises(expected_exception):
-                    worker_tasks.execute_job(job_id)
+            with (
+                caplog.at_level(logging.ERROR, logger="mangaflow.worker"),
+                pytest.raises(expected_exception),
+            ):
+                worker_tasks.execute_job(job_id)
 
             with testing_session() as db:
                 failed = db.get(GenerationJob, job_id)

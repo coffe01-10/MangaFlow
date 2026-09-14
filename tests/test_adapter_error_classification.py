@@ -11,8 +11,6 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from pydantic import BaseModel
-
 from app.config import Settings
 from app.model_adapters.base import (
     MultimodalRequest,
@@ -27,6 +25,7 @@ from app.model_adapters.compatible import (
 from app.model_adapters.google import GoogleTextAdapter
 from app.model_adapters.vertex import VertexAdapterError, VertexTextAdapter
 from app.services.model_registry import build_registry
+from pydantic import BaseModel
 
 
 class SmokeReply(BaseModel):

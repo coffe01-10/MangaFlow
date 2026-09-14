@@ -12,11 +12,6 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from PIL import Image
-from sqlalchemy import create_engine
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import sessionmaker
-
 from app.config import Settings
 from app.database import Base
 from app.model_adapters.antigravity_cli import (
@@ -47,6 +42,10 @@ from app.services.cli_executor import (
     CLIProcessOutcome,
 )
 from app.services.media import inspect_upload_image
+from PIL import Image
+from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
 
 _PROBE_LOG_MESSAGE = "Cancel probe failed; treating job as not cancelled"
 

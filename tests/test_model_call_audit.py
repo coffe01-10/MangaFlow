@@ -9,18 +9,15 @@ deterministic and offline.
 import json as jsonlib
 from types import SimpleNamespace
 
-import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
-
 import app.services.worker_handlers.model_call_audit as audit
+import pytest
 from app.database import Base
 from app.models import (
+    Chapter,
     GenerationJob,
     MangaPage,
     ModelCallAttempt,
     Project,
-    Chapter,
 )
 from app.schemas import ModelCallAttemptRead
 from app.services.worker_handlers.model_call_audit import (
@@ -28,6 +25,8 @@ from app.services.worker_handlers.model_call_audit import (
     begin_model_call_attempt,
     finalize_model_call_attempt,
 )
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
 
 @pytest.fixture
@@ -394,19 +393,20 @@ def test_scoped_diagnostics_rejects_connection_bound_caller_session(tmp_path):
     engine = create_engine(f"sqlite:///{(tmp_path / 'conn-bind.db').as_posix()}")
     Base.metadata.create_all(engine)
     try:
-        with engine.connect() as connection:
-            with Session(bind=connection, expire_on_commit=False) as db:
-                binding = SimpleNamespace(
-                    resolved=SimpleNamespace(connection=SimpleNamespace(id="conn-1")),
-                    selected_key=SimpleNamespace(row=SimpleNamespace(id="key-1")),
+        with engine.connect() as connection, Session(
+            bind=connection, expire_on_commit=False
+        ) as db:
+            binding = SimpleNamespace(
+                resolved=SimpleNamespace(connection=SimpleNamespace(id="conn-1")),
+                selected_key=SimpleNamespace(row=SimpleNamespace(id="key-1")),
+            )
+            error = ProviderAdapterError("UPSTREAM", "上游错误", retryable=True)
+            with pytest.raises(RuntimeError, match="Engine"):
+                provider_module._record_key_and_connection_failure(db, binding, error)
+            # The key-mark helper shares the same guard.
+            with pytest.raises(RuntimeError, match="Engine"):
+                provider_module._mark_key_outcome(
+                    db, binding.selected_key.row, success=True
                 )
-                error = ProviderAdapterError("UPSTREAM", "上游错误", retryable=True)
-                with pytest.raises(RuntimeError, match="Engine"):
-                    provider_module._record_key_and_connection_failure(db, binding, error)
-                # The key-mark helper shares the same guard.
-                with pytest.raises(RuntimeError, match="Engine"):
-                    provider_module._mark_key_outcome(
-                        db, binding.selected_key.row, success=True
-                    )
     finally:
         engine.dispose()

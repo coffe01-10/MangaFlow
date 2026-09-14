@@ -16,8 +16,6 @@ Destructive cross-project calls must leave the target rows intact.
 """
 
 import pytest
-from sqlalchemy import select
-
 from app.config import get_settings
 from app.domain.states import JobStatus, PageStatus, Resolution
 from app.models import (
@@ -46,6 +44,7 @@ from app.models import (
     WorkflowDefinition,
     WorkflowRun,
 )
+from sqlalchemy import select
 
 
 def _orm(db, obj):

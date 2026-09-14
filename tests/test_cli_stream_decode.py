@@ -11,7 +11,6 @@ both halves stay readable for the failure classifiers.
 import json
 
 import pytest
-
 from app.config import Settings
 from app.model_adapters.antigravity_cli import _decode_output as agy_decode
 from app.model_adapters.antigravity_cli import _map_failure as agy_map
@@ -23,7 +22,7 @@ from app.services.cli_executor import CLIProcessOutcome
 def _mixed_outcome() -> CLIProcessOutcome:
     return CLIProcessOutcome(
         exit_code=1,
-        stdout="配额已用尽 quota exceeded".encode("utf-8"),
+        stdout="配额已用尽 quota exceeded".encode(),
         stderr="请重新登录".encode("gbk"),
     )
 
@@ -78,7 +77,7 @@ def test_grok_media_failure_classification_survives_mixed_streams(tmp_path):
     )
     outcome = CLIProcessOutcome(
         exit_code=1,
-        stdout="丁sign in".encode("utf-8"),
+        stdout="丁sign in".encode(),
         stderr="诊断：文件被占用".encode("gbk"),
     )
     runner = GrokBuildArtifactRunner(

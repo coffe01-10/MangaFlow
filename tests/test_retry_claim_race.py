@@ -8,11 +8,10 @@ a conditional update against the observed state and an unowned lease.
 """
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import update
-
 from app.models import GenerationJob, Project
 from app.services.job_service import reset_for_retry
+from fastapi import HTTPException
+from sqlalchemy import update
 
 
 def test_reset_for_retry_refuses_concurrently_claimed_job(db_session):

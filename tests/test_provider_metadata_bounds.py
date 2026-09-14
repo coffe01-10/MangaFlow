@@ -5,14 +5,12 @@ import json
 
 import httpx
 import pytest
-from fastapi import HTTPException
-
-from sqlalchemy import select
-
 from app.config import Settings
 from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile
 from app.services.credential_crypto import encrypt_secret
 from app.services.provider_catalog import discover_models, read_balance
+from fastapi import HTTPException
+from sqlalchemy import select
 
 
 def _settings(tmp_path, **overrides) -> Settings:

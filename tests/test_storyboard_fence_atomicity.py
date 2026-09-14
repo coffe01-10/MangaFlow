@@ -15,13 +15,12 @@ that used to drop an increment.
 """
 
 import pytest
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker
-
 from app.database import Base
 from app.domain.states import PageStatus
 from app.models import Chapter, MangaPage, Project
 from app.services.editor import mark_pages_for_review, mark_storyboard_changed
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture

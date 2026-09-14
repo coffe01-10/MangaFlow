@@ -18,13 +18,9 @@ Covers the two R1 findings on the paid-call failure path:
 import inspect
 import logging
 
-import pytest
-from fastapi import HTTPException
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
-
 import app.services.worker_handlers.model_call_audit as audit
 import app.services.worker_handlers.provider as provider
+import pytest
 from app.database import Base
 from app.model_adapters.base import ModelResponse, ProviderAdapterError
 from app.models import (
@@ -38,6 +34,9 @@ from app.models import (
 )
 from app.services.credential_crypto import SelectedProviderKey
 from app.services.model_router import AdapterBinding, ResolvedModel
+from fastapi import HTTPException
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture
@@ -318,9 +317,11 @@ def test_diagnostics_write_failure_preserves_original_error(env, monkeypatch, ca
 
     with caller_factory() as db:
         db.info["job_id"] = rows["job"].id
-        with caplog.at_level(logging.WARNING, logger=provider.__name__):
-            with pytest.raises(ProviderAdapterError) as exc_info:
-                provider._invoke_provider(db, _binding(rows, adapter), adapter.generate_page)
+        with (
+            caplog.at_level(logging.WARNING, logger=provider.__name__),
+            pytest.raises(ProviderAdapterError) as exc_info,
+        ):
+            provider._invoke_provider(db, _binding(rows, adapter), adapter.generate_page)
         # The ORIGINAL error (with its classification) reaches the worker.
         assert exc_info.value.code == "AUTHENTICATION"
         assert exc_info.value.retryable is False
@@ -584,9 +585,11 @@ def test_replacement_retry_error_not_replaced_by_mark_diagnostics_failure(
 
     with caller_factory() as db:
         db.info["job_id"] = rows["job"].id
-        with caplog.at_level(logging.WARNING, logger=provider.__name__):
-            with pytest.raises(ProviderAdapterError) as exc_info:
-                provider._invoke_provider(db, _binding(rows, adapter), adapter.generate_page)
+        with (
+            caplog.at_level(logging.WARNING, logger=provider.__name__),
+            pytest.raises(ProviderAdapterError) as exc_info,
+        ):
+            provider._invoke_provider(db, _binding(rows, adapter), adapter.generate_page)
         assert adapter.calls == 2
         # The ADAPTER outcome — code, retryability, message — is re-raised,
         # not the diagnostics failure and not a reclassification.

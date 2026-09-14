@@ -3,39 +3,37 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-from sqlalchemy import update
-
 from app import worker_tasks
 from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
 from app.models import (
     Asset,
     AssetCandidate,
+    Beat,
+    Chapter,
+    Character,
+    CharacterReference,
     Dialogue,
     GenerationBatch,
     GenerationJob,
     GenerationRecord,
+    InspectionResult,
     MangaPage,
     Outfit,
     PageCandidate,
     Panel,
     Project,
     Scene,
-    Beat,
-    Chapter,
-    Character,
-    CharacterReference,
-    InspectionResult,
     ScriptRevision,
     SourceSegment,
 )
-from app.services.prompt_compiler import compile_page_prompt
 from app.services.ai_schemas import (
     BeatDraft,
     CharacterDraft,
     SceneDraft,
     StoryParseOutput,
 )
+from app.services.prompt_compiler import compile_page_prompt
 from app.services.worker_handlers import provider
 from app.services.worker_handlers.page_generate import _load_reference_assets
 from app.services.worker_handlers.story_parse import (
@@ -43,6 +41,7 @@ from app.services.worker_handlers.story_parse import (
     _run_story_parse,
     _story_parse_chunks,
 )
+from sqlalchemy import update
 
 
 def _project(client, name="长篇测试"):
@@ -1196,7 +1195,7 @@ def test_eight_candidate_jobs_are_isolated(client, db_session, monkeypatch):
     _, plan = _chapter_and_pages(client, db_session, project["id"], repeat=2)
     batch = client.post(f"/api/v1/pages/{plan['pages'][0]['id']}/batches").json()
     job_ids = []
-    for index in range(8):
+    for _index in range(8):
         alias = "image.nano_banana_2"
         response = client.post(
             f"/api/v1/batches/{batch['id']}/candidates",

@@ -15,10 +15,8 @@ Everything here is offline SQLite: the queue is disabled (jobs stay WAITING,
 which is an ACTIVE status) and no paid provider call is ever made.
 """
 
-import pytest
-from sqlalchemy import func, insert, select
-
 import app.services.ordinal_allocator as ordinal_allocator
+import pytest
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import (
@@ -31,6 +29,7 @@ from app.models import (
     PageCandidate,
     RepairPlan,
 )
+from sqlalchemy import func, insert, select
 
 REPAIR_PAYLOAD_TEMPLATE = {
     "repair_type": "BUBBLE_REGION",
@@ -189,7 +188,7 @@ def test_t2_different_type_repair_still_escalates_while_active(
     parent = _ready_parent(db_session, ctx)
     inspection = _inspection(db_session, ctx, parent)
 
-    for index, repair_type in enumerate(["BUBBLE_REGION", "PANEL", "PAGE"]):
+    for _index, repair_type in enumerate(["BUBBLE_REGION", "PANEL", "PAGE"]):
         response = _post_repair(client, parent, inspection, repair_type)
         assert response.status_code == 202, response.text
         job = db_session.get(GenerationJob, response.json()["job_id"])

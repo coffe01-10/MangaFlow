@@ -6,14 +6,10 @@ from tempfile import TemporaryDirectory
 from threading import Event, Lock
 
 import pytest
-from sqlalchemy import create_engine, func, select, update
-from sqlalchemy.orm import sessionmaker
-
 from app import database, worker_tasks
 from app.config import Settings, get_settings
 from app.database import Base
 from app.domain.states import JobStatus, PageStatus, Resolution
-from app.services.worker_handlers import execution, provider
 from app.models import (
     AppSetting,
     Asset,
@@ -31,7 +27,10 @@ from app.models import (
     WorkflowVersion,
 )
 from app.services import job_service
+from app.services.worker_handlers import execution, provider
 from app.services.workflow_engine import default_graph
+from sqlalchemy import create_engine, func, select, update
+from sqlalchemy.orm import sessionmaker
 
 
 def test_local_worker_executes_eight_jobs_with_project_concurrency(monkeypatch):

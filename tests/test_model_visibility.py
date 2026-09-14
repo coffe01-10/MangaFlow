@@ -1,10 +1,9 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import update
-
 from app.config import get_settings
 from app.models import AIModel, ProviderConnection, ProviderProfile
 from app.services.model_router import resolve_model
+from sqlalchemy import update
 
 
 def _connection(db_session, *, protocol: str = "OPENAI") -> ProviderConnection:
@@ -347,7 +346,6 @@ def test_update_model_claims_version_atomically(client, db_session, monkeypatch)
     silently drop the concurrent edit (check-then-write lost update)."""
 
     import sqlalchemy
-
     from app.services import provider_catalog
 
     connection = _connection(db_session)

@@ -20,11 +20,6 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 
 import pytest
-from fastapi import HTTPException
-from PIL import Image
-from sqlalchemy import create_engine, event, select
-from sqlalchemy.orm import sessionmaker
-
 from app.config import get_settings
 from app.domain.states import Resolution
 from app.models import (
@@ -41,6 +36,10 @@ from app.models import (
     utcnow,
 )
 from app.services.provider_presets import ensure_provider_presets
+from fastapi import HTTPException
+from PIL import Image
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.orm import sessionmaker
 
 
 def _png_bytes(color: tuple[int, int, int]) -> bytes:
@@ -652,7 +651,7 @@ def test_concurrent_style_activation_leaves_single_active(style_sessions, monkey
                 ),
                 label,
             )
-            for label, style_id in zip(("first", "second"), style_ids)
+            for label, style_id in zip(("first", "second"), style_ids, strict=False)
         }
         results = {label: future.result() for label, future in futures.items()}
 

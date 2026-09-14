@@ -1,0 +1,15 @@
+# Root ruff config: governs paths without a nearer config (tests/, scripts/).
+# apps/api keeps its own [tool.ruff] in apps/api/pyproject.toml with the same
+# set. Before this file, tests/ fell back to ruff's DEFAULTS (no E501, no
+# I/UP/B/SIM) — the documented lint set was silently unenforced there.
+
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[lint.per-file-ignores]
+# Test fixtures embed long URLs, JSON literals and Chinese error strings;
+# reflowing them is churn without defect value. Everything else in the
+# configured set (unused imports, import hygiene, bugbear, simplify) applies.
+"tests/**" = ["E501"]

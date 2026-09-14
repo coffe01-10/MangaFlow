@@ -4,7 +4,6 @@ from threading import Lock
 from types import SimpleNamespace
 
 import pytest
-
 from app.config import Settings, get_settings
 from app.models import AppSetting, ProviderHealth
 from app.services.runtime_settings import (
