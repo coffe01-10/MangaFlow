@@ -301,6 +301,36 @@ def test_last_resort_merge_preserves_the_annotated_phase_error():
     assert unannotated["error"] == "RuntimeError", unannotated
 
 
+def test_last_resort_journal_guard_failure_does_not_escape_main(
+    monkeypatch, tmp_path: Path
+):
+    """Round-8 review: the #686/#692 journal guards raise RuntimeError (a
+    planted link/FIFO at the journal or pending names), but the
+    last-resort handler caught only OSError — on an already-failing run a
+    guard refusal escaped main() as a raw traceback instead of the
+    designed one-line "helper failed" exit. The handler must survive its
+    own guards."""
+
+    helper = _load_helper()
+    journal = _journal_path(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(HELPER), "stub"])
+
+    def _refuse(*args, **kwargs):
+        raise RuntimeError("process journal must be a regular file")
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("the real failure")
+
+    monkeypatch.setattr(helper, "_read_context", lambda: (TOKEN, journal))
+    monkeypatch.setattr(helper, "_run_stub", _fail)
+    monkeypatch.setattr(helper, "_write_journal", _refuse)
+    logged: list[str] = []
+    monkeypatch.setattr(helper, "_log", lambda message: logged.append(message))
+
+    assert helper.main() == 1, "last-resort must exit 1, not raise a traceback"
+    assert any("the real failure" in line for line in logged), logged
+
+
 def test_go_refusal_journals_failed_and_exits_75(tmp_path):
     """End-to-end: a handshake refused on a wrong GO token must leave the
     journal in a TERMINAL state — the stale-runtime sweep reclaims only
