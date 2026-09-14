@@ -72,14 +72,18 @@ def horse_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def _persist_timeout_marker(job_id: str) -> None:
+def _persist_timeout_marker(job_id: str, lease_owner: str | None) -> None:
     """Best-effort stamp the leased job row with the force-kill cause.
 
     Killing the horse skips every in-horse ``finally``/failure handler, so the
     parent monitor is the only witness of the timeout; without this marker the
     later lease recovery reports LEASE_EXPIRED and the timeout never surfaces.
-    Must never raise: a database hiccup here cannot be allowed to break the
-    kill path that follows.
+    Fenced on the lease owner this monitor handed to its horse: a busy-but-
+    slow horse still heartbeats (live lease, must stamp), a frozen one stops
+    (expired lease, still ours until the janitor reclaims — must stamp), but
+    once a SUCCESSOR executor holds the row the marker would misattribute the
+    timeout to its legitimately running job. Must never raise: a database
+    hiccup here cannot be allowed to break the kill path that follows.
     """
     # Function-local imports: this module must stay importable as a bare
     # rq worker class and the app graph is only needed on the kill path.
@@ -94,6 +98,7 @@ def _persist_timeout_marker(job_id: str) -> None:
                 .where(
                     GenerationJob.id == job_id,
                     GenerationJob.status.in_(LEASED_JOB_STATUSES),
+                    GenerationJob.lease_owner == lease_owner,
                 )
                 .values(
                     error_code=JOB_TIMEOUT_ERROR_CODE,
@@ -120,6 +125,7 @@ class WindowsSpawnWorker(Worker):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._horse_popen: subprocess.Popen | None = None
+        self._horse_lease_owner: str | None = None
 
     def _horse_spawn_command(self, job, queue) -> list[str]:
         return [sys.executable, "-c", _GENERIC_HORSE_CODE]
@@ -137,9 +143,17 @@ class WindowsSpawnWorker(Worker):
         return env
 
     def fork_work_horse(self, job, queue):
+        # The lease owner this horse's execute_job will claim with (see
+        # worker_tasks._worker_id): the parent generates it so the pre-kill
+        # timeout marker can fence on ownership instead of lease expiry —
+        # a busy-but-slow horse still heartbeats, so expiry would skip the
+        # marker's legitimate row, while a reclaimed+redispatched row must
+        # NOT receive this horse's timeout cause.
+        self._horse_lease_owner = f"rq-{self.name}-{self.execution.id}"
         os.environ["RQ_WORKER_ID"] = self.name
         os.environ["RQ_JOB_ID"] = job.id
         os.environ["RQ_EXECUTION_ID"] = self.execution.id
+        os.environ["MANGAFLOW_LEASE_OWNER"] = self._horse_lease_owner
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self._horse_popen = subprocess.Popen(
             self._horse_spawn_command(job, queue),
@@ -180,7 +194,7 @@ class WindowsSpawnWorker(Worker):
                     self.heartbeat(self.job_monitoring_interval + 60)
                     # Record why the horse is about to die while the parent can
                     # still write it; the kill itself must happen regardless.
-                    _persist_timeout_marker(job.id)
+                    _persist_timeout_marker(job.id, self._horse_lease_owner)
                     self.kill_horse()
                     self._horse_popen.wait()
                     ret_val = self._horse_popen.returncode

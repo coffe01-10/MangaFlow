@@ -473,6 +473,12 @@ def test_retry_of_failed_job_revives_the_swept_tail(client, db_session, monkeypa
         waiting_node_run,
         waiting_job,
     ) = _seed_failed_chain(db_session)
+    # The exhausted-budget shape: the tail burned its full attempt budget
+    # before the sweep cancelled it. Revival must reset the budget exactly
+    # like the main-job revival, or _claim_job's attempt gate keeps the
+    # revived row unclaimable forever (WAITING↔QUEUED churn, RUNNING zombie).
+    waiting_job.attempt_count = waiting_job.max_attempts
+    db_session.commit()
     reconcile_run(db_session, run.id)
     db_session.refresh(run)
     assert run.status == "FAILED"
@@ -506,6 +512,7 @@ def test_retry_of_failed_job_revives_the_swept_tail(client, db_session, monkeypa
     assert waiting_job.status == JobStatus.WAITING
     assert waiting_job.cancelled_at is None
     assert waiting_job.finished_at is None
+    assert waiting_job.attempt_count == 0, "revival must reset the retry budget"
 
 
 def test_retry_completion_rebars_the_revived_tail_instead_of_zombie_running(
@@ -670,6 +677,67 @@ def test_worker_claim_cancels_job_of_dead_run_before_provider_work(monkeypatch):
                 assert cancelled.cancelled_at is not None
                 assert db.get(WorkflowNodeRun, node_run_id).status == "CANCELLED"
                 assert db.get(WorkflowRun, run_id).status == "CANCELLED"
+        finally:
+            engine.dispose()
+
+
+def test_worker_cancel_branch_reconciles_the_owning_run(monkeypatch):
+    """WE3 (round-10): the JobCancelledError terminal branch used to return
+    without reconciling the owning run — every other terminal branch does —
+    so a cancelled node under a RUNNING run stalled until someone opened the
+    run detail page (the only automatic reconcile trigger), while the
+    one-active-run guard blocked the scope the whole time. The branch now
+    reconciles: the CANCELLED-node-under-run shape fails the run, the exact
+    healing reconcile's own comment documents."""
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'cancel-reconcile.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+        Base.metadata.create_all(engine)
+        try:
+            with testing_session() as db:
+                project, run = _seed_run(db)
+                node_run = WorkflowNodeRun(
+                    workflow_run_id=run.id,
+                    node_id="parse",
+                    node_type="agent.parse",
+                    status="WAITING",
+                )
+                db.add(node_run)
+                db.flush()
+                job = GenerationJob(
+                    project_id=project.id,
+                    target_type="CHAPTER",
+                    target_id="cancel-reconcile",
+                    job_type="SOURCE_PARSE",
+                    status=JobStatus.WAITING,
+                    request_parameters={"workflow_run_id": run.id},
+                )
+                db.add(job)
+                db.flush()
+                node_run.job_id = job.id
+                db.commit()
+                job_id, node_run_id, run_id = job.id, node_run.id, run.id
+
+            monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+            monkeypatch.setattr(database, "SessionLocal", testing_session)
+
+            def cancel_like_a_deleted_chapter(_db, _job):
+                raise worker_tasks.JobCancelledError("章节已在执行中删除")
+
+            monkeypatch.setattr(
+                worker_tasks, "_run_story_parse", cancel_like_a_deleted_chapter
+            )
+
+            worker_tasks.execute_job(job_id)
+
+            with testing_session() as db:
+                assert db.get(GenerationJob, job_id).status == JobStatus.CANCELLED
+                assert db.get(WorkflowNodeRun, node_run_id).status == "CANCELLED"
+                # Pre-fix: stayed RUNNING forever (scope locked, no trigger).
+                assert db.get(WorkflowRun, run_id).status == "FAILED"
         finally:
             engine.dispose()
 

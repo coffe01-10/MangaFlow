@@ -151,7 +151,11 @@ def _seed_attempt(db_session, job: GenerationJob) -> ModelCallAttempt:
 def test_persist_timeout_marker_stamps_only_active_leased_jobs(
     db_session, monkeypatch
 ):
-    """The monitor's pre-kill marker must land on the leased row and nowhere else."""
+    """The monitor's pre-kill marker must land on the OWNED leased row and
+    nowhere else. Ownership, not lease expiry, is the fence: a busy-but-slow
+    horse still heartbeats (live lease — must stamp), but once the janitor
+    reclaimed a frozen horse's row and a successor executor claimed it, the
+    marker must not misattribute the timeout to the successor's running job."""
 
     monkeypatch.setattr(database, "SessionLocal", _session_factory(db_session))
     leased = _seed_job(
@@ -168,12 +172,22 @@ def test_persist_timeout_marker_stamps_only_active_leased_jobs(
         error_code="PROVIDER_ERROR",
         error_message="earlier failure",
     )
+    successor = _seed_job(
+        db_session,
+        "reclaimed-and-reclaimed",
+        # The janitor reclaimed the frozen horse and a successor executor
+        # holds a live lease: same job statuses, different owner.
+        lease_owner="successor-worker",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=120),
+    )
     db_session.commit()
 
-    rq_windows._persist_timeout_marker(leased.id)
+    rq_windows._persist_timeout_marker(leased.id, "spawn-worker")
     # A missing or non-leased job id must be a silent no-op: a DB hiccup or a
     # raced row may never break the kill path this call precedes.
-    rq_windows._persist_timeout_marker("no-such-job")
+    rq_windows._persist_timeout_marker("no-such-job", "spawn-worker")
+    # A successor's row must never receive this horse's timeout cause.
+    rq_windows._persist_timeout_marker(successor.id, "spawn-worker")
 
     db_session.expire_all()
     stamped = db_session.get(GenerationJob, leased.id)
@@ -184,6 +198,10 @@ def test_persist_timeout_marker_stamps_only_active_leased_jobs(
     untouched = db_session.get(GenerationJob, terminal.id)
     assert untouched.error_code == "PROVIDER_ERROR"
     assert untouched.error_message == "earlier failure"
+
+    successors_row = db_session.get(GenerationJob, successor.id)
+    assert successors_row.error_code is None
+    assert successors_row.error_message is None
 
 
 def test_recovery_terminalizes_timed_out_jobs_preserving_timeout_cause(

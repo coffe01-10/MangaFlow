@@ -1922,6 +1922,12 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
                     stranded_job.error_code = None
                     stranded_job.error_message = None
                     stranded_job.finished_at = None
+                    # 与上面主复活相同的重试预算重置：尾任务在取消前若已耗尽
+                    # attempt 预算（attempt_count == max_attempts），复活后永远
+                    # 过不了 _claim_job 的认领门——WAITING↔QUEUED 空转（误报
+                    # CONCURRENCY_LIMIT），节点卡 RUNNING、run 永久僵尸。
+                    stranded_job.attempt_count = 0
+                    stranded_job.scheduled_at = utcnow() + timedelta(seconds=1)
                 revival_snapshot["revived_nodes"].append(stranded_entry)
         if node_run and node_run.status == "FAILED":
             revival_snapshot["node"] = {
