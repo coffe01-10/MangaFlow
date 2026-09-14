@@ -24,11 +24,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from PIL import Image
-from sqlalchemy import create_engine
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import sessionmaker
-
 from app.config import Settings
 from app.database import Base
 from app.model_adapters.antigravity_cli import AntigravityArtifactRunner
@@ -49,6 +44,10 @@ from app.services.cli_executor import (
     CLIProcessOutcome,
 )
 from app.services.cli_process_windows import WindowsJobCLIProcessRunner
+from PIL import Image
+from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture

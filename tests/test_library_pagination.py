@@ -1,10 +1,9 @@
 from time import perf_counter
 from uuid import uuid4
 
-from sqlalchemy import event, insert
-
 from app.domain.states import Resolution
 from app.models import AssetCandidate, Chapter, GenerationBatch, MangaPage, PageCandidate, Panel
+from sqlalchemy import event, insert
 
 
 def test_library_uses_cursor_pagination_and_bulk_candidate_queries(client, db_session):

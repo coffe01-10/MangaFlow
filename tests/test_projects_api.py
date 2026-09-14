@@ -2,11 +2,10 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PIL import Image
-
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import Asset, GenerationJob
+from PIL import Image
 
 
 def test_create_and_update_project(client):
@@ -276,8 +275,8 @@ def test_archiving_project_cancels_its_active_workflow_runs(client, db_session):
         WorkflowRun,
         WorkflowVersion,
     )
-    from app.workflow_schemas import WorkflowGraph
     from app.services.workflow_engine import default_graph
+    from app.workflow_schemas import WorkflowGraph
 
     project = client.post("/api/v1/projects", json={"name": "归档取消运行"}).json()
     graph = WorkflowGraph.model_validate(default_graph())
@@ -366,8 +365,8 @@ def test_archiving_project_cancels_jobless_paused_runs(client, db_session):
         WorkflowRun,
         WorkflowVersion,
     )
-    from app.workflow_schemas import WorkflowGraph
     from app.services.workflow_engine import default_graph
+    from app.workflow_schemas import WorkflowGraph
 
     project = client.post("/api/v1/projects", json={"name": "归档暂停运行"}).json()
     graph = WorkflowGraph.model_validate(default_graph())

@@ -1,17 +1,12 @@
-from copy import deepcopy
-from concurrent.futures import ThreadPoolExecutor
-from io import BytesIO
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Barrier
 
 import pytest
-from PIL import Image
-from sqlalchemy import create_engine, select, update
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import sessionmaker
-
 from app.config import get_settings
 from app.database import Base
 from app.domain.states import JobStatus
@@ -34,8 +29,8 @@ from app.models import (
     WorkflowVersion,
     utcnow,
 )
-from app.services.ai_schemas import InspectionItem, PageInspectionOutput
 from app.services import workflow_engine
+from app.services.ai_schemas import InspectionItem, PageInspectionOutput
 from app.services.workflow_engine import (
     PublishRevisionConflictError,
     chapter_export_graph,
@@ -47,6 +42,10 @@ from app.services.workflow_engine import (
     validate_graph,
 )
 from app.worker_tasks import _run_inspection, _run_page_generate
+from PIL import Image
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
 
 
 def _project(client):
@@ -805,9 +804,8 @@ def test_publish_does_not_hide_unrelated_database_errors(publish_sessions, monke
         raise OperationalError("SELECT", {}, error)
 
     monkeypatch.setattr(workflow_engine, "_next_revision", fail)
-    with publish_sessions() as db:
-        with pytest.raises(OperationalError, match="no such table"):
-            publish_workflow(db, db.get(WorkflowDefinition, workflow_id))
+    with publish_sessions() as db, pytest.raises(OperationalError, match="no such table"):
+        publish_workflow(db, db.get(WorkflowDefinition, workflow_id))
 
 
 def test_independent_sessions_publish_successive_revisions():

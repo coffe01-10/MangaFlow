@@ -23,15 +23,11 @@ repairs live there:
 The queue stays disabled throughout — no provider call can run.
 """
 
-from datetime import UTC, datetime, timedelta
 import logging
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import select, update
-from sqlalchemy.orm import sessionmaker
-
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import (
@@ -45,6 +41,9 @@ from app.models import (
 )
 from app.services import job_service
 from app.services.workflow_engine.catalog import graph_checksum
+from fastapi import HTTPException
+from sqlalchemy import select, update
+from sqlalchemy.orm import sessionmaker
 
 RUN_FINISHED = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 NODE_FINISHED = datetime(2026, 1, 1, 12, 1, 0, tzinfo=UTC)

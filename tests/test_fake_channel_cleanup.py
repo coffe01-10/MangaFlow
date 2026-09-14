@@ -18,8 +18,6 @@ SIDECAR_ROOT = Path(__file__).resolve().parents[1] / "apps" / "desktop" / "sidec
 if str(SIDECAR_ROOT) not in sys.path:
     sys.path.insert(0, str(SIDECAR_ROOT))
 
-from sqlalchemy.orm import sessionmaker  # noqa: E402
-
 import fake_channel  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.models import (  # noqa: E402
@@ -28,6 +26,7 @@ from app.models import (  # noqa: E402
     ProviderKey,
     ProviderProfile,
 )
+from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 
 def _channel_factory(db_session):

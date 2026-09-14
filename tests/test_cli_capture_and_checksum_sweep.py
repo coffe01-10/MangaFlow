@@ -24,13 +24,8 @@ import os
 from io import BytesIO
 from pathlib import Path
 
-import pytest
-from PIL import Image
-from pydantic import ValidationError
-from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
-
 import app.services.cli_process_windows as cli_process_windows
+import pytest
 from app.config import Settings
 from app.model_adapters.base import ImageRequest, ProviderAdapterError
 from app.model_adapters.grok_build_cli import GrokBuildCLIImageAdapter, GrokBuildCLIRuntime
@@ -44,6 +39,10 @@ from app.models import (
     ProviderProfile,
 )
 from app.services.cli_executor import CLIExecutionController, _sanitize_diagnostic
+from PIL import Image
+from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 # --------------------------------------------------------------------- #241-1
 # _OutputDrain: full retention past the memory cap, flag past the spill cap.

@@ -1,6 +1,5 @@
 import pytest
-from fastapi import HTTPException
-
+from app.domain.states import JobStatus, Resolution
 from app.models import (
     Beat,
     Chapter,
@@ -15,7 +14,7 @@ from app.models import (
     Scene,
     ScriptRevision,
 )
-from app.domain.states import JobStatus, Resolution
+from fastapi import HTTPException
 
 
 def _editable_story(db_session):
@@ -320,11 +319,10 @@ def test_panel_patch_claim_is_atomic_across_sessions(tmp_path):
     the conditional claim UPDATE makes the loser get 409 instead of silently
     overwriting the winner's edit (read-then-compare left both passing)."""
 
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
     from app.database import Base
     from app.models import Chapter, MangaPage, Project
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
 
     engine = create_engine(
         f"sqlite:///{(tmp_path / 'panel-cas.db').as_posix()}",

@@ -10,11 +10,10 @@ re-adopts stale markers back into the queue.
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import update as sa_update
-
 from app.config import get_settings
 from app.models import GenerationJob, Project
 from app.services import job_service
+from sqlalchemy import update as sa_update
 
 
 def _queued_rq_pending(db, *, age_seconds: int) -> GenerationJob:

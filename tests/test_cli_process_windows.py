@@ -6,11 +6,10 @@ import logging
 import os
 import re
 
-import pytest
-from sqlalchemy.exc import OperationalError
-
 import app.services.cli_process_windows as cli_process_windows
+import pytest
 from app.config import Settings
+from sqlalchemy.exc import OperationalError
 
 
 def test_windows_runner_refuses_non_windows_without_spawning():
@@ -112,8 +111,11 @@ def _probe_that_never_reaches_the_database():
     the fix makes the probe log and report "not cancelled" instead.
     """
 
-    from app.model_adapters.codex_cli import CodexCLIImageAdapter, CodexCLIRuntime
-    from app.model_adapters.codex_cli import _InvocationContext
+    from app.model_adapters.codex_cli import (
+        CodexCLIImageAdapter,
+        CodexCLIRuntime,
+        _InvocationContext,
+    )
 
     def broken_session_factory():
         raise OperationalError("SELECT 1", {}, RuntimeError("stale pooled connection"))

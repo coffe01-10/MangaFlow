@@ -5,11 +5,10 @@ import zlib
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image
-from sqlalchemy import select
-
 from app.config import get_settings
 from app.models import Asset
+from PIL import Image
+from sqlalchemy import select
 
 
 def _png_bytes(size: tuple[int, int] = (8, 8)) -> bytes:
@@ -78,7 +77,7 @@ def test_upload_rejects_chunked_oversized_body(client, monkeypatch, tmp_path):
         f"--{boundary}\r\n"
         'Content-Disposition: form-data; name="file"; filename="big.bin"\r\n'
         "Content-Type: image/png\r\n\r\n"
-    ).encode("utf-8") + (b"x" * 4096) + f"\r\n--{boundary}--\r\n".encode("ascii")
+    ).encode() + (b"x" * 4096) + f"\r\n--{boundary}--\r\n".encode("ascii")
 
     def chunks():
         yield payload

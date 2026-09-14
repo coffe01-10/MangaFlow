@@ -8,13 +8,11 @@ re-raised exception chain for logs only.
 """
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app import worker_tasks
 from app.database import Base
 from app.models import GenerationJob, Project
-
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 SENTINEL = "SECRET postgresql://user:pass@db.internal:5432/prod"
 

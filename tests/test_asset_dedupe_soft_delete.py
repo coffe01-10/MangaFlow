@@ -8,6 +8,9 @@ The dedupe helpers now only reuse live rows and, when the insert collides
 with a tombstone, revive it instead of failing forever.
 """
 
+import hashlib
+import struct
+import zlib
 from datetime import UTC, datetime
 
 from app.models import (
@@ -22,10 +25,6 @@ from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
 from app.services.candidate_lineage import store_region_mask_asset
 from app.services.worker_handlers.asset_generate import _save_asset_candidate
 from app.services.worker_handlers.page_generate import _save_generated_asset
-
-import hashlib
-import struct
-import zlib
 
 
 def _png_bytes(color: bytes) -> bytes:

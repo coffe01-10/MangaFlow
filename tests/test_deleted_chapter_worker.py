@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-
 from app.domain.states import JobStatus
 from app.model_adapters.base import ProviderAdapterError
 from app.models import Chapter, GenerationJob, PageCandidate

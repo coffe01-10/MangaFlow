@@ -13,7 +13,6 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-
 from app.model_adapters.compatible import _provider_error
 from app.services.credential_crypto import mark_key_failure
 from app.services.provider_errors import (

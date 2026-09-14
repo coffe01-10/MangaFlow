@@ -19,7 +19,6 @@ diagnostic-retaining UNKNOWN_RESULT; known codes keep their semantics.
 import json
 
 import pytest
-
 from app.model_adapters.antigravity_cli import _map_failure as agy_map
 from app.model_adapters.base import ProviderAdapterError
 from app.model_adapters.grok_build_cli import _map_failure as grok_map

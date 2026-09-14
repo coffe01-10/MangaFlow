@@ -10,12 +10,10 @@ onto fresh state (bounded retries, log-and-continue on final loss) — the
 billed ScriptRevision always lands.
 """
 
-from sqlalchemy import select, update as sa_update
-
 from app.domain.states import JobStatus
 from app.models import (
-    Character,
     Chapter,
+    Character,
     GenerationJob,
     ScriptRevision,
     SourceSegment,
@@ -27,6 +25,8 @@ from app.services.ai_schemas import (
     StoryParseOutput,
 )
 from app.services.worker_handlers.story_parse import _run_story_parse
+from sqlalchemy import select
+from sqlalchemy import update as sa_update
 
 
 def test_story_parse_merge_survives_concurrent_character_patch(

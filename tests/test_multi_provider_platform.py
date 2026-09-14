@@ -4,9 +4,6 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
-from fastapi import HTTPException
-from pydantic import BaseModel
-
 from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
 from app.model_adapters.base import ProviderAdapterError, StructuredRequest
@@ -40,6 +37,7 @@ from app.services.credential_crypto import (
     select_provider_key,
 )
 from app.services.job_service import cancel_job
+from app.services.model_registry import ModelCapability
 from app.services.model_router import (
     _catalog_capability,
     get_catalog_model,
@@ -47,13 +45,14 @@ from app.services.model_router import (
     model_supports_resolution,
     resolve_model,
 )
-from app.services.model_registry import ModelCapability
 from app.services.provider_catalog import _upsert_discovered_models
 from app.services.provider_presets import (
     ensure_provider_presets,
     proxy_url_for_connection,
 )
 from app.services.worker_handlers import provider as worker_provider
+from fastapi import HTTPException
+from pydantic import BaseModel
 
 
 class SmokeResult(BaseModel):
@@ -1217,12 +1216,12 @@ def test_google_adapters_wrap_response_postprocessing_failures(monkeypatch):
 
     from types import SimpleNamespace
 
+    from app.model_adapters.base import ImageRequest as GoogleImageRequest
     from app.model_adapters.google import (
         GoogleImageAdapter,
         GoogleRuntime,
         GoogleTextAdapter,
     )
-    from app.model_adapters.base import ImageRequest as GoogleImageRequest
 
     class _BrokenText:
         @property

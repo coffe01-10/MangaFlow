@@ -20,10 +20,8 @@ tests/test_local_wall_clock.py (recovery sweep driving).
 
 from datetime import UTC, datetime, timedelta
 
-import pytest
-from sqlalchemy import update
-
 import app.services.worker_handlers.model_call_audit as audit
+import pytest
 from app.config import Settings
 from app.models import (
     AppSetting,
@@ -37,6 +35,7 @@ from app.services.worker_handlers.model_call_audit import (
     begin_model_call_attempt,
     finalize_model_call_attempt,
 )
+from sqlalchemy import update
 
 LOCAL_TIMEOUT_TERMINAL_MESSAGE = "本地执行超过墙钟上限，且已达到最大尝试次数"
 LOCAL_TIMEOUT_WAITING_MESSAGE = "本地执行超过墙钟上限，等待租约过期回收"
@@ -113,9 +112,9 @@ def test_sweep_terminal_error_codes_are_the_exact_discriminator_set():
         SWEEP_TERMINAL_ERROR_CODES,
     )
 
-    assert SWEEP_TERMINAL_ERROR_CODES == frozenset(
+    assert frozenset(
         {"JOB_TIMEOUT", "LOCAL_TIMEOUT", "LEASE_EXPIRED", "WORKER_LOST"}
-    )
+    ) == SWEEP_TERMINAL_ERROR_CODES
 
 
 def test_late_succeeded_finalize_upgrades_sweep_closed_attempt(db_session):

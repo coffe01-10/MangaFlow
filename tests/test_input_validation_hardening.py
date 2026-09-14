@@ -9,16 +9,13 @@ cheaper operation. Sub-items 2/3/5/6/7/8/9/10 of the issue are pinned here.
 import json
 
 import pytest
-from pydantic import ValidationError
-
 from app.api.helpers import reject_required_nulls, sanitize_surrogates
 from app.api.routes.providers import _connection_test_operation
 from app.config import get_settings
 from app.models import AppSetting, Dialogue, Project, SceneAsset
 from app.provider_schemas import ConnectionTestRequest, ProviderUpdate
-from app.request_limits import JsonDepthExceeded, _JsonDepthTracker
+from app.request_limits import JsonDepthExceeded, _JsonDepthTracker, sanitize_json_surrogate_escapes
 from app.request_limits import max_json_body_bytes as json_limit_for_path
-from app.request_limits import sanitize_json_surrogate_escapes
 from app.schemas import (
     CharacterModelPackageUpdate,
     DialogueUpdate,
@@ -28,6 +25,7 @@ from app.schemas import (
 )
 from app.settings_schemas import RuntimeSettingsUpdate
 from app.workflow_schemas import WorkflowRestoreRequest, WorkflowUpdate
+from pydantic import ValidationError
 
 INT32_MAX = 2_147_483_647
 
@@ -341,9 +339,8 @@ def test_scene_asset_patch_surrogate_in_dict_field_is_sanitized(client, db_sessi
 
 
 def test_dialogue_patch_surrogate_is_stored_sanitized(client, db_session):
-    from sqlalchemy import func, select
-
     from app.models import Beat, Chapter, MangaPage, Scene, ScriptRevision, SourceSegment
+    from sqlalchemy import func, select
 
     project = _project(client, "对白代理")
     imported = client.post(

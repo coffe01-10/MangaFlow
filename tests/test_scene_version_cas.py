@@ -7,9 +7,9 @@ saw 200. The tests use the stale-identity-map technique (expire_on_commit=False
 keeps the pre-bump copy) to stand in for a request that loaded the scene before
 the concurrent writer committed."""
 
-from sqlalchemy import select, update as sa_update
-
 from app.models import Chapter, Character, Project, Scene
+from sqlalchemy import select
+from sqlalchemy import update as sa_update
 
 
 def _seed_scene(db_session, name: str) -> Scene:

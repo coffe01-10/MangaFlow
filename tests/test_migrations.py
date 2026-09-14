@@ -1520,7 +1520,7 @@ def test_storyboard_layout_migration_preserves_legacy_storyboard_rows(
                 for row in connection.execute(text(f"SELECT * FROM {table}"))
             ]
             assert len(after) == len(before[table])
-            for row_before, row_after in zip(before[table], after):
+            for row_before, row_after in zip(before[table], after, strict=False):
                 for column, value in row_before.items():
                     assert row_after[column] == value, f"{table}.{column} 被迁移改写"
         assert connection.execute(

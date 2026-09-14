@@ -11,15 +11,14 @@ instead of re-resolving the project.
 
 import io
 
-from PIL import Image
-from sqlalchemy import select
-
 from app.models import (
     CharacterModelPackage,
     CharacterModelPackageVersionReference,
     Project,
     utcnow,
 )
+from PIL import Image
+from sqlalchemy import select
 
 
 def _png_bytes(counter: int) -> bytes:

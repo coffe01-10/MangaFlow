@@ -9,13 +9,11 @@ import io
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from app.config import get_settings
 from fastapi import HTTPException
 from PIL import Image
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
-
-from app.config import get_settings
-
 
 _png_counter = 0
 
@@ -443,12 +441,12 @@ def test_package_archive_restore_package_roundtrip(client):
     assert archived.status_code == 200, archived.text
     assert archived.json()["status"] == "ARCHIVED"
     active_only = client.get(
-        "/api/v1/projects/{0}/character-packages".format(project["id"]),
+        "/api/v1/projects/{}/character-packages".format(project["id"]),
         params={"status": "ACTIVE"},
     ).json()
     assert active_only == []
     archived_only = client.get(
-        "/api/v1/projects/{0}/character-packages".format(project["id"]),
+        "/api/v1/projects/{}/character-packages".format(project["id"]),
         params={"status": "ARCHIVED"},
     ).json()
     assert [item["character_id"] for item in archived_only] == [character["id"]]
@@ -1670,6 +1668,7 @@ def test_package_default_resolution_fills_omitted_outfit_asset(
 
 def _workflow_generate_candidate(db_session, monkeypatch, page_id: str, project_id: str):
     from app.config import get_settings
+    from app.models import WorkflowDefinition, WorkflowNodeRun
     from app.services.provider_presets import ensure_provider_presets
     from app.services.workflow_engine import (
         approve_node,
@@ -1677,7 +1676,6 @@ def _workflow_generate_candidate(db_session, monkeypatch, page_id: str, project_
         default_graph,
         publish_workflow,
     )
-    from app.models import WorkflowDefinition, WorkflowNodeRun
 
     ensure_provider_presets(db_session, get_settings(), auto_commit=True)
     workflow = WorkflowDefinition(
@@ -2064,9 +2062,8 @@ def test_package_detach_retries_sqlite_lock(client, db_session, monkeypatch):
     """DRAFT cleanup must roll back and retry on SQLITE_BUSY instead of 500."""
     import sqlite3
 
-    from sqlalchemy.exc import OperationalError
-
     from app.services import character_packages as packages
+    from sqlalchemy.exc import OperationalError
 
     project = _project(client)
     asset = _upload_asset(client, project["id"])
@@ -2091,9 +2088,8 @@ def test_package_detach_lock_exhaustion_is_controlled_409(
 ):
     import sqlite3
 
-    from sqlalchemy.exc import OperationalError
-
     from app.services import character_packages as packages
+    from sqlalchemy.exc import OperationalError
 
     project = _project(client)
     asset = _upload_asset(client, project["id"])
@@ -2115,9 +2111,8 @@ def test_legacy_bind_retries_sqlite_lock(client, monkeypatch):
     """Legacy CharacterReference bind shares the lock-retry boundary."""
     import sqlite3
 
-    from sqlalchemy.exc import OperationalError
-
     from app.api.routes import characters as characters_route
+    from sqlalchemy.exc import OperationalError
 
     project = _project(client)
     character = _character(client, project["id"])

@@ -10,12 +10,10 @@ sibling was still analyzing.
 
 from datetime import timedelta
 
-from sqlalchemy import select, update
-
 import pytest
-
 from app.config import get_settings
 from app.domain.states import JobStatus
+from app.model_adapters.base import ProviderAdapterError
 from app.models import (
     Asset,
     GenerationJob,
@@ -25,8 +23,8 @@ from app.models import (
     utcnow,
 )
 from app.services import job_service
-from app.model_adapters.base import ProviderAdapterError
 from app.worker_tasks import _mark_worker_failure
+from sqlalchemy import select, update
 
 
 def _style_reference(db, project_id: str, digest: str) -> Asset:

@@ -43,11 +43,10 @@ def test_api_rejects_non_trusted_host_headers():
     DNS-rebinded attacker page cannot reach it same-origin (CORS is irrelevant
     for same-origin requests; the Host allowlist is the actual boundary)."""
 
+    from app.main import app as production_app
     from fastapi import FastAPI
     from fastapi.middleware.trustedhost import TrustedHostMiddleware
     from fastapi.testclient import TestClient
-
-    from app.main import app as production_app
 
     # Production app: configured allowlist (loopback) or "*" in the offline
     # test environment; assert the middleware is actually installed.

@@ -10,9 +10,6 @@ production race exhibits.
 The queue stays disabled throughout — no provider call can run.
 """
 
-from sqlalchemy import update
-from sqlalchemy.orm import sessionmaker
-
 from app.config import get_settings
 from app.models import (
     Project,
@@ -25,6 +22,8 @@ from app.models import (
 from app.services.workflow_engine import reconciliation as workflow_reconciliation
 from app.services.workflow_engine.catalog import _node, graph_checksum
 from app.services.workflow_engine.reconciliation import reconcile_run
+from sqlalchemy import update
+from sqlalchemy.orm import sessionmaker
 
 
 def _session_factory(db_session):

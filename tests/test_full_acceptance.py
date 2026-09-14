@@ -3,8 +3,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
-from PIL import Image
-
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.model_adapters.base import ModelResponse
@@ -32,6 +30,7 @@ from app.worker_tasks import (
     _run_story_parse,
     _run_style_analyze,
 )
+from PIL import Image
 
 
 def _png_bytes(color: tuple[int, int, int]) -> bytes:

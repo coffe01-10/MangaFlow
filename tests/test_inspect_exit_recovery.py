@@ -9,8 +9,6 @@ page stuck FINAL_CHECKING forever.
 
 from datetime import timedelta
 
-from sqlalchemy import select
-
 from app.config import Settings
 from app.domain.states import JobStatus, PageStatus, Resolution
 from app.models import (
@@ -26,6 +24,7 @@ from app.models import (
 )
 from app.services import job_service
 from app.worker_tasks import _mark_worker_failure
+from sqlalchemy import select
 
 
 def _set_queue_mode(db_session, mode: str) -> None:

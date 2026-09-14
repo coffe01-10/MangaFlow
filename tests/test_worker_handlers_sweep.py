@@ -13,9 +13,6 @@ from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
-from sqlalchemy import func, select, update
-
 from app.config import get_settings
 from app.domain.states import CharacterPresence, JobStatus, PageStatus, Resolution
 from app.model_adapters.base import ModelResponse, ProviderAdapterError
@@ -70,6 +67,8 @@ from app.services.worker_handlers.story_parse import (
 )
 from app.services.worker_handlers.style_analyze import _run_style_analyze
 from app.worker_tasks import _mark_worker_failure
+from pydantic import ValidationError
+from sqlalchemy import func, select, update
 
 INSPECT_CATEGORIES = [
     "SPEAKER",

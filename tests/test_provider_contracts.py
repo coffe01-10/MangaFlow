@@ -55,7 +55,7 @@ def test_environment_credential_readiness_stays_in_credential_adapter():
 
 
 def test_provider_error_codes_contract_is_stable():
-    assert PROVIDER_ERROR_CODES == frozenset(
+    assert frozenset(
         {
             "AUTHENTICATION",
             "CONTENT_POLICY",
@@ -69,7 +69,7 @@ def test_provider_error_codes_contract_is_stable():
             "UNSUPPORTED_CAPABILITY",
             "UPSTREAM",
         }
-    )
+    ) == PROVIDER_ERROR_CODES
 
 
 def test_vertex_failure_type_is_shared_provider_failure():

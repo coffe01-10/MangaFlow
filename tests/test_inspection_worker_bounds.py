@@ -15,8 +15,6 @@ Four behaviors pinned:
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
-
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.model_adapters.base import ProviderAdapterError
@@ -35,6 +33,7 @@ from app.models import (
 from app.services.ai_schemas import InspectionItem, PageInspectionOutput
 from app.services.provider_presets import ensure_provider_presets
 from app.services.worker_handlers.inspection import _run_inspection
+from sqlalchemy import select
 
 CATEGORIES = ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"]
 

@@ -51,9 +51,8 @@ from pathlib import Path
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine
-
 from app.database import Base
+from sqlalchemy import create_engine
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = REPO_ROOT / "apps" / "api" / "alembic.ini"

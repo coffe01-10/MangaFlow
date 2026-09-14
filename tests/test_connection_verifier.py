@@ -149,10 +149,9 @@ def test_model_smoke_failure_records_billed_usage_on_attempt(
     """A post-POST smoke failure carries the usage the provider already billed
     (issue #207 semantics): the FAILED attempt row must record the spend
     instead of silently dropping it, mirroring the worker provider path."""
-    from sqlalchemy import select
-
     from app.model_adapters.base import ProviderAdapterError
     from app.models import ModelCallAttempt
+    from sqlalchemy import select
 
     _configure_key_storage(monkeypatch)
     provider = client.post(

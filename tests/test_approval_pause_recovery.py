@@ -15,8 +15,6 @@ reconcile sets it RUNNING immediately before enqueueing); scheduling NEW work
 workflow node linkage keep the legacy behavior untouched.
 """
 
-from sqlalchemy import select
-
 from app.config import Settings
 from app.domain.states import JobStatus
 from app.models import (
@@ -30,6 +28,7 @@ from app.models import (
 )
 from app.services import job_service
 from app.services.workflow_engine import default_graph
+from sqlalchemy import select
 
 
 def _set_queue_mode(db_session, mode: str) -> None:
@@ -327,7 +326,8 @@ def test_recovery_self_heals_crash_stranded_child_via_reconcile(
     trigger the run stalls forever (no other component reconciles it).
     """
 
-    from app.models import JobDependency, WorkflowNodeRun as WNR
+    from app.models import JobDependency
+    from app.models import WorkflowNodeRun as WNR
 
     _set_queue_mode(db_session, "LOCAL")
     project = Project(name="崩溃窗口自愈")

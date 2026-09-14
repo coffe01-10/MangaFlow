@@ -14,12 +14,11 @@ still bumped the optimistic-lock version, burning a token on a no-op.
 """
 
 import pytest
-from fastapi.testclient import TestClient
-
 from app.api.helpers import reject_required_nulls
 from app.database import get_db
 from app.main import app
 from app.models import AIModel, Project, ProviderConnection, ProviderProfile
+from fastapi.testclient import TestClient
 
 
 def test_guard_flags_only_non_nullable_columns():

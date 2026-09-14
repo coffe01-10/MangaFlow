@@ -12,7 +12,6 @@ a straggler ever resurfaces.
 
 from datetime import UTC, datetime, timedelta
 
-
 from app.config import get_settings
 from app.models import ModelCallAttempt
 from app.services.job_service import sweep_lost_model_call_attempts

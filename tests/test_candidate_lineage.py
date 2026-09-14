@@ -8,8 +8,6 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
-
 from app.models import (
     Asset,
     CandidateLineage,
@@ -24,6 +22,7 @@ from app.models import (
     PageCandidate,
     Panel,
 )
+from sqlalchemy import select
 
 
 def _uid() -> str:

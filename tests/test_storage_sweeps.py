@@ -24,9 +24,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.config import Settings
 from app.database import Base
 from app.models import (
@@ -46,6 +43,8 @@ from app.services.cli_executor import (
     sweep_retained_cli_runs,
 )
 from app.services.media import sweep_orphan_generated_files
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 _OLD_DAYS = 8
 _WINDOW = timedelta(days=7)

@@ -7,8 +7,6 @@ Real providers are never called.
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
-
 from app.models import (
     Chapter,
     Character,
@@ -23,6 +21,7 @@ from app.models import (
     Panel,
     Scene,
 )
+from sqlalchemy import select
 
 
 def _uid() -> str:
@@ -786,9 +785,8 @@ def test_undo_claim_blocks_second_undo_running_on_stale_reads(client, db_session
     that happened before the winning undo committed, while its writes hit the
     current database exactly like the losing racer would.
     """
-    from sqlalchemy.orm import sessionmaker
-
     from app.services.director_commands import undo_command
+    from sqlalchemy.orm import sessionmaker
 
     ctx = _setup(client, db_session)
     original = ctx["panel"].shot_type
@@ -1074,9 +1072,8 @@ def test_discard_group_keeps_concurrently_executed_row_undoable(client, db_sessi
     that db_session keeps (expire_on_commit=False) stands in for discard's
     read that happens before the concurrent accept commits.
     """
-    from sqlalchemy.orm import sessionmaker
-
     from app.services.director_commands import accept_command
+    from sqlalchemy.orm import sessionmaker
 
     ctx = _setup(client, db_session)
     shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())

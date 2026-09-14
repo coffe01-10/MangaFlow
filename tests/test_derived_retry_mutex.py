@@ -8,8 +8,6 @@ The revival must consult the lineage-scoped derived guard instead.
 """
 
 import pytest
-from fastapi import HTTPException
-
 from app.domain.states import JobStatus, Resolution
 from app.models import (
     CandidateLineage,
@@ -22,6 +20,7 @@ from app.models import (
     utcnow,
 )
 from app.services import job_service
+from fastapi import HTTPException
 
 
 def _seed_parent_with_children(db):
@@ -358,11 +357,10 @@ def test_post_commit_arbitration_compensates_same_intent_younger(
     """Same-intent younger revival is compensated (back to FAILED) even when
     the row was advanced to QUEUED by recovery before verification — the
     QUEUED early-return used to skip arbitration entirely."""
-    from fastapi import HTTPException
-
     from datetime import timedelta
 
     from app.services.job_service import _verify_retry_revival_post_commit
+    from fastapi import HTTPException
 
     project, parent, child_a, child_b = _seed_parent_with_children(db_session)
     older = job_service.create_job(

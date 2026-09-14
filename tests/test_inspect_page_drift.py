@@ -13,8 +13,6 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy.orm import sessionmaker
-
 from app.domain.states import JobStatus, PageStatus
 from app.models import GenerationJob, MangaPage, PageCandidate, utcnow
 from app.services import job_service
@@ -23,6 +21,7 @@ from app.services.worker_handlers import provider
 from app.services.worker_handlers.execution import StaleStoryboardVersionError
 from app.services.worker_handlers.inspection import _run_inspection
 from app.worker_tasks import _mark_worker_failure
+from sqlalchemy.orm import sessionmaker
 from test_inspect_and_parse_guards import _adopt_candidate, _ready_candidate
 
 # #164: PRESENCE is the sixth inspection category; the handler always requests
@@ -255,9 +254,8 @@ def test_inspect_success_does_not_clear_needs_recheck_without_version_bump(
     kept = db_session.get(PageCandidate, candidate.id)
     assert kept.status == "INSPECTED"
     # The paid inspection rows survive as the audit trail of the stale pass.
-    from sqlalchemy import func, select
-
     from app.models import InspectionResult
+    from sqlalchemy import func, select
 
     inspection_count = db_session.scalar(
         select(func.count(InspectionResult.id)).where(

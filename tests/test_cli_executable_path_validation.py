@@ -10,7 +10,6 @@ configured file does not exist on the actual host.
 """
 
 import pytest
-
 from app.services.provider_catalog import is_absolute_executable_path
 
 

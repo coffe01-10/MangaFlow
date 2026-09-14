@@ -7,12 +7,8 @@ seams keep taking effect. Attribute existence or object identity alone is not
 treated as proof of seam preservation.
 """
 
-import pytest
-from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
-
 import app.services.workflow_engine as workflow_engine
-from app.services.workflow_engine.scope import _graph_for_run
+import pytest
 from app.models import (
     Asset,
     Chapter,
@@ -34,6 +30,9 @@ from app.services.workflow_engine import (
     default_graph,
     publish_workflow,
 )
+from app.services.workflow_engine.scope import _graph_for_run
+from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 APPROVED_FACADE_ALL = [
     "CONDITION_OPERATORS",
@@ -710,6 +709,7 @@ def test_approve_claim_loses_to_a_concurrent_claim_commit(
     """
 
     from concurrent.futures import ThreadPoolExecutor  # noqa: F401  (pattern parity)
+
     from sqlalchemy import update as sa_update
 
     monkeypatch.setattr(

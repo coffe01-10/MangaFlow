@@ -21,3 +21,25 @@ def test_dotenv_read_pins_utf8_encoding():
     assert re.search(r'Get-Content -LiteralPath "\.env" -Encoding UTF8', source), (
         "the .env read must pin -Encoding UTF8 (PS 5.1 defaults to ANSI)"
     )
+
+
+def test_migration_failure_stops_the_launch_before_services_start():
+    source = SCRIPT.read_text(encoding="utf-8")
+    migration = source.index("upgrade head")
+    gate = source.index("$LASTEXITCODE -ne 0", migration)
+    throw = source.index("throw", gate)
+    npm_dev = source.index("npm run dev")
+    assert throw < npm_dev, (
+        "a failed migration must throw before any service starts — otherwise "
+        "web+API boot against an unmigrated schema on every dev machine"
+    )
+
+
+def test_queue_enabled_promotion_precedes_dev_start():
+    source = SCRIPT.read_text(encoding="utf-8")
+    promotion = source.index('$env:QUEUE_ENABLED = "true"')
+    npm_dev = source.index("npm run dev")
+    assert promotion < npm_dev, (
+        "QUEUE_ENABLED must be promoted before `npm run dev` spawns the API, "
+        "or the first boot runs with the runtime default instead of dev-local"
+    )

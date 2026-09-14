@@ -3,11 +3,6 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from redis import Redis
-from rq import Queue
-from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
-
 from app import worker_tasks
 from app.api.routes import sources, uploads, workflow
 from app.config import Settings, get_settings
@@ -19,6 +14,10 @@ from app.services.ai_schemas import PageInspectionOutput
 from app.services.page_completion import build_page_production_readiness
 from app.services.worker_handlers import provider
 from app.services.worker_handlers.inspection import _run_inspection
+from redis import Redis
+from rq import Queue
+from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 from test_quality_gates import _pass_all, _ready_page
 
 

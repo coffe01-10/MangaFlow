@@ -9,8 +9,6 @@ The content-hash artifact token only dedupes the FILE on disk, not the ROW.
 """
 
 import pytest
-from sqlalchemy import select
-
 from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
 from app.models import (
@@ -32,6 +30,7 @@ from app.services.workflow_engine import (
     execute_workflow_node,
     publish_workflow,
 )
+from sqlalchemy import select
 
 REQUIRED_QUALITY_CATEGORIES = ("SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY")
 

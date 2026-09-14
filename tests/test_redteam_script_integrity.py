@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-
 from app.domain.states import CharacterPresence, JobStatus, PageStatus
 from app.model_adapters.base import ProviderAdapterError
 from app.models import (
@@ -46,8 +45,8 @@ from app.services.prompt_compiler import (
     STRUCTURED_BLOCK_MAX_CHARS,
     compile_page_prompt,
 )
-from app.services.worker_handlers.inspection import _presence_compliance, _run_inspection
 from app.services.worker_handlers import provider
+from app.services.worker_handlers.inspection import _presence_compliance, _run_inspection
 from app.services.worker_handlers.story_parse import (
     _merge_story_parse_outputs,
     _run_story_parse,

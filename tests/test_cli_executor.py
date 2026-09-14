@@ -7,10 +7,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from PIL import Image
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
-
 from app.config import Settings
 from app.database import Base
 from app.model_adapters.base import ProviderAdapterError
@@ -31,6 +27,9 @@ from app.services.cli_executor import (
     build_cli_environment,
 )
 from app.services.cli_probe import CLIProbeObservation, probe_cli_connection
+from PIL import Image
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 
 def test_cli_environment_overrides_require_explicit_non_python_whitelist(tmp_path):

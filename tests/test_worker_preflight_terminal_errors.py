@@ -13,10 +13,7 @@ fail loudly, and the execute_job-level case runs on the isolated
 file-backed SQLite worker database.
 """
 
-from sqlalchemy import select
-
 import pytest
-
 from app import worker_tasks
 from app.config import get_settings
 from app.domain.states import JobStatus, PageStatus, Resolution
@@ -33,6 +30,7 @@ from app.models import (
     Project,
 )
 from app.services.worker_handlers.page_generate import _run_page_generate
+from sqlalchemy import select
 from test_deleted_candidate_worker import _seed_page_job, _worker_database
 
 

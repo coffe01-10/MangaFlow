@@ -15,10 +15,6 @@ re-read can observe the concurrent adoption.
 """
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import update
-from sqlalchemy.orm import sessionmaker
-
 from app.api.routes.workflow import generation
 from app.domain.states import PageStatus, Resolution
 from app.models import (
@@ -29,6 +25,9 @@ from app.models import (
     Project,
 )
 from app.schemas import KeepSelectedCandidateRequest
+from fastapi import HTTPException
+from sqlalchemy import update
+from sqlalchemy.orm import sessionmaker
 
 
 def _seed_adopted_page(db_session):

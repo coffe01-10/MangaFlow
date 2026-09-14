@@ -9,7 +9,6 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-
 from app import database, worker_tasks
 from app.config import get_settings
 from app.domain.states import JobStatus, Resolution

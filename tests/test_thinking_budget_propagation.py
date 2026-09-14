@@ -9,13 +9,12 @@ SOURCE_PARSE chunk and PAGE_INSPECT dispatch (issue #644).
 
 from pathlib import Path
 
-from pydantic import BaseModel
-
 from app.config import Settings
 from app.model_adapters.base import MultimodalRequest, StructuredRequest
 from app.model_adapters.google import GoogleRuntime, GoogleTextAdapter
 from app.model_adapters.vertex import VertexTextAdapter
 from app.services.model_registry import build_registry
+from pydantic import BaseModel
 
 
 class SmokeReply(BaseModel):

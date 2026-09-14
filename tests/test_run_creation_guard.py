@@ -13,10 +13,9 @@ WorkflowRun rows because a source-only run reconcile-completes instantly.
 """
 
 import pytest
-from sqlalchemy import select
-
 from app.models import Project, WorkflowDefinition, WorkflowRun, utcnow
 from app.services.workflow_engine import create_workflow_run, publish_workflow
+from sqlalchemy import select
 
 
 def _source_only_graph() -> dict:

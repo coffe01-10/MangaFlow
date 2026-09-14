@@ -15,7 +15,6 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-
 from app.domain.states import JobStatus, PageStatus
 from app.models import GenerationJob, utcnow
 from app.services.ai_schemas import PageInspectionOutput
@@ -153,9 +152,8 @@ def test_delete_committed_during_call_discards_verdicts(db_session, monkeypatch)
     response and the completion writes must cancel the inspection — the
     verdicts were only flushed, so the shell's rollback discards them and the
     job stamps CANCELLED instead of writing INSPECTED onto the tombstone."""
-    from sqlalchemy import select
-
     from app.models import InspectionResult
+    from sqlalchemy import select
 
     project, _page, candidate, _generate_job = _ready_candidate(db_session)
     job = _leased_inspect_job(db_session, project, candidate)

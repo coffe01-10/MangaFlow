@@ -12,9 +12,6 @@ resurrect a FAILED run to phantom RUNNING).
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
-
 from app import database, worker_tasks
 from app.database import Base
 from app.domain.states import JobStatus
@@ -34,6 +31,8 @@ from app.models import (
 from app.services.job_service import ACTIVE_JOB_STATUSES
 from app.services.workflow_engine.catalog import _edge, _node
 from app.services.workflow_engine.reconciliation import reconcile_run
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 
 def _seed_graph(db):

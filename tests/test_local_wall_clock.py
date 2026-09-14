@@ -20,14 +20,13 @@ import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from sqlalchemy.orm import sessionmaker
-
 from app import database, worker_tasks
 from app.config import Settings
 from app.domain.states import JobStatus
 from app.model_adapters import google as google_adapter
 from app.models import AppSetting, GenerationJob, ModelCallAttempt, Project
 from app.services import job_service
+from sqlalchemy.orm import sessionmaker
 
 LOCAL_TIMEOUT_WAITING_MESSAGE = "本地执行超过墙钟上限，等待租约过期回收"
 LOCAL_TIMEOUT_REQUEUE_MESSAGE = "本地执行超过墙钟上限，任务等待重新执行"

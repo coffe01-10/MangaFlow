@@ -9,9 +9,6 @@ import io
 import pytest
 from alembic import command
 from alembic.config import Config
-from PIL import Image
-from sqlalchemy import create_engine, inspect, select, text
-
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import (
@@ -32,12 +29,13 @@ from app.models import (
     SourceSegment,
     utcnow,
 )
-
 from app.services.scene_assets import (
     resolve_scene_background,
     scene_asset_snapshot,
     scene_reference_assets,
 )
+from PIL import Image
+from sqlalchemy import create_engine, inspect, select, text
 
 _hash_counter = 0
 

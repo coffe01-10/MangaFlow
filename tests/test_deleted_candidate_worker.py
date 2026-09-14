@@ -13,9 +13,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-from sqlalchemy import create_engine, select, update
-from sqlalchemy.orm import sessionmaker
-
 from app import database, worker_tasks
 from app.config import get_settings
 from app.database import Base
@@ -35,6 +32,8 @@ from app.models import (
 )
 from app.services.provider_presets import ensure_provider_presets
 from app.services.worker_handlers import provider
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.orm import sessionmaker
 
 
 def _png_bytes() -> bytes:
@@ -402,9 +401,8 @@ def test_delete_asset_rechecks_selected_guard_after_page_lock(db_session, client
     between the pre-lock read and the guard must win, returning 409 instead
     of silently deleting the now-adopted candidate's asset."""
 
-    from sqlalchemy.orm import sessionmaker as make_session
-
     from app.api.routes import uploads
+    from sqlalchemy.orm import sessionmaker as make_session
 
     project = Project(name="删除锁守卫")
     db_session.add(project)

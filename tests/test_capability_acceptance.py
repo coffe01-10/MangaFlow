@@ -11,10 +11,9 @@ from io import BytesIO
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
-
 from app.config import get_settings
 from app.domain.states import JobStatus, PageStatus, Resolution
+from app.model_adapters.base import ProviderAdapterError
 from app.models import (
     AIModel,
     Asset,
@@ -30,7 +29,6 @@ from app.models import (
     Project,
     utcnow,
 )
-from app.model_adapters.base import ProviderAdapterError
 from app.services.model_capabilities import (
     REGION_CAPABILITY_KEYS,
     model_region_edit_surface,
@@ -39,6 +37,7 @@ from app.services.model_capabilities import (
 )
 from app.services.provider_presets import ensure_provider_presets
 from app.services.worker_handlers.execution import JobCancelledError
+from sqlalchemy import select
 
 
 def _uid() -> str:

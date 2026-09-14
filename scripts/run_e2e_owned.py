@@ -123,7 +123,17 @@ def commands_for(mode: str, node: str) -> list[list[str]]:
                 playwright,
             ]
     else:
-        commands = [[node, str(ROOT / "scripts" / "run_phase2_performance.mjs")]]
+        commands = [
+            # The performance gate spawns `next start` directly; without a
+            # fresh build it measures whatever stale bundle sits in
+            # apps/web/.next — a newly introduced regression would pass
+            # against the PREVIOUS code and the green result would be
+            # recorded as evidence for the wrong SHA. Build first, exactly
+            # like the playwright mode (docs/acceptance lists the build as
+            # a manual precondition; this enforces it).
+            [node, str(ROOT / "node_modules/next/dist/bin/next"), "build", "apps/web"],
+            [node, str(ROOT / "scripts" / "run_phase2_performance.mjs")],
+        ]
     return commands
 
 
