@@ -114,8 +114,10 @@ def queue_execution_state(
     # The embedded desktop runtime has no Redis by design (#721): AUTO
     # must report — and behave as — local execution even when an ambient
     # Redis answers a ping, or diagnostics would advertise an executor
-    # that enqueue never uses.
-    if queue_mode == "AUTO" and settings.mangaflow_desktop_embedded:
+    # that enqueue never uses. An explicit REDIS mode is intercepted the
+    # same way (enqueue_job does too): no component of the embedded
+    # deployment drains a Redis queue, so the honest report is LOCAL.
+    if settings.mangaflow_desktop_embedded and queue_mode != "LOCAL":
         return QueueExecutionState(
             queue_mode=queue_mode,
             actual_executor="LOCAL",

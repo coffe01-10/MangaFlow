@@ -389,8 +389,11 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     # The embedded desktop runtime has no Redis by design: an ambient
     # Redis that merely answers a ping is not an executor — handing
     # paid jobs to it strands them (no worker of ours drains that
-    # queue) or routes them to foreign code (#721 diagnosis).
-    if queue_mode == "AUTO" and settings.mangaflow_desktop_embedded:
+    # queue) or routes them to foreign code (#721 diagnosis). An explicit
+    # REDIS mode is included: a desktop DB restored from a server
+    # deployment can carry one, and no component of the embedded
+    # deployment drains that queue either.
+    if settings.mangaflow_desktop_embedded and queue_mode != "LOCAL":
         return _enqueue_locally(db, job, "本地后台执行器正在处理任务")
     if queue_mode == "LOCAL":
         return _enqueue_locally(db, job, "本地后台执行器正在处理任务")
