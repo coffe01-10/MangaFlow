@@ -230,6 +230,7 @@ dist_lock_held=0
 # Every /_next/static/... reference the shipped entry document makes must
 # exist on disk, or the build fails here instead of shipping a data-less
 # shell.
+smoke_missing=0
 for ref in $(grep -oE '/_next/static/[A-Za-z0-9/_.-]+' "$DESKTOP_ROOT/dist/frontend/index.html" | sort -u); do
   if [ ! -f "$DESKTOP_ROOT/dist/frontend$ref" ]; then
     echo "smoke gate: index.html references missing chunk: $ref" >&2
@@ -237,7 +238,6 @@ for ref in $(grep -oE '/_next/static/[A-Za-z0-9/_.-]+' "$DESKTOP_ROOT/dist/front
   fi
 done
 
-smoke_missing=0
 for rel_html in \
   index.html \
   projects/poc/poc-invalid.html \

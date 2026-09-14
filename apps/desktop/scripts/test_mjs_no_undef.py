@@ -45,7 +45,7 @@ _GLOBALS = (
 
 def test_mjs_scripts_have_no_undefined_names():
     assert _MJS_FILES, "the desktop scripts must ship at least one .mjs file"
-    argv = ["npx", "--no-install", "eslint", "--no-config-lookup",
+    argv = [str(shutil.which("npx")), "--no-install", "eslint", "--no-config-lookup",
             '--rule={"no-undef": "error"}']
     for entry in _GLOBALS:
         argv += ["--global", entry]
