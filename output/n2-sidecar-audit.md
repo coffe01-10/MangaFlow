@@ -910,3 +910,10 @@
   （生产环境：job 等待而非执行）路由级端到端钉（失败 redis 假体 + production
   environment）。local-worker 套件 **41 passed**；ruff clean。真值表四格齐：
   LOCAL=OK / embedded AUTO=OK / AUTO+unreachable=WARNING / REDIS reachable=OK（既有）。
+
+- **§35 补遗二十一（master 8511910 交叉审 + 证据）**：#741（他组）referenced-chunks
+  consistency gate + build-info.json 溯源戳交叉审通过——grep 字符类与 Next chunk 命名兼容
+  （`?` 停截处理查询串）、与 #444 tauri 门构成纵深防御（构建期 vs 打包期）、#734 类失败
+  在构建期闭合；nuance 记录：零引用 index.html 空转通过（可接受）、bash 循环未提取可测
+  函数（后续候选，避免与他组活跃文件冲突）。串行证据：真 runner **156 passed**
+  （exit=0，8511910）。
