@@ -589,3 +589,15 @@
 **§34 补充二（07:14）**：**缓解选项 1 经活体证伪**——我按选项 1 实现的"POSIX 目录链 skip+warn + 文件链保 cp -l"补丁，构建仍在 `.bin/next` 死于 MODULE_NOT_FOUND：**cp -l 硬链接 shim 在 Linux 本身就破坏 node 相对 require**（与目录链处理无关）。即：选项 1 在 Linux 上**不可行**——"03:45 意外正确的构建"无法经选项 1 复现（该次 PASS 的产出是 v2 统一 symlink 臂所建）。这使**选项 2（修复密封/打包）成为 Linux 唯一可行路径**，且 03:45-PASS/06:46-FAIL 的同产出变异（§34b 的 2 chunk 缺失）愈发指向未知写者/环境因素而非 #719 臂本身。补丁已弃置（checkout 还原），未推。#737（route-level embedded OK pin）已合。
 
 **§34 补充二（07:37）**：**option 2 调查的决定性结果——symlink 臂平反**：当前臂全新构建 **rc=0、自洽（12/12 chunk 在场、无缺失）、D5 静态 PASS**（api_request_count=1 全证据）。确定性 symlink 打包假设**被证伪**——3× FAIL 全部针对**受损工件**（未知因素在 03:45 PASS 之后删除/未写入入口 JS+CSS 两个 chunk；mit 构建在 next build 阶段中止未触及破坏段；assemble 目标非此树；D5/浏览器只读——写者未定）。#734 的可行动残留收窄为：**dist/frontend 无溯源戳**（web-standalone 有 build-info.json），内部不一致仅能靠全 D5 浏览器运行发现——建议 stamp + 引用一致性自检（与 _replace_dist/relay-manifest verify 同型）。沙箱 dist/frontend 现为新鲜一致导出，D5 静态绿。
+
+---
+
+## 35. 新夜窗开跑（20260914 夜，基线 23ae8fc；间隙 62 提交——日班 web/api 修复波 + native 资产 + 桌面增量）
+
+**新增量审计（desktop 侧生产变更全读）：**
+- **我 #741 的一致性门被日班组修正（自纠入账）**：我添加的引用 chunk 检查循环排在 `smoke_missing=0` 重置**之后**——检测位被重置覆盖，门**自安装起即惰性**（我的正/负验证是隔离跑环逻辑，从未穿透脚本级次序——E1 类第三现）。当前 master 次序已正（重置在循环前）。
+- **helper 最后兜底处理器**（#602 系收尾）：`except (OSError, RuntimeError)`——#686/#692 守卫（种植 FIFO/链接）以 RuntimeError 拒绝时，兜底处理器不再死于自己防守的姿态（此前会跳过终态 journal + 带栈退出）。
+- **D5 plan-B API 计数修正**：plan-B 的 web origin 同源服务文档+资产，宽松的 startsWith 让文档请求满足"直连 API"门、资产 4xx 误伤——现按 URL pathname `/api/` 精确判定（静态形态仍按专用 origin 前缀）。#690 证据驱动。
+- **"111" tip 提交**：coffe01-10 直推，含 native-assets PNG 与批量内容——0 文件位于 `apps/desktop/native/**`（冻结树未触），但提交信息卫生与 62 提交批内直推值得记录。
+
+**认证**：journal+verify+guard+env **74/74**；shell-core **168/168**。
