@@ -507,3 +507,7 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 合入确认（07:3x UTC，master 25d8122 谱系）：#738（ledger 34c——option 1
   falsified live：hardlink shims 在 Linux 上破坏 next；option 2 为唯一
   可行路径）已入 master。账本分支 rebase 同步；cargo 168 全绿复核。
+- 合入确认（07:5x UTC，master 8511910 谱系）：#741（static-export
+  consistency gate + provenance stamp——referenced-chunks 一致性门与
+  build-info 溯源）、#740（queue_check WARNING pin）与 #739（ledger 34d）
+  已入 master。账本分支 rebase 同步；cargo 168 全绿复核。
