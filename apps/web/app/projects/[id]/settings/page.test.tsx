@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, api, type ModelCapability, type Project } from "@/lib/api";
+import { ApiError, api, type ModelCapability, type Project, type StyleProfile } from "@/lib/api";
 
 import ProjectSettingsPage from "./page";
 
@@ -142,8 +142,10 @@ describe("ProjectSettingsPage 删除项目清理本机数据", () => {
     updateProjectSpy.mockReset();
     deleteProjectSpy.mockReset().mockResolvedValue(undefined);
     stylesSpy.mockReset().mockResolvedValue([
-      { id: "style-1", name: "风格一" },
-      { id: "style-2", name: "风格二" },
+      // The purge flow only reads item.id; the partial keeps the mock legible
+      // while satisfying StyleProfile for tsc (vitest itself never typechecks).
+      { id: "style-1", name: "风格一" } as StyleProfile,
+      { id: "style-2", name: "风格二" } as StyleProfile,
     ]);
     window.localStorage.clear();
   });
