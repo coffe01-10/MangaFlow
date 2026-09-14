@@ -589,7 +589,12 @@ main(port=int(port))
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     import time
 
-    deadline = time.monotonic() + 30
+    # 90s, not 30s: the api-smoke child's log file exists but stays empty on
+    # cold CI runners while the FastAPI/uvicorn import chain loads (the child
+    # opens the log before any import). A 30s wall-clock deadline failed a
+    # master run whose PR twin on identical content passed. Dead children
+    # still fail fast via child.poll() below.
+    deadline = time.monotonic() + 90
     health = None
     while time.monotonic() < deadline:
         if child.poll() is not None:
