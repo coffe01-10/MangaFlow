@@ -8,13 +8,17 @@ project. Archive now cancels every non-terminal run directly, and the run
 helper fails closed on a soft-deleted project.
 """
 
+import pytest
 from app.models import (
+    GenerationJob,
     Project,
     WorkflowDefinition,
     WorkflowRun,
     WorkflowVersion,
 )
 from app.services.workflow_engine.lifecycle import cancel_run
+from fastapi import HTTPException
+from sqlalchemy import event
 
 
 def _paused_run(db, name: str) -> tuple[Project, WorkflowRun]:
@@ -83,3 +87,93 @@ def test_cancel_run_still_works_for_live_projects(db_session):
     cancel_run(db_session, run)
     db_session.expire_all()
     assert db_session.get(WorkflowRun, run.id).status == "CANCELLED"
+
+
+def test_archive_commits_run_and_standalone_job_sweeps_only_once(db_session):
+    from app.services.project_archive import archive_project
+
+    project, run = _paused_run(db_session, "单事务归档")
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PROJECT",
+        target_id=project.id,
+        job_type="SOURCE_PARSE",
+        status="WAITING",
+    )
+    db_session.add(job)
+    db_session.commit()
+    commits = []
+
+    def committed(_session):
+        commits.append(1)
+
+    event.listen(db_session, "after_commit", committed)
+    try:
+        archive_project(db_session, project.id, confirm_name=project.name)
+    finally:
+        event.remove(db_session, "after_commit", committed)
+    assert commits == [1]
+    db_session.expire_all()
+    assert db_session.get(WorkflowRun, run.id).status == "CANCELLED"
+    assert db_session.get(GenerationJob, job.id).status.value == "CANCELLED"
+    with pytest.raises(HTTPException) as raised:
+        archive_project(db_session, project.id, confirm_name=project.name)
+    assert raised.value.status_code == 404
+
+
+def test_archive_rolls_back_every_sweep_if_final_job_fails(db_session, monkeypatch):
+    from app.services import project_archive
+
+    project, run = _paused_run(db_session, "归档失败原子回滚")
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PROJECT",
+        target_id=project.id,
+        job_type="SOURCE_PARSE",
+        status="WAITING",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    def fail(*_args):
+        raise RuntimeError("injected sweep failure")
+
+    monkeypatch.setattr(project_archive, "mark_job_cancelled", fail)
+    with pytest.raises(RuntimeError, match="injected"):
+        project_archive.archive_project(
+            db_session, project.id, confirm_name=project.name
+        )
+    db_session.rollback()
+    assert db_session.get(Project, project.id).deleted_at is None
+    assert db_session.get(WorkflowRun, run.id).status == "PAUSED"
+
+
+def test_archived_project_rejects_start_and_job_retry(db_session):
+    from app.models import utcnow
+    from app.services.job_service import reset_for_retry
+    from app.services.workflow_engine.planning import create_workflow_run
+
+    project, run = _paused_run(db_session, "归档入口守卫")
+    workflow = db_session.get(WorkflowDefinition, run.workflow_id)
+    project.deleted_at = utcnow()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PROJECT",
+        target_id=project.id,
+        job_type="SOURCE_PARSE",
+        status="FAILED",
+    )
+    db_session.add(job)
+    db_session.commit()
+    with pytest.raises(ValueError, match="已归档"):
+        create_workflow_run(
+            db_session,
+            workflow,
+            scope_type="PROJECT",
+            scope_id=None,
+            start_node_ids=[],
+            stop_node_ids=[],
+        )
+    with pytest.raises(HTTPException, match="已归档"):
+        reset_for_retry(db_session, job)
+    assert job.status == "FAILED"

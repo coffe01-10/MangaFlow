@@ -21,7 +21,6 @@ from app.models import (
     StyleProfile,
     StyleStatus,
     WorkflowDefinition,
-    WorkflowRun,
 )
 from app.schemas import (
     DashboardAIOverview,
@@ -39,9 +38,7 @@ from app.services.credential_source import (
     credential_source_for_protocol,
     environment_credentials_ready,
 )
-from app.services.job_service import cancel_job
 from app.services.model_availability import count_available_catalog_models
-from app.services.workflow_engine import cancel_run
 from app.settings_schemas import ProjectSummaryRead
 
 router = APIRouter()
@@ -522,51 +519,6 @@ def archive_project(
     confirm_name: str = Query(min_length=1, max_length=120),
     db: Session = Depends(get_db),
 ) -> None:
-    from app.models import utcnow
+    from app.services.project_archive import archive_project as archive_project_unit
 
-    project = db.get(Project, project_id)
-    if not project or project.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="项目不存在")
-    # Project names are stored unstripped (create performs no trimming), so a
-    # stored " 名称" must still be archivable by typing "名称": compare
-    # stripped-to-stripped instead of a bare confirm_name.strip() against the
-    # raw stored name (#226).
-    if confirm_name.strip() != project.name.strip():
-        raise HTTPException(status_code=409, detail="项目名称不匹配，未执行删除")
-    terminal_statuses = {
-        JobStatus.COMPLETED,
-        JobStatus.FAILED,
-        JobStatus.CANCELLED,
-        JobStatus.NEEDS_REVIEW,
-    }
-    active_jobs = list(
-        db.scalars(
-            select(GenerationJob).where(
-                GenerationJob.project_id == project_id,
-                GenerationJob.status.not_in(terminal_statuses),
-            )
-        )
-    )
-    for job in active_jobs:
-        # cancel_job, not the lower-level mark_job_cancelled: a run-linked job
-        # must escalate to cancel_run, otherwise the WorkflowRun row stays
-        # RUNNING forever (mark_job_cancelled only stamps the node run) and
-        # every later reconcile re-commits the zombie.
-        cancel_job(db, job)
-    # Jobless non-terminal runs (e.g. PAUSED at an approval barrier, where
-    # barrier nodes own no job) never trigger the escalation above and would
-    # stay non-terminal under the archived project forever. Cancel them
-    # explicitly; cancel_run's sweeps are no-ops on jobless runs.
-    stale_runs = list(
-        db.scalars(
-            select(WorkflowRun).where(
-                WorkflowRun.project_id == project_id,
-                WorkflowRun.status.not_in(["COMPLETED", "CANCELLED", "FAILED"]),
-            )
-        )
-    )
-    for run in stale_runs:
-        cancel_run(db, run)
-    project.deleted_at = utcnow()
-    project.version += 1
-    db.commit()
+    archive_project_unit(db, project_id, confirm_name=confirm_name)
