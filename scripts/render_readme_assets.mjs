@@ -11,6 +11,7 @@ const args = process.argv.slice(2);
 if (args.some((arg) => !["--force", "--check"].includes(arg)) || args.length > 1) {
   throw new Error("Usage: node scripts/render_readme_assets.mjs [--force | --check]");
 }
+/** @type {Array<[string, number]>} */
 const specs = [
   ["overview", 1840],
   ["overview-mobile", 860],

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
+import { Socket } from "node:net";
 import test from "node:test";
 
 import {
@@ -11,9 +11,9 @@ import {
 
 test("occupied ports fail closed without contacting unknown health", async () => {
   const connect = () => {
-    const socket = new EventEmitter();
+    const socket = new Socket();
     queueMicrotask(() => socket.emit("connect"));
-    socket.end = () => undefined;
+    socket.end = () => socket;
     return socket;
   };
   await assert.rejects(
@@ -30,10 +30,7 @@ test("health from another instance is rejected", async () => {
       runId: "run-a",
       child,
       timeoutMs: 1_000,
-      fetchImpl: async () => ({
-        ok: true,
-        json: async () => ({ status: "ok", e2e_run_id: "someone-else" }),
-      }),
+      fetchImpl: async () => Response.json({ status: "ok", e2e_run_id: "someone-else" }),
       sleep: async () => undefined,
     }),
     /health identity mismatch/,
@@ -48,7 +45,7 @@ test("spawn failure is not treated as a healthy owned API", async () => {
       runId: "run-a",
       child,
       timeoutMs: 1_000,
-      fetchImpl: async () => ({ ok: true, json: async () => ({ status: "ok" }) }),
+      fetchImpl: async () => Response.json({ status: "ok" }),
       sleep: async () => undefined,
     }),
     /failed to spawn/,
@@ -63,7 +60,7 @@ test("dead child is not treated as a healthy owned API", async () => {
       runId: "run-a",
       child,
       timeoutMs: 1_000,
-      fetchImpl: async () => ({ ok: true, json: async () => ({ status: "ok" }) }),
+      fetchImpl: async () => Response.json({ status: "ok" }),
       sleep: async () => undefined,
     }),
     /owned process exited 1/,
@@ -89,7 +86,7 @@ test("uncontrolled entry fails before launching services", () => {
 
 test("unexpected port errors do not count as a free endpoint", async () => {
   const connect = () => {
-    const socket = new EventEmitter();
+    const socket = new Socket();
     queueMicrotask(() => socket.emit("error", Object.assign(new Error("denied"), { code: "EACCES" })));
     return socket;
   };
@@ -98,7 +95,8 @@ test("unexpected port errors do not count as a free endpoint", async () => {
 
 test("cleanup errors land in the final summary and fail the run", async () => {
   const summary = { errors: ["lighthouse or fps gate failed"] };
-  let wrote = null;
+  /** @type {import("./phase2_runner_lib.cjs").RunSummary} */
+  let wrote = { errors: [] };
   const exitCode = await finalizeOwnedRun({
     summary,
     cleanup: async () => {
@@ -117,7 +115,8 @@ test("cleanup errors land in the final summary and fail the run", async () => {
 
 test("cleanup throw still writes summary and is non-zero", async () => {
   const summary = { errors: [] };
-  let wrote = null;
+  /** @type {import("./phase2_runner_lib.cjs").RunSummary} */
+  let wrote = { errors: [] };
   const exitCode = await finalizeOwnedRun({
     summary,
     cleanup: async () => {
@@ -162,9 +161,9 @@ test("a never-answering port probe times out with a named error", async () => {
   const connect = () => {
     // Neither connect nor error ever fires: only the 2s in-lib timer ends
     // it. The shim carries setTimeout so the lib can arm that timer.
-    const socket = new EventEmitter();
-    socket.setTimeout = (ms, cb) => setTimeout(cb, ms);
-    socket.destroy = () => undefined;
+    const socket = new Socket();
+    socket.setTimeout = (ms, cb) => { setTimeout(cb, ms); return socket; };
+    socket.destroy = () => socket;
     return socket;
   };
   const started = Date.now();
@@ -183,7 +182,7 @@ test("waitForOwnedHealth names the last health error at timeout", async () => {
       runId: "run-a",
       child,
       timeoutMs: 300,
-      fetchImpl: async () => ({ ok: false, status: 503 }),
+      fetchImpl: async () => new Response(null, { status: 503 }),
       sleep: async () => undefined,
     }),
     /timed out waiting for owned health.*503/s,
@@ -196,12 +195,12 @@ test("json() keeps 204 as null, merges content-type, and names the failing call"
   const fetchImpl = async (url, init) => {
     seen.push([url, init?.headers?.["content-type"]]);
     if (url.endsWith("no-content")) {
-      return { ok: true, status: 204 };
+      return new Response(null, { status: 204 });
     }
     if (url.endsWith("boom")) {
-      return { ok: false, status: 500, text: async () => "boom body" };
+      return new Response("boom body", { status: 500 });
     }
-    return { ok: true, status: 200, json: async () => ({ ok: 1 }) };
+    return Response.json({ ok: 1 });
   };
   assert.equal(await json("http://x/no-content", {}, fetchImpl), null);
   const payload = await json("http://x/data", { method: "POST", body: "{}" }, fetchImpl);
@@ -225,7 +224,7 @@ test("json(): an explicit caller content-type wins over the default", async () =
   const seen = [];
   const fetchImpl = async (url, init) => {
     seen.push({ ...init?.headers });
-    return { ok: true, status: 200, json: async () => ({ ok: 1 }) };
+    return Response.json({ ok: 1 });
   };
   await json("http://x/form", {
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -239,15 +238,15 @@ test("waitForOwnedHealth treats non-ok statuses as not-ready and keeps polling",
   // First probe answers 503 (not-ready), second answers healthy: the loop
   // must retry through the non-ok status and return the healthy body.
   const responses = [
-    { ok: false, status: 503 },
-    { ok: true, json: async () => ({ status: "ok", e2e_run_id: "run-a" }) },
+    new Response(null, { status: 503 }),
+    Response.json({ status: "ok", e2e_run_id: "run-a" }),
   ];
   const body = await waitForOwnedHealth({
     url: "http://127.0.0.1:8000/api/v1/health",
     runId: "run-a",
     child,
     timeoutMs: 5_000,
-    fetchImpl: async () => responses.shift() ?? { ok: false, status: 599 },
+    fetchImpl: async () => responses.shift() ?? new Response(null, { status: 599 }),
     sleep: async () => undefined,
   });
   assert.deepEqual(body, { status: "ok", e2e_run_id: "run-a" });

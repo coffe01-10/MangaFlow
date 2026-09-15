@@ -200,6 +200,8 @@ stateDiagram-v2
 
 ## 7. 迁移策略
 
+PostgreSQL 共享枚举由初始迁移创建并在降级时删除，后续迁移显式复用类型，支持分段升级。`btree_gist` 的安装权限与 schema 可见性属于部署前提，详见 [PostgreSQL 部署与迁移前提](postgresql-deployment.md)。
+
 Alembic 同时支持 SQLite 与 PostgreSQL。修订版迁移把 `image.fast` 映射为 `image.nano_banana_2`、把 `image.quality` 映射为 `image.nano_banana_pro`，并新增来源、批次、候选、任务和导出表。生产启动只检查迁移版本，不自动执行升级。
 
 迁移 `20260901_23` 扩展 attempt/价格列并新建对账表，对可识别的旧 usage JSON 做幂等结构化回填，无法确定的数量不伪造为 0。降级只删除新表/列；存在无任务归属的付费探测 attempt 时拒绝恢复 `job_id/project_id NOT NULL`，防止静默丢失账本。
