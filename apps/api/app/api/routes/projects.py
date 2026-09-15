@@ -39,7 +39,7 @@ from app.services.credential_source import (
     credential_source_for_protocol,
     environment_credentials_ready,
 )
-from app.services.job_service import cancel_job
+from app.services.job_service import mark_job_cancelled
 from app.services.model_availability import count_available_catalog_models
 from app.services.workflow_engine import cancel_run
 from app.settings_schemas import ProjectSummaryRead
@@ -523,8 +523,9 @@ def archive_project(
     db: Session = Depends(get_db),
 ) -> None:
     from app.models import utcnow
+    from app.services.ordinal_allocator import lock_entity
 
-    project = db.get(Project, project_id)
+    project = lock_entity(db, Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
     # Project names are stored unstripped (create performs no trimming), so a
@@ -539,34 +540,28 @@ def archive_project(
         JobStatus.CANCELLED,
         JobStatus.NEEDS_REVIEW,
     }
-    active_jobs = list(
-        db.scalars(
-            select(GenerationJob).where(
-                GenerationJob.project_id == project_id,
-                GenerationJob.status.not_in(terminal_statuses),
-            )
-        )
-    )
-    for job in active_jobs:
-        # cancel_job, not the lower-level mark_job_cancelled: a run-linked job
-        # must escalate to cancel_run, otherwise the WorkflowRun row stays
-        # RUNNING forever (mark_job_cancelled only stamps the node run) and
-        # every later reconcile re-commits the zombie.
-        cancel_job(db, job)
-    # Jobless non-terminal runs (e.g. PAUSED at an approval barrier, where
-    # barrier nodes own no job) never trigger the escalation above and would
-    # stay non-terminal under the archived project forever. Cancel them
-    # explicitly; cancel_run's sweeps are no-ops on jobless runs.
+    # Run-before-job order matches cancel_run. All sweeps share this project's
+    # transaction: a nested commit would release the serialization lock early.
     stale_runs = list(
         db.scalars(
             select(WorkflowRun).where(
                 WorkflowRun.project_id == project_id,
                 WorkflowRun.status.not_in(["COMPLETED", "CANCELLED", "FAILED"]),
-            )
+            ).order_by(WorkflowRun.id)
         )
     )
     for run in stale_runs:
-        cancel_run(db, run)
+        cancel_run(db, run, auto_commit=False)
+    active_jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.project_id == project_id,
+                GenerationJob.status.not_in(terminal_statuses),
+            ).order_by(GenerationJob.id)
+        )
+    )
+    for job in active_jobs:
+        mark_job_cancelled(db, job)
     project.deleted_at = utcnow()
     project.version += 1
     db.commit()

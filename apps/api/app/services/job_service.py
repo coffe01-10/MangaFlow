@@ -21,6 +21,7 @@ from app.models import (
     MangaPage,
     ModelCallAttempt,
     PageCandidate,
+    Project,
     StyleProfile,
     WorkflowDefinition,
     WorkflowNodeRun,
@@ -1686,6 +1687,11 @@ def _verify_retry_revival_post_commit(
 def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
         return job
+    from app.services.ordinal_allocator import lock_entity
+
+    project = lock_entity(db, Project, job.project_id)
+    if project is None or project.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="项目不存在或已归档，无法重试")
     # Pre-image of every column the revival below rewrites, read from the
     # committed row (the caller's ORM copy can be stale). If the committed
     # revival later loses a post-commit race, the compensation restores these

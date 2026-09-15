@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.domain.states import JobStatus
 from app.models import (
     GenerationJob,
+    Project,
     WorkflowDefinition,
     WorkflowNodeRun,
     WorkflowRun,
@@ -46,6 +47,13 @@ def create_workflow_run(
 ) -> WorkflowRun:
     # `create_job` 是模块级 monkeypatch 接缝，必须在调用时经 facade 解析。
     from app.services import workflow_engine as engine
+    from app.services.ordinal_allocator import lock_entity
+
+    # Parent-first, shared with archive and retry; keep the lock until the
+    # run and jobs commit so the archive sweep cannot miss a new run.
+    project = lock_entity(db, Project, workflow.project_id)
+    if project is None or project.deleted_at is not None:
+        raise ValueError("项目不存在或已归档")
 
     if pinned_version_id is not None:
         # retry_run clones a new run against the exact version the failed run
@@ -73,8 +81,6 @@ def create_workflow_run(
     # the same target. Locking the definition row serializes concurrent starts
     # before the check-then-insert below. Terminal runs (FAILED/CANCELLED/
     # COMPLETED) never block retry_run or a fresh start.
-    from app.services.ordinal_allocator import lock_entity
-
     lock_entity(db, WorkflowDefinition, workflow.id)
     # The route-side `_workflow` guard ran before this lock was granted; a
     # concurrent delete_workflow committing in between would soft-delete the

@@ -6,6 +6,8 @@ MangaFlow AI 围绕“原作 → 资产 → 剧本 → 分页 → 单页抽卡 �
 
 ## 2. 系统边界
 
+项目归档、新建工作流运行和任务重试统一先取得项目行锁，再检查归档状态。归档按运行、任务顺序取消，并在同一事务内提交归档标记；调用方可通过 `cancel_run(auto_commit=False)` 保留事务所有权。Vertex 的单次审计记录以 `usage.dispatch_count` 记录凭据管理器的实际派发次数，该字段不作为计费单位。
+
 ```mermaid
 flowchart LR
     U["创作者"] --> W["Next.js Web 工作台"]

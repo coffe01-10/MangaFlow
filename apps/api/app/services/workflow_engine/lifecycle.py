@@ -458,7 +458,7 @@ def _approve_generate_node(
         return
 
 
-def cancel_run(db: Session, run: WorkflowRun) -> WorkflowRun:
+def cancel_run(db: Session, run: WorkflowRun, *, auto_commit: bool = True) -> WorkflowRun:
     claimed = db.execute(
         update(WorkflowRun)
         .where(
@@ -497,7 +497,10 @@ def cancel_run(db: Session, run: WorkflowRun) -> WorkflowRun:
         params = job.request_parameters or {}
         if params.get("workflow_run_id") == run.id:
             mark_job_cancelled(db, job)
-    db.commit()
+    if auto_commit:
+        db.commit()
+    else:
+        db.flush()
     return get_run(db, run.id)
 
 
