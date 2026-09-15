@@ -82,7 +82,7 @@ def _normalize_existing_first_pages(connection: sa.Connection) -> None:
             """
             SELECT id, name, color_mode, profile
             FROM style_profiles
-            WHERE name LIKE 'B1%'
+            WHERE lower(name) LIKE 'b1%'
             """
         )
     ).mappings()

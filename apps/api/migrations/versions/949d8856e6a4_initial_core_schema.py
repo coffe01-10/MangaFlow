@@ -9,11 +9,22 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "949d8856e6a4"
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+
+def _owned_enum(*values: str, name: str):
+    # This base revision owns the six shared native types. Table events must
+    # never issue an unconditional CREATE TYPE on a later Alembic invocation.
+    if op.get_bind().dialect.name != "postgresql":
+        return sa.Enum(*values, name=name)
+    enum = postgresql.ENUM(*values, name=name, create_type=False)
+    enum.create(op.get_bind(), checkfirst=True)
+    return enum
 
 
 def upgrade() -> None:
@@ -44,17 +55,17 @@ def upgrade() -> None:
         sa.Column("page_ratio", sa.String(length=32), nullable=False),
         sa.Column(
             "default_resolution",
-            sa.Enum("DRAFT_1K", "STANDARD_2K", "HIGH_4K", name="resolution"),
+            _owned_enum("DRAFT_1K", "STANDARD_2K", "HIGH_4K", name="resolution"),
             nullable=False,
         ),
         sa.Column(
             "draft_resolution",
-            sa.Enum("DRAFT_1K", "STANDARD_2K", "HIGH_4K", name="resolution"),
+            _owned_enum("DRAFT_1K", "STANDARD_2K", "HIGH_4K", name="resolution"),
             nullable=False,
         ),
         sa.Column(
             "workflow_mode",
-            sa.Enum("AUTO", "DIRECTOR", "SEMI_AUTO", name="workflowmode"),
+            _owned_enum("AUTO", "DIRECTOR", "SEMI_AUTO", name="workflowmode"),
             nullable=False,
         ),
         sa.Column("default_concurrency", sa.Integer(), nullable=False),
@@ -85,7 +96,7 @@ def upgrade() -> None:
         sa.Column("source", sa.String(length=32), nullable=False),
         sa.Column(
             "status",
-            sa.Enum(
+            _owned_enum(
                 "UPLOADED",
                 "ANALYZED",
                 "GENERATED",
@@ -130,7 +141,7 @@ def upgrade() -> None:
         sa.Column("forbidden_changes", sa.JSON(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum(
+            _owned_enum(
                 "UPLOADED",
                 "ANALYZED",
                 "GENERATED",
@@ -158,7 +169,7 @@ def upgrade() -> None:
         sa.Column("priority", sa.Integer(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum(
+            _owned_enum(
                 "WAITING",
                 "QUEUED",
                 "PREPARING",
@@ -202,7 +213,7 @@ def upgrade() -> None:
         sa.Column("locked_fields", sa.JSON(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum(
+            _owned_enum(
                 "ANALYZING", "DRAFT", "TEST_GENERATED", "CONFIRMED", "ACTIVE", name="stylestatus"
             ),
             nullable=False,
@@ -266,13 +277,13 @@ def upgrade() -> None:
         sa.Column("reading_direction", sa.String(length=8), nullable=False),
         sa.Column(
             "resolution",
-            sa.Enum("DRAFT_1K", "STANDARD_2K", "HIGH_4K", name="resolution"),
+            _owned_enum("DRAFT_1K", "STANDARD_2K", "HIGH_4K", name="resolution"),
             nullable=False,
         ),
         sa.Column("style_id", sa.String(length=36), nullable=True),
         sa.Column(
             "status",
-            sa.Enum(
+            _owned_enum(
                 "PLANNED",
                 "STORYBOARDED",
                 "DRAFT_GENERATING",
@@ -312,7 +323,7 @@ def upgrade() -> None:
         sa.Column("locked_fields", sa.JSON(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum(
+            _owned_enum(
                 "UPLOADED",
                 "ANALYZED",
                 "GENERATED",
@@ -524,3 +535,13 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_continuity_snapshots_panel_id"), table_name="continuity_snapshots")
     op.drop_table("continuity_snapshots")
     # ### end Alembic commands ###
+    if op.get_bind().dialect.name == "postgresql":
+        for name in (
+            "resolution",
+            "workflowmode",
+            "assetstatus",
+            "jobstatus",
+            "stylestatus",
+            "pagestatus",
+        ):
+            postgresql.ENUM(name=name).drop(op.get_bind(), checkfirst=True)
