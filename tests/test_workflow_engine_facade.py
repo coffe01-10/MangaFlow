@@ -445,6 +445,57 @@ def test_approve_node_after_cancel_does_not_create_generate_job(db_session, monk
     assert db_session.scalar(select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"])) is None
 
 
+def test_approve_node_after_archive_fails_closed_before_claiming(db_session, monkeypatch):
+    """归档与 GENERATE 审批共享 project→run 锁序：审批单元必须先在项目行上
+    失败（404），既不认领节点也不制造任何生成产物。"""
+    from app.models import utcnow
+    from fastapi import HTTPException
+
+    seeded = _seed_page_hierarchy(db_session)
+    workflow = _seed_workflow(db_session, seeded["project_id"], default_graph())
+    publish_workflow(db_session, workflow)
+    run = create_workflow_run(
+        db_session,
+        workflow,
+        scope_type="PAGE",
+        scope_id=seeded["page_id"],
+        start_node_ids=["generate"],
+        stop_node_ids=["generate"],
+    )
+    node_run = db_session.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run.id,
+            WorkflowNodeRun.status == "WAITING_APPROVAL",
+        )
+    )
+    monkeypatch.setattr(
+        "app.services.page_readiness.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        "app.services.workflow_engine.enqueue_job",
+        lambda db, job: enqueued.append(job.id) or job,
+    )
+    db_session.get(Project, seeded["project_id"]).deleted_at = utcnow()
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as raised:
+        approve_node(
+            db_session,
+            run.id,
+            node_run.node_id,
+            image_model_alias="image.nano_banana_2",
+            resolution="1K",
+        )
+    assert raised.value.status_code == 404
+    assert enqueued == []
+    db_session.expire_all()
+    still_waiting = db_session.get(WorkflowNodeRun, node_run.id)
+    assert still_waiting.status == "WAITING_APPROVAL", "归档后审批不得认领节点"
+    assert db_session.scalar(select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"])) is None
+
+
 def test_lazy_consumers_resolve_engine_functions_through_facade():
     """job_service / worker_tasks 的懒加载入口仍经由 facade 解析。"""
 

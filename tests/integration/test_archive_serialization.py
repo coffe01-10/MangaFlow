@@ -5,18 +5,33 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
 import pytest
-from app.api.routes.projects import archive_project
-from app.models import GenerationJob, Project, WorkflowDefinition, WorkflowRun
+from app.models import (
+    GenerationJob,
+    Project,
+    WorkflowDefinition,
+    WorkflowNodeRun,
+    WorkflowRun,
+    utcnow,
+)
 from app.services.job_service import reset_for_retry
 from app.services.ordinal_allocator import lock_entity
-from app.services.workflow_engine import planning
+from app.services.project_archive import archive_project
+from app.services.workflow_engine import (
+    approve_node,
+    default_graph,
+    planning,
+    publish_workflow,
+)
 from fastapi import HTTPException
 from sqlalchemy import select, text
 
 from tests.test_run_creation_guard import _seed_published_workflow, _start_kwargs
 
 
-@pytest.mark.parametrize("winner", ["archive", "start", "archive_retry", "archive_archive"])
+@pytest.mark.parametrize(
+    "winner",
+    ["archive", "start", "archive_retry", "archive_archive", "archive_approve"],
+)
 def test_pg_archive_serializes_every_restart_entry(live_pg_session_factory, monkeypatch, winner):
     factory = live_pg_session_factory
     # Only prevent scheduling; every lock, insert, cancellation and commit is real PG.
@@ -35,6 +50,43 @@ def test_pg_archive_serializes_every_restart_entry(live_pg_session_factory, monk
         seed.add(job)
         seed.commit()
         job_id = job.id
+        paused_run_id = node_id = None
+        if winner == "archive_approve":
+            # A run parked at the GENERATE barrier is exactly the approval
+            # unit that locks run → project inside create_generation_batch;
+            # archive's project → run order must serialize ahead of it.
+            approve_wf = WorkflowDefinition(
+                project_id=project_id,
+                name="审批竞争流程",
+                draft_graph=default_graph(),
+            )
+            seed.add(approve_wf)
+            seed.flush()
+            publish_workflow(seed, approve_wf)
+            seed.refresh(approve_wf)
+            paused_run = WorkflowRun(
+                workflow_id=approve_wf.id,
+                workflow_version_id=approve_wf.published_version_id,
+                project_id=project_id,
+                # The approval unit stops at the project fence before ever
+                # dereferencing the page, so a placeholder scope is enough.
+                scope_type="PAGE",
+                scope_id="page-race",
+                status="PAUSED",
+                started_at=utcnow(),
+            )
+            seed.add(paused_run)
+            seed.flush()
+            seed.add(
+                WorkflowNodeRun(
+                    workflow_run_id=paused_run.id,
+                    node_id="generate",
+                    node_type="generator.page",
+                    status="WAITING_APPROVAL",
+                )
+            )
+            seed.commit()
+            paused_run_id, node_id = paused_run.id, "generate"
 
     pid_ready = Queue()
 
@@ -47,9 +99,17 @@ def test_pg_archive_serializes_every_restart_entry(live_pg_session_factory, monk
         with factory() as db:
             pid_ready.put(db.scalar(text("SELECT pg_backend_pid()")))
             if winner in {"start", "archive_archive"}:
-                return archive_project(project_id, project_name, db)
+                return archive_project(db, project_id, confirm_name=project_name)
             if winner == "archive_retry":
                 return reset_for_retry(db, db.get(GenerationJob, job_id))
+            if winner == "archive_approve":
+                return approve_node(
+                    db,
+                    paused_run_id,
+                    node_id,
+                    image_model_alias="image.nano_banana_2",
+                    resolution="1K",
+                )
             return start(db)
 
     with ThreadPoolExecutor(max_workers=1) as pool, factory() as owner:
@@ -71,7 +131,7 @@ def test_pg_archive_serializes_every_restart_entry(live_pg_session_factory, monk
             if winner == "start":
                 start(owner)
             else:
-                archive_project(project_id, project_name, owner)
+                archive_project(owner, project_id, confirm_name=project_name)
         finally:
             owner.rollback()  # Always release the lock before joining a failed contender.
         if winner == "start":
@@ -82,11 +142,21 @@ def test_pg_archive_serializes_every_restart_entry(live_pg_session_factory, monk
         else:
             with pytest.raises(HTTPException) as raised:
                 pending.result(timeout=5)
-            assert raised.value.status_code == (404 if winner == "archive_archive" else 409)
+            assert raised.value.status_code == (
+                404 if winner in {"archive_archive", "archive_approve"} else 409
+            )
 
     with factory() as db:
         assert db.get(Project, project_id).deleted_at is not None
         runs = list(db.scalars(select(WorkflowRun).where(WorkflowRun.project_id == project_id)))
         assert all(run.status == "CANCELLED" for run in runs)
-        assert len(runs) == (1 if winner == "start" else 0)
+        assert len(runs) == (1 if winner in {"start", "archive_approve"} else 0)
         assert db.get(GenerationJob, job_id).status == "FAILED"
+        if winner == "archive_approve":
+            barrier_node = db.scalar(
+                select(WorkflowNodeRun).where(
+                    WorkflowNodeRun.workflow_run_id == paused_run_id,
+                    WorkflowNodeRun.node_id == node_id,
+                )
+            )
+            assert barrier_node.status == "CANCELLED"

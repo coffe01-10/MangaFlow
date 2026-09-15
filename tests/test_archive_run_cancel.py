@@ -90,7 +90,7 @@ def test_cancel_run_still_works_for_live_projects(db_session):
 
 
 def test_archive_commits_run_and_standalone_job_sweeps_only_once(db_session):
-    from app.api.routes.projects import archive_project
+    from app.services.project_archive import archive_project
 
     project, run = _paused_run(db_session, "单事务归档")
     job = GenerationJob(
@@ -109,7 +109,7 @@ def test_archive_commits_run_and_standalone_job_sweeps_only_once(db_session):
 
     event.listen(db_session, "after_commit", committed)
     try:
-        archive_project(project.id, project.name, db_session)
+        archive_project(db_session, project.id, confirm_name=project.name)
     finally:
         event.remove(db_session, "after_commit", committed)
     assert commits == [1]
@@ -117,12 +117,12 @@ def test_archive_commits_run_and_standalone_job_sweeps_only_once(db_session):
     assert db_session.get(WorkflowRun, run.id).status == "CANCELLED"
     assert db_session.get(GenerationJob, job.id).status.value == "CANCELLED"
     with pytest.raises(HTTPException) as raised:
-        archive_project(project.id, project.name, db_session)
+        archive_project(db_session, project.id, confirm_name=project.name)
     assert raised.value.status_code == 404
 
 
 def test_archive_rolls_back_every_sweep_if_final_job_fails(db_session, monkeypatch):
-    from app.api.routes import projects
+    from app.services import project_archive
 
     project, run = _paused_run(db_session, "归档失败原子回滚")
     job = GenerationJob(
@@ -138,9 +138,11 @@ def test_archive_rolls_back_every_sweep_if_final_job_fails(db_session, monkeypat
     def fail(*_args):
         raise RuntimeError("injected sweep failure")
 
-    monkeypatch.setattr(projects, "mark_job_cancelled", fail)
+    monkeypatch.setattr(project_archive, "mark_job_cancelled", fail)
     with pytest.raises(RuntimeError, match="injected"):
-        projects.archive_project(project.id, project.name, db_session)
+        project_archive.archive_project(
+            db_session, project.id, confirm_name=project.name
+        )
     db_session.rollback()
     assert db_session.get(Project, project.id).deleted_at is None
     assert db_session.get(WorkflowRun, run.id).status == "PAUSED"
