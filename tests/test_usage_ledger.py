@@ -81,6 +81,11 @@ def _meta(job: GenerationJob, **overrides) -> ModelCallAttemptMeta:
     return ModelCallAttemptMeta(**values)
 
 
+def test_dispatch_count_is_audit_metadata_not_a_billable_unit():
+    usage = {"prompt_tokens": 10, "completion_tokens": 5}
+    assert normalize_usage({**usage, "dispatch_count": 3}) == normalize_usage(usage)
+
+
 def test_normalize_usage_preserves_unknown_and_supports_nested_cache():
     missing = normalize_usage(None)
     assert missing.usage_status == "UNKNOWN"

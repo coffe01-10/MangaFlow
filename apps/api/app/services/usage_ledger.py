@@ -74,6 +74,7 @@ _IGNORED_USAGE_KEYS = {
     "estimated_cost",
     "cost_source",
     "cleanup_warning",
+    "dispatch_count",
 }
 _KNOWN_TOP_LEVEL_KEYS = (
     set(_INPUT_ALIASES)

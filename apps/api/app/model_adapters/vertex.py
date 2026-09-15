@@ -12,13 +12,23 @@ from app.model_adapters.base import (
     StructuredRequest,
     attach_provider_usage,
     blocked_finish_reason,
-    response_usage,
+)
+from app.model_adapters.base import (
+    response_usage as sdk_response_usage,
 )
 from app.services.model_registry import ModelCapability
 from app.services.vertex_credentials import (
     classify_vertex_failure,
     get_vertex_credential_manager,
 )
+
+
+def response_usage(response) -> dict[str, Any] | None:
+    usage = sdk_response_usage(response)
+    count = getattr(response, "_vertex_dispatch_count", None)
+    if count is not None:
+        return {**(usage or {}), "dispatch_count": count}
+    return usage
 
 
 class VertexAdapterError(ProviderAdapterError):
@@ -50,18 +60,34 @@ class _VertexBase:
         return self.credential_manager.create_client(self.settings)
 
     def _execute(self, operation):
-        return self.credential_manager.execute(
-            self.settings,
-            operation,
-            client_factory=self._client,
-        )
+        dispatches: list[int] = []
+        try:
+            response = self.credential_manager.execute(
+                self.settings,
+                operation,
+                client_factory=self._client,
+                dispatch_counter=dispatches,
+            )
+        except Exception as error:
+            translated = (
+                error if isinstance(error, VertexAdapterError) else self._translate_error(error)
+            )
+            translated.usage = {
+                **(getattr(error, "usage", None) or {}),
+                "dispatch_count": len(dispatches),
+            }
+            if translated is error:
+                raise
+            raise translated from error
+        # Like provider_usage on structured results, this is private per-response
+        # transport; never keep a mutable counter on a shared adapter instance.
+        object.__setattr__(response, "_vertex_dispatch_count", len(dispatches))
+        return response
 
     @staticmethod
     def _translate_error(error: Exception) -> VertexAdapterError:
         failure = classify_vertex_failure(error)
-        return VertexAdapterError(
-            failure.code, failure.message, retryable=failure.retryable
-        )
+        return VertexAdapterError(failure.code, failure.message, retryable=failure.retryable)
 
     @staticmethod
     def _response_text(response) -> str | None:
@@ -88,9 +114,7 @@ class _VertexBase:
         try:
             return output_schema.model_validate(payload)
         except Exception as error:
-            raise VertexAdapterError(
-                "INVALID_OUTPUT", "模型已响应，但返回格式无法验证"
-            ) from error
+            raise VertexAdapterError("INVALID_OUTPUT", "模型已响应，但返回格式无法验证") from error
 
 
 class VertexTextAdapter(_VertexBase):
