@@ -9,7 +9,7 @@ the same attempt flip price versions between calls.
 """
 
 from app.domain.states import JobStatus
-from app.models import GenerationJob, ModelPricingVersion, Project
+from app.models import GenerationJob, ModelPricingVersion, Project, utcnow
 from app.services.job_service import mark_job_failed
 from app.services.model_costs import _active_price
 from sqlalchemy import update as sa_update
@@ -94,6 +94,35 @@ def test_bulk_archive_archives_only_rows_still_terminal(client, db_session):
     assert response.status_code == 409
     db_session.expire_all()
     assert db_session.get(GenerationJob, failed.id).archived_at is None
+
+
+def test_archive_completed_404s_on_soft_deleted_project(client, db_session):
+    job = _job(db_session, "archive-deleted-project")
+    project = db_session.get(Project, job.project_id)
+    assert project is not None
+    project.deleted_at = utcnow()
+    db_session.commit()
+
+    response = client.post(f"/api/v1/projects/{job.project_id}/jobs/archive-completed")
+    assert response.status_code == 404
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, job.id).archived_at is None
+
+
+def test_bulk_archive_404s_on_soft_deleted_project(client, db_session):
+    job = _job(db_session, "bulk-archive-deleted-project")
+    project = db_session.get(Project, job.project_id)
+    assert project is not None
+    project.deleted_at = utcnow()
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/projects/{job.project_id}/jobs/bulk-archive",
+        json={"job_ids": [job.id]},
+    )
+    assert response.status_code == 404
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, job.id).archived_at is None
 
 
 def test_mark_job_failed_refuses_claimed_job(db_session):

@@ -127,6 +127,11 @@ export function GenerateSection({
   } = workspace;
 
   const [directorMode, setDirectorMode] = useState(false);
+  // 局部编辑状态挂在工作区根上：换页不会自动清掉。只在候选属于当前页时
+  // 挂载编辑器，避免源图是旧候选、信封却用当前页 id。
+  const localEditOnThisPage = Boolean(
+    localEditCandidate && selectedPage && localEditCandidate.page_id === selectedPage.id,
+  );
   const [directorBusy, setDirectorBusy] = useState(false);
   const pageGenerationPending = generate.isPending || hasActiveItem(candidates.data);
   // 旧候选横幅的「当前分镜」版本必须取工作台查询自己的页版本（#544）：
@@ -167,7 +172,7 @@ export function GenerateSection({
           <p>读取可用图片模型失败，已暂停生成，避免在模型缺失的状态下发起抽卡。{models.error.message}</p>
           <button type="button" className="button outline compact" onClick={() => models.refetch()}>重试</button>
         </div>
-      ) : !generateWorkbenchReady ? <div className="generate-skeleton" role="status" aria-label="正在载入生成工作台"><LoaderCircle className="spin" size={22} /><span>正在载入生成工作台…</span></div> : localEditCandidate ? (
+      ) : !generateWorkbenchReady ? <div className="generate-skeleton" role="status" aria-label="正在载入生成工作台"><LoaderCircle className="spin" size={22} /><span>正在载入生成工作台…</span></div> : localEditOnThisPage && localEditCandidate ? (
         <LocalEditWorkspace
           id={id}
           page={selectedPage}
@@ -256,7 +261,7 @@ export function GenerateSection({
           {!generationReferenceReady && <p className="reference-check-warning"><CircleAlert size={13} />有角色缺少可用参考图，请先到“参考资产”绑定；分镜指定服装时也必须选择对应服装图。</p>}
         </section>
         <div className="generation-bar"><div className="generation-options"><div><span>正式模型</span><strong>{modelOptions.find((item) => item.alias === activeDrawModel)?.name ?? "尚未选择"}</strong></div><div><span>本次规格</span><strong>1K · 彩色 · 1 个候选</strong></div></div><button className="button ink generate-one" disabled={startBatch.isPending || generate.isPending || !generationPackagesReady || Boolean(selectedPageGenerationIssue) || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}{generate.isPending ? "正在加入 1 个正式任务" : isViewingHistoricalBatch ? "先切回最新批次再生成" : selectedPageStructureIssue ? "请先补全剧本与分镜" : !activeDrawModel ? "先选择图片模型" : !pageReadiness.data?.ready ? "先完成页面生产准备" : !generationReferenceReady ? "先补齐人物与服装参考" : "生成 1 个 1K 彩色候选"}</button></div>
-        {(generate.isError || startBatch.isError || actionError) && <p className="form-error" role="alert"><CircleAlert size={14} />{describeActionError(generate.error ?? startBatch.error ?? actionError)}</p>}
+        {(generate.isError || startBatch.isError || actionError) && <p className="form-error" role="alert"><CircleAlert size={14} />{describeActionError(actionError ?? generate.error ?? startBatch.error)}</p>}
 
         <div className="batch-heading"><div><span>{isViewingHistoricalBatch ? "HISTORY / 历史批次" : "BATCH / 当前批次"}</span><strong>{viewedBatch ? `批次 ${viewedBatch.ordinal}` : "尚未开始批次"}</strong></div><small>{isViewingHistoricalBatch ? `正在查看历史结果 · 共 ${orderedPageBatches.length} 个批次` : "每个候选记录实际供应商与模型 · 收藏不等于采用"}</small></div>
         <div className="candidate-grid">{!candidates.data && !candidates.isError && <article className="candidate-card" aria-hidden="true"><CandidateArtwork contentUrl={null} label="候选加载中" eager /></article>}{candidates.data?.map((candidate, candidateIndex) => { const upscaleBusy = upscaleCandidate.isPending && upscaleCandidate.variables?.candidateId === candidate.id; const deleteBusy = deleteCandidate.isPending && deleteCandidate.variables === candidate.id; // A paid upscale in flight on this candidate must fence the destructive and

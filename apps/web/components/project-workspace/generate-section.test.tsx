@@ -42,6 +42,7 @@ const directorGroupsApi = vi.spyOn(api, "directorCommandGroups");
 const directorProposeApi = vi.spyOn(api, "directorProposeCommandGroup");
 const upscaleApi = vi.spyOn(api, "upscaleCandidate");
 const selectApi = vi.spyOn(api, "selectCandidate");
+const favoriteApi = vi.spyOn(api, "favoriteCandidate");
 const nextPageApi = vi.spyOn(api, "nextPage");
 
 function pageFixture(overrides: Partial<MangaPage> = {}): MangaPage {
@@ -251,7 +252,13 @@ function createClient() {
   });
 }
 
-function GenerateHarness() {
+function GenerateHarness({
+  initialPageId = "page-1",
+  initialLocalEdit = null,
+}: {
+  initialPageId?: string;
+  initialLocalEdit?: PageCandidate | null;
+} = {}) {
   const queries = useWorkspaceQueries({
     id: "project-1",
     section: "generate",
@@ -259,8 +266,8 @@ function GenerateHarness() {
     selectedChapterId: "chapter-1",
   });
   const jobsWorkspace = useJobsWorkspace({ id: "project-1" });
-  const [selectedPageId, setSelectedPageId] = useState<string | null>("page-1");
-  const [localEditCandidate, setLocalEditCandidate] = useState<PageCandidate | null>(null);
+  const [selectedPageId, setSelectedPageId] = useState<string | null>(initialPageId);
+  const [localEditCandidate, setLocalEditCandidate] = useState<PageCandidate | null>(initialLocalEdit);
   const workspace = useGenerationWorkspace({
     id: "project-1",
     section: "generate",
@@ -312,11 +319,14 @@ function GenerateHarness() {
   );
 }
 
-function renderGenerate() {
+function renderGenerate(harnessProps?: {
+  initialPageId?: string;
+  initialLocalEdit?: PageCandidate | null;
+}) {
   const client = createClient();
   const view = render(
     <QueryClientProvider client={client}>
-      <GenerateHarness />
+      <GenerateHarness {...harnessProps} />
     </QueryClientProvider>,
   );
   return { client, ...view };
@@ -406,6 +416,8 @@ describe("GenerateSection 关键行为", () => {
     characterPackageApi.mockReset();
     workbenchApi.mockReset().mockResolvedValue(workbenchFixture());
     nextPageApi.mockReset();
+    favoriteApi.mockReset();
+    selectApi.mockReset();
   });
 
   it("生产门禁未通过时展示阻塞文案，且不发起生成请求", async () => {
@@ -540,6 +552,50 @@ describe("GenerateSection 关键行为", () => {
       expect(screen.queryByLabelText("局部选区画布")).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "局部修改" })).toBeInTheDocument();
     });
+  });
+
+  it("换页时关闭不属于该页的局部编辑器，避免把 regenerate_region 打到错页", async () => {
+    const candidate = candidateFixture();
+    pagesApi.mockResolvedValue([
+      pageFixture(),
+      pageFixture({ id: "page-2", page_number: 2 }),
+    ]);
+    workbenchApi.mockImplementation(async (pageId: string) => {
+      if (pageId === "page-2") {
+        return workbenchFixture({
+          page: pageFixture({ id: "page-2", page_number: 2 }),
+          selected_candidate: null,
+          candidates: [],
+        });
+      }
+      return workbenchFixture({ candidates: [candidate], selected_candidate: candidate });
+    });
+    renderGenerate({ initialPageId: "page-2", initialLocalEdit: candidate });
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "第 2 页候选" })).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText("局部选区画布")).not.toBeInTheDocument();
+    expect(screen.queryByText(/局部选区重绘 · 第 1 页/)).not.toBeInTheDocument();
+  });
+
+  it("后续成功动作会清掉先前动作的错误条", async () => {
+    const candidate = candidateFixture({ is_selected: false });
+    workbenchApi.mockResolvedValue(workbenchFixture({ candidates: [candidate], selected_candidate: null }));
+    candidatesApi.mockResolvedValue([candidate]);
+    favoriteApi.mockRejectedValueOnce(new Error("收藏失败"));
+    selectApi.mockResolvedValue(pageFixture({ selected_candidate_id: candidate.id }));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderGenerate();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /收藏/ })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /收藏/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("收藏失败");
+    fireEvent.click(screen.getByRole("button", { name: /人工校对并暂选/ }));
+    await waitFor(() => {
+      expect(screen.queryByText("收藏失败")).not.toBeInTheDocument();
+    });
+    confirmSpy.mockRestore();
   });
 
   it("旧候选横幅沿用并重新检查会调用 keepSelectedCandidate 并刷新 workbench", async () => {

@@ -276,6 +276,7 @@ describe("UsageDashboard cost semantics", () => {
     expect(within(billedPanel).getByText("8 月账单")).toBeTruthy();
     // The attempts table shows its own empty row, not a page-level empty gate.
     expect(screen.getByText("该范围暂无调用尝试记录")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "导出 CSV" })).toBeEnabled();
   });
 
   it("keeps the dashboard visible when loading the next attempts page fails", async () => {
