@@ -12,18 +12,21 @@ export function ClampedNumberInput({
   max,
   onCommit,
   ariaLabel,
+  step = 1,
 }: {
   value: number;
   min: number;
   max: number;
   onCommit: (value: number) => void;
   ariaLabel?: string;
+  step?: number | "any";
 }) {
   const [raw, setRaw] = useState<string | null>(null);
   return <input
     type="number"
     min={min}
     max={max}
+    step={step}
     aria-label={ariaLabel}
     value={raw ?? String(value)}
     onChange={(event) => setRaw(event.target.value)}
@@ -31,7 +34,7 @@ export function ClampedNumberInput({
       if (raw === null) return;
       const parsed = Number(raw);
       if (raw.trim() !== "" && Number.isFinite(parsed)) {
-        onCommit(Math.min(max, Math.max(min, Math.round(parsed))));
+        onCommit(Math.min(max, Math.max(min, step === 1 ? Math.round(parsed) : parsed)));
       }
       // 空/非法输入放弃修改,回显已提交的值。
       setRaw(null);

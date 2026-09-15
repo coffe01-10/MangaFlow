@@ -17,6 +17,8 @@ import {
 } from "@/lib/api";
 
 import { CharacterPackageWorkspace } from "./character-package-workspace";
+import { PackageViewMatrix } from "./package-view-matrix";
+import { PackageExpressionMatrix } from "./package-expression-matrix";
 import {
   buildDefaultReferenceSelections,
   isGenerationReferenceReady,
@@ -45,6 +47,27 @@ const defaultOutfitApi = vi.spyOn(api, "setCharacterPackageOutfitDefault");
 const diffApi = vi.spyOn(api, "characterPackageDiff");
 const uploadApi = vi.spyOn(api, "uploadAsset");
 const outfitsApi = vi.spyOn(api, "outfits");
+
+describe("参考图上传格式反馈", () => {
+  it.each(["view", "expression"])("%s 拒绝不支持格式并允许重新选择", (kind) => {
+    const onUploadSlot = vi.fn();
+    const props = {
+      version: versionFixture(), characterName: "林澈", assets: [], bindableAssets: [],
+      editable: true, busy: false, onBindSlot: vi.fn(), onUnbind: vi.fn(), onUploadSlot,
+    };
+    render(kind === "view" ? <PackageViewMatrix {...props} /> : <PackageExpressionMatrix {...props} />);
+    if (kind === "expression") fireEvent.change(screen.getByLabelText("表情标签"), { target: { value: "joy" } });
+    const input = screen.getByLabelText(kind === "view" ? "上传正面（主视）参考图" : "上传表情参考图");
+    fireEvent.change(input, { target: { files: [new File(["gif"], "image.gif", { type: "image/gif" })] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("仅支持 PNG、JPEG 或 WebP 图片");
+    expect(onUploadSlot).not.toHaveBeenCalled();
+    const valid = new File(["png"], "image.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [valid] } });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(onUploadSlot).toHaveBeenCalledTimes(1);
+    expect(onUploadSlot.mock.calls[0].at(-1)).toBe(valid);
+  });
+});
 
 function characterFixture(overrides: Partial<Character> = {}): Character {
   return {
