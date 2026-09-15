@@ -280,6 +280,9 @@ def restore_job(
     response_model=JobArchiveResult,
 )
 def archive_completed_jobs(project_id: str, db: Session = Depends(get_db)) -> JobArchiveResult:
+    project = db.get(Project, project_id)
+    if not project or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
     archived_at = utcnow()
     # Single conditional update: a job concurrently retried back to an active
     # status between the SELECT and the write must not be archived out of the
@@ -307,6 +310,9 @@ def bulk_archive_jobs(
     payload: JobBulkArchiveRequest,
     db: Session = Depends(get_db),
 ) -> JobArchiveResult:
+    project = db.get(Project, project_id)
+    if not project or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
     jobs = list(
         db.scalars(
             select(GenerationJob).where(

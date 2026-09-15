@@ -251,7 +251,7 @@ export function UsageDashboard() {
             type="button"
             className="button ghost compact"
             onClick={exportCsv}
-            disabled={!summaryData || summaryData.groups.length === 0}
+            disabled={!summaryData || (summaryData.groups.length === 0 && summaryData.billed.length === 0)}
           >
             <Download size={15} />导出 CSV
           </button>

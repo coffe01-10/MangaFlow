@@ -55,6 +55,7 @@ export function useGenerationWorkspace({
   requireDrawModel: () => ImageModelAlias;
 }) {
   const queryClient = useQueryClient();
+  const [actionNotice, setActionNotice] = useState<Error | null>(null);
   const [viewedBatchId, setViewedBatchId] = useState<string | null>(null);
   const [reviewCandidateId, setReviewCandidateId] = useState<string | null>(null);
   const [referenceSelections, setReferenceSelections] = useState<ReferenceSelections>({});
@@ -249,11 +250,13 @@ export function useGenerationWorkspace({
       return api.startBatch(selectedPage!.id);
     },
     onSuccess: (batch) => {
+      setActionNotice(null);
       setViewedBatchId(batch.id);
       setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
     },
+    onError: (error) => setActionNotice(error),
   });
 
   const generate = useMutation({
@@ -277,6 +280,7 @@ export function useGenerationWorkspace({
       );
     },
     onSuccess: () => {
+      setActionNotice(null);
       setDraft(null);
       // 新批次（currentBatch 为空时 startBatch）会替换当前查看的批次；旧批次的
       // reviewCandidateId 若不清理，检查面板会在新批次下继续渲染，且其修复按钮
@@ -290,26 +294,31 @@ export function useGenerationWorkspace({
       queryClient.invalidateQueries({ queryKey: ["library", id] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
     },
+    onError: (error) => setActionNotice(error),
   });
 
   const favorite = useMutation({
     mutationFn: ({ candidateId, value }: { candidateId: string; value: boolean }) =>
       api.favoriteCandidate(candidateId, value),
     onSuccess: () => {
+      setActionNotice(null);
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
     },
+    onError: (error) => setActionNotice(error),
   });
 
   const deleteCandidate = useMutation({
     mutationFn: (candidateId: string) => api.deleteCandidate(candidateId),
     onSuccess: (_, candidateId) => {
+      setActionNotice(null);
       // Otherwise the inspection panel keeps rendering rows for a deleted
       // candidate until the user manually closes it.
       if (reviewCandidateId === candidateId) setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
     },
+    onError: (error) => setActionNotice(error),
   });
 
   const inspectCandidate = useMutation({
@@ -382,23 +391,27 @@ export function useGenerationWorkspace({
     mutationFn: ({ candidateId, manualTextConfirmed, acceptStale = false }: { candidateId: string; manualTextConfirmed: boolean; acceptStale?: boolean }) =>
       api.selectCandidate(selectedPage!.id, candidateId, manualTextConfirmed, acceptStale),
     onSuccess: () => {
+      setActionNotice(null);
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
+    onError: (error) => setActionNotice(error),
   });
 
   const keepSelectedCandidate = useMutation({
     mutationFn: (candidateId: string) =>
       api.keepSelectedCandidate(selectedPage!.id, candidateId, selectedPage!.storyboard_version),
     onSuccess: () => {
+      setActionNotice(null);
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
     onError: (error) => {
+      setActionNotice(error);
       // 409：提交的 storyboard_version 已过期（工作台快照落后于服务端，如分镜
       // 保存后未失效的窗口）。不失效会让「沿用并重新检查」带着同一旧版本无限
       // 重试；失效工作台与分镜快照，下一次尝试携带新版本（#544）。
@@ -411,17 +424,20 @@ export function useGenerationWorkspace({
   const retractSelectedCandidate = useMutation({
     mutationFn: (pageId: string) => api.retractSelectedCandidate(pageId),
     onSuccess: () => {
+      setActionNotice(null);
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
       queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
+    onError: (error) => setActionNotice(error),
   });
 
   const goNext = useMutation({
     mutationFn: () => api.nextPage(selectedPage!.id),
     onSuccess: (next) => {
+      setActionNotice(null);
       setSelectedPageId(next.id);
       setReferenceSelections({});
       setReferenceOverridePageId(null);
@@ -436,21 +452,11 @@ export function useGenerationWorkspace({
         queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage.id] });
       }
     },
+    onError: (error) => setActionNotice(error),
   });
 
-  // Adoption/inspection/navigation actions used to fail with no surface at
-  // all: the buttons un-pended and the UI silently diverged from the server.
-  // Mutations reset their error on the next submit, so an aggregate derived
-  // value is enough for one shared, actionable message.
   // inspect/repair/upscale 已在 InspectionPanel 内展示，不重复聚合。
-  const actionError =
-    favorite.error ??
-    deleteCandidate.error ??
-    selectCandidate.error ??
-    keepSelectedCandidate.error ??
-    retractSelectedCandidate.error ??
-    goNext.error ??
-    null;
+  const actionError = actionNotice;
 
   return {
     viewedBatchId,

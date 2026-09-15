@@ -144,6 +144,9 @@
   .body, .body.libraryClosed, .body.inspectorClosed,
   .body.libraryClosed.inspectorClosed, .studio:has(.legacy) .body {
     height: auto; grid-template-columns: minmax(0, 1fr);
+    /* Sticky runner overlays the stacked panels; keep the last inspector
+       rows (version restore) and canvas toolbar clear of the footer. */
+    padding-bottom: 96px;
   }
   .canvas { grid-row: 1; height: 520px; }
   .canvasToolbar { max-width: calc(100% - 24px); flex-wrap: wrap; }
@@ -153,7 +156,7 @@
   .runner { position: sticky; flex-wrap: wrap; }
   .runScope { flex-wrap: wrap; min-width: 0; }
   .runScope select { max-width: 100%; }
-  .runState { display: none; }
+  .runState { min-width: 0; flex: 1 1 140px; }
   .runActions { margin-left: 0; flex-wrap: wrap; }
   .approval { left: 14px; right: 14px; overflow-x: auto; }
 }

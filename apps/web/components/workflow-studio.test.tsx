@@ -66,6 +66,27 @@ const chaptersSpy = vi.spyOn(api, "chapters");
 const pagesSpy = vi.spyOn(api, "pages");
 const versionsSpy = vi.spyOn(api, "workflowVersions");
 const runsSpy = vi.spyOn(api, "workflowRuns");
+const runDetailSpy = vi.spyOn(api, "workflowRun").mockImplementation(async (runId: string) => {
+  const last = [...runsSpy.mock.results].reverse().find((result) => result.type === "return");
+  const listed = last ? await last.value as WorkflowRun[] : [];
+  const found = listed.find((item) => item.id === runId);
+  if (found) return found;
+  return {
+    id: runId,
+    workflow_id: "wf-1",
+    workflow_version_id: "ver-1",
+    project_id: "project-1",
+    scope_type: "CHAPTER",
+    scope_id: "ch-1",
+    status: "COMPLETED",
+    start_node_ids: [],
+    stop_node_ids: [],
+    node_runs: [],
+    created_at: "2026-08-27T00:00:00Z",
+    updated_at: "2026-08-27T00:00:00Z",
+    version: 1,
+  };
+});
 const startRunSpy = vi.spyOn(api, "startWorkflowRun");
 const updateSpy = vi.spyOn(api, "updateWorkflow");
 const publishSpy = vi.spyOn(api, "publishWorkflow");
@@ -529,6 +550,15 @@ describe("WorkflowStudio 运行状态显示", () => {
       screen.getByRole("button", { name: /重试/ }).click();
     });
     await waitFor(() => expect(retrySpy).toHaveBeenCalledWith("run-1"));
+  });
+
+  it("列表仍为 RUNNING 时，单条 run 的 reconcile 结果能把页脚推进到已完成", async () => {
+    runsSpy.mockResolvedValue([run({ status: "RUNNING" })]);
+    runDetailSpy.mockImplementationOnce(async () => run({ status: "COMPLETED" }));
+    renderStudio();
+    await screen.findByText("流程编排");
+    expect(await screen.findByText(/运行 已完成/)).toBeInTheDocument();
+    expect(runDetailSpy).toHaveBeenCalledWith("run-1");
   });
 
   // #380：旧谓词只认 RUNNING——审批栅栏把 run 置为 PAUSED 后轮询停摆，

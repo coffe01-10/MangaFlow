@@ -191,6 +191,15 @@ export default function ProjectWorkspace({
     setNavOpen(false);
   }
 
+  function openLocalEdit(candidate: PageCandidate) {
+    if (candidate.page_id) setSelectedPageId(candidate.page_id);
+    setLocalEditCandidate(candidate);
+    if (section !== "generate") {
+      rememberWorkspaceScroll();
+      router.push(projectPath("generate"));
+    }
+  }
+
   function requireDrawModel(): ImageModelAlias {
     if (!activeDrawModel) throw new Error("请先选择一个支持参考图编辑的图片模型");
     return activeDrawModel;
@@ -516,7 +525,7 @@ export default function ProjectWorkspace({
               workspace={generationWorkspace}
               models={models}
               localEditCandidate={localEditCandidate}
-              openLocalEdit={setLocalEditCandidate}
+              openLocalEdit={openLocalEdit}
               closeLocalEdit={() => setLocalEditCandidate(null)}
             />
           )}
@@ -552,7 +561,7 @@ export default function ProjectWorkspace({
         onClose={() => setPreviewImage(null)}
         onLocalEdit={previewImage.candidate ? (candidate) => {
           setPreviewImage(null);
-          setLocalEditCandidate(candidate);
+          openLocalEdit(candidate);
         } : undefined}
       />}
 

@@ -178,9 +178,15 @@ export function LocalEditWorkspace({
   });
 
   // --- derived candidate tracking (L7/L8/L9/L17) -------------------------
+  const acceptedAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    acceptedAtRef.current = acceptedCommandId ? Date.now() : null;
+  }, [acceptedCommandId]);
+
   const derivedQuery = useQuery({
     queryKey: ["local-edit-derived", id, acceptedCommandId],
     enabled: Boolean(acceptedCommandId),
+    retry: false,
     queryFn: async () => {
       const batches = await api.batches(page.id);
       const regionBatches = batches
@@ -191,9 +197,13 @@ export function LocalEditWorkspace({
         const found = items.find((item) => candidateMatchesCommand(item, acceptedCommandId!));
         if (found) return found;
       }
+      if (acceptedAtRef.current && Date.now() - acceptedAtRef.current > 30_000) {
+        throw new Error("局部候选迟迟未出现，请到任务中心查看或重新提交");
+      }
       return null;
     },
     refetchInterval: (query) => {
+      if (query.state.status === "error") return false;
       const phase = derivedCandidatePhase(query.state.data);
       return phase === "none" || phase === "pending" ? 2500 : false;
     },
@@ -415,6 +425,11 @@ export function LocalEditWorkspace({
 
   const submitPreview = () => {
     if (submittingRef.current || locked) return;
+    if (candidate.page_id && candidate.page_id !== page.id) {
+      setNotice("局部编辑的候选不属于当前页，已取消提交");
+      onClose();
+      return;
+    }
     if (!gate.ok || !modelAlias) {
       setNotice(gate.reason);
       return;
