@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "20260714_01"
 down_revision: str | Sequence[str] | None = "949d8856e6a4"
@@ -170,7 +171,10 @@ def upgrade() -> None:
     op.create_index("ix_generation_batches_page_id", "generation_batches", ["page_id"])
     op.create_index("ix_generation_batches_target_id", "generation_batches", ["target_id"])
 
-    resolution = sa.Enum("DRAFT_1K", "STANDARD_2K", "HIGH_4K", name="resolution")
+    # The base revision creates/drops this shared type; this revision only borrows it.
+    resolution = postgresql.ENUM(
+        "DRAFT_1K", "STANDARD_2K", "HIGH_4K", name="resolution", create_type=False
+    )
     op.create_table(
         "page_candidates",
         sa.Column("id", sa.String(length=36), primary_key=True),
