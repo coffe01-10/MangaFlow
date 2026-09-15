@@ -431,6 +431,30 @@ def test_invoke_provider_records_text_usage_on_success(db_session):
     assert int(attempt.output_tokens) == 20
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_invoke_provider_persists_dispatch_count(db_session, failed):
+    job, run = _job_binding(db_session, SimpleNamespace())
+    usage = {"prompt_tokens": 10, "completion_tokens": 20, "dispatch_count": 3}
+
+    def invoke(_adapter):
+        if failed:
+            raise ProviderAdapterError("TIMEOUT", "retry exhausted", usage=usage)
+        reply = SmokeReply(ok=True)
+        attach_provider_usage(reply, usage)
+        return reply
+
+    if failed:
+        with pytest.raises(ProviderAdapterError):
+            run(invoke)
+    else:
+        run(invoke)
+    attempt = db_session.query(ModelCallAttempt).filter_by(job_id=job.id).one()
+    assert attempt.usage == usage
+    assert attempt.usage_status == "COMPLETE"
+    assert int(attempt.input_tokens) == 10
+    assert int(attempt.output_tokens) == 20
+
+
 def test_invoke_provider_keeps_null_usage_when_adapter_reported_none(db_session):
     """The NULL-usage discriminator (recovery-sweep upgrade) must survive:
     a text result without provider_usage records NULL, not a fabricated 0."""
