@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { ImagePlus, Upload } from "lucide-react";
-import { useRef, type ChangeEvent, type KeyboardEvent } from "react";
+import { useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { publicUrl, type Asset, type PackageReference, type PackageRole, type PackageVersion } from "@/lib/api";
 
@@ -44,6 +44,7 @@ export function PackageViewMatrix({
   onUploadSlot: (role: PackageRole, file: File) => void;
 }) {
   const gridRef = useRef<HTMLDivElement>(null);
+  const [uploadError, setUploadError] = useState("");
 
   function onGridKey(event: KeyboardEvent<HTMLDivElement>) {
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
@@ -61,7 +62,11 @@ export function PackageViewMatrix({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    if (!IMAGE_TYPES.includes(file.type)) return;
+    if (!IMAGE_TYPES.includes(file.type)) {
+      setUploadError("仅支持 PNG、JPEG 或 WebP 图片");
+      return;
+    }
+    setUploadError("");
     onUploadSlot(role, file);
   }
 
@@ -71,6 +76,7 @@ export function PackageViewMatrix({
         <strong>多角度视角矩阵</strong>
         <small>{editable ? "正面 15 · 侧面 10 · 背面 10 · 3/4 侧 5 分" : "已发布版本的四视图冻结展示"}</small>
       </header>
+      {editable && uploadError && <p className="form-error" role="alert">{uploadError}</p>}
       <div className="pkg-matrix-grid" ref={gridRef} onKeyDown={onGridKey}>
         {VIEW_SLOTS.map(({ role, label }) => {
           const reference = version.references.find((item) => item.role === role);

@@ -37,6 +37,7 @@ export function PackageExpressionMatrix({
 }) {
   const [label, setLabel] = useState("");
   const [labelError, setLabelError] = useState("");
+  const [uploadError, setUploadError] = useState("");
   const expressions = version.references.filter((item) => item.role === "expression");
 
   function chooseFile(event: ChangeEvent<HTMLInputElement>) {
@@ -44,11 +45,16 @@ export function PackageExpressionMatrix({
     event.target.value = "";
     const trimmed = label.trim();
     if (!file) return;
-    if (!IMAGE_TYPES.includes(file.type)) return;
+    if (!IMAGE_TYPES.includes(file.type)) {
+      setUploadError("仅支持 PNG、JPEG 或 WebP 图片");
+      return;
+    }
+    setUploadError("");
     if (!trimmed) {
       setLabelError("先填写表情标签，例如 neutral / joy / anger / sorrow");
       return;
     }
+    setLabelError("");
     onUploadSlot("expression", trimmed, file);
   }
 
@@ -67,6 +73,7 @@ export function PackageExpressionMatrix({
         <strong>核心表情集</strong>
         <small>每个表情标签 5 分，最多计 4 个（推荐 neutral / joy / anger / sorrow）</small>
       </header>
+      {editable && uploadError && <p className="form-error" role="alert">{uploadError}</p>}
       {expressions.length ? (
         <div className="pkg-matrix-grid">
           {expressions.map((reference) => {
