@@ -82,7 +82,11 @@ export function ProviderCreateForm({
           value={name}
           onChange={(event) => {
             setName(event.target.value);
-            if (field === "name") setField(null);
+            if (field === "name") {
+              setField(null);
+              setLocalError("");
+              create.reset();
+            }
           }}
           placeholder="供应商名称"
         />
@@ -105,6 +109,7 @@ export function ProviderCreateForm({
             if (field === "url") {
               setField(null);
               setLocalError("");
+              create.reset();
             }
           }}
           placeholder="https://api.example.com/v1"

@@ -122,6 +122,35 @@ describe("WorkflowStudio 草稿保存与发布", () => {
     });
   });
 
+  it.each([
+    ["超时（秒）", ["4", "45"], "timeout_seconds", 45],
+    ["超时（秒）", ["6", "60", "600"], "timeout_seconds", 600],
+    ["超时（秒）", ["9004", "90045"], "timeout_seconds", 3600],
+    ["温度", ["0", "0.4", "0.45"], "temperature", 0.45],
+    ["重试次数", ["1", "10"], "max_attempts", 10],
+  ])("%s 输入完整后才提交 %s", async (label, steps, key, expected) => {
+    updateSpy.mockImplementation(async (_id, _version, payload) => workflow({
+      version: 2, draft_version: 2, draft_graph: payload.draft_graph,
+    }));
+    renderStudio();
+    fireEvent.click(await screen.findByRole("button", { name: /解析原作/ }));
+    const input = screen.getByRole("spinbutton", { name: label });
+    for (const value of steps) {
+      fireEvent.change(input, { target: { value } });
+      expect(input).toHaveValue(Number(value));
+    }
+    // Even an explicit save while typing must not persist the partial number.
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+    expect(updateSpy.mock.calls[0][2].draft_graph?.nodes[0].config[key as "temperature"])
+      .not.toBe(expected);
+    act(() => { input.focus(); input.blur(); });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(2));
+    expect(updateSpy.mock.calls[1][2].draft_graph?.nodes[0].config[key as "temperature"])
+      .toBe(expected);
+  });
+
   it("保存中继续改图会补交最新草稿，已保存与持久化内容一致", async () => {
     const first = deferred<WorkflowDefinition>();
     const second = deferred<WorkflowDefinition>();

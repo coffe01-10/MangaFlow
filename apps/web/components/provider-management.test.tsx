@@ -939,6 +939,22 @@ describe("供应商生命周期", () => {
     });
   });
 
+  it.each([
+    ["供应商名称已存在", "供应商名称", "另一个供应商"],
+    ["供应商 Base URL 必须是 HTTP(S) 地址", "Base URL", "https://corrected.example/v1"],
+  ])("编辑错误字段后清除服务端错误：%s", async (message, field, value) => {
+    createProvider.mockRejectedValueOnce(new Error(message));
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "添加供应商" }));
+    fireEvent.change(screen.getByLabelText("供应商名称"), { target: { value: "Custom" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://api.example.com/v1" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(field), { target: { value } });
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(field)).toHaveAttribute("aria-invalid", "false");
+  });
+
   it("P4 创建成功后刷新、清空表单、展开新卡并聚焦密钥输入", async () => {
     const created = makeProvider({
       id: "custom-1",
