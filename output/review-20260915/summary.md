@@ -34,6 +34,18 @@ The original documentation-only PR #782 was reviewed separately. Its original CI
 
 Additional evidence: [1320px desktop](web-workflow-1320.png), [persisted numeric inputs](web-workflow.png), [native generation at 940px](native-generate-940.png). The browser's 390px full-page capture contained stitching artifacts and was discarded; the 390px interaction checks used live viewport observations.
 
+## Lead review round (2026-09-15, stacked PRs #786-#791)
+
+Four review agents re-audited the stack against the advanced master (`117f8dd`); two P1 blockers and several P2 findings were fixed by the lead on the PR branches:
+
+- **#786 P1**: archive (project → run) and the GENERATE approval unit (run → project inside `create_generation_batch`) formed an AB-BA lock pair on PostgreSQL. The approval unit now fences the project row first (`project → run → node`) and fails closed with 404 on archived projects. The archive orchestration moved from the projects route into `app/services/project_archive.py`, and a new `archive_approve` entry joins the live-PG race matrix plus a SQLite test pinning the fail-closed path.
+- **#787 nits**: `OWNED_ENUM_NAMES` is now the single source for the six shared enum types (upgrade create and downgrade drop), and the live migration test asserts the exact enum set after the split upgrade and the downgrade/re-upgrade roundtrip, plus `test_image_approved` in the backfill assertions.
+- **#788 nit**: the runner type-check glob now covers nested `scripts/**/*.mjs`. The non-strict checkJs tradeoff (strict would currently surface 23 errors) is recorded on the PR.
+- **#789 P2**: a heading skipped for zero area must now be effectively collapsed; a visible-but-zero-area heading fails the parity check instead of silently bypassing it. Verified with the full native `--render` suite (56 client checks).
+- **#791 P1/P2**: `.studio { overflow: hidden }` made the narrow-screen `position: sticky` runner dead code (buried ~1500px down the stacked panels); the media query now uses `overflow-x: clip` so sticky pins to the viewport. The fixed save toast no longer covers the wrapped topbar (static in flow on narrow screens), and the inspector version list no longer overflows its panel (flex column with a capped, scrollable list — also fixes the desktop variant). A new Playwright spec pins toolbar/selector reachability, the in-flow notice, and the pinned runner at 390px.
+
+Verification this round: archive/facade/adjacent SQLite suites (39 + 143 passed), native `--render` (56 checks passed), runner `tsc` + 16 Node contract tests, full owned Playwright suite **20 passed** including the new narrow-viewport spec. PostgreSQL live integration was **NOT RUN** this round (the previously used portable instance was removed and no PostgreSQL/Docker exists on this machine); the live archive-race matrix including the new `archive_approve` entry stays fail-closed behind `--run-live-integration`.
+
 ## Boundaries and resource ownership
 
 Live paid provider dispatches and Redis/RQ acceptance were not run. The native interaction suite does not establish physical mouse double-click timing. Browser checks use isolated fixture data and no provider credentials. No claim is made that undiscovered defects cannot exist.

@@ -41,7 +41,10 @@
 .body.libraryClosed.inspectorClosed { grid-template-columns: 0 minmax(420px, 1fr) 0; }
 .library, .inspector { min-width: 0; overflow: hidden; background: var(--flow-panel); transition: width .2s ease; }
 .library { border-right: 1px solid var(--flow-line); }
-.inspector { border-left: 1px solid var(--flow-line); }
+/* Flex column with a capped, scrollable version list: the old fixed
+   form height (100% - 200px) plus a 4-row version list overflowed the
+   panel and clipped the last rows behind overflow:hidden. */
+.inspector { border-left: 1px solid var(--flow-line); display: flex; flex-direction: column; }
 .library > header, .inspector > header { height: 53px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--flow-line); }
 .library > header div, .inspector > header div { display: grid; gap: 2px; }
 .library > header span, .inspector > header span { color: #a4ada7; font-size: 7px; letter-spacing: .15em; }
@@ -85,7 +88,7 @@
 .validation div { display: grid; gap: 4px; }
 .validation span { font-size: 7px; line-height: 1.4; }
 .validation button { border: 0; background: transparent; color: inherit; }
-.inspectorForm { height: calc(100% - 200px); overflow: auto; padding: 12px; }
+.inspectorForm { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px; }
 .inspectorForm label { display: grid; gap: 5px; margin-bottom: 11px; color: #89918c; font-size: 7px; }
 .inspectorForm input, .inspectorForm select, .inspectorForm textarea { width: 100%; min-height: 32px; padding: 7px 8px; border: 1px solid var(--flow-line); outline: 0; background: #191d1a; color: #e4e2db; font-size: 8px; }
 .inspectorForm textarea { min-height: 72px; resize: vertical; }
@@ -98,7 +101,7 @@
 .nodeRuntime > span { color: #8f9992; font-size: 12px; }
 .nodeRuntime pre { max-height: 120px; margin: 0; padding: 8px; overflow: auto; background: #111411; color: #aeb8b1; font-size: 11px; white-space: pre-wrap; }
 .nodeRuntime em { color: #dc8b7e; font-size: 12px; font-style: normal; }
-.versionList { border-top: 1px solid var(--flow-line); }
+.versionList { flex: 0 1 auto; max-height: 45%; min-height: 0; overflow-y: auto; border-top: 1px solid var(--flow-line); }
 .versionList > header { height: 37px; padding: 0 10px; display: flex; justify-content: space-between; align-items: center; color: #b8c0ba; font-size: 7px; }
 .versionList button { width: 100%; min-height: 32px; display: grid; grid-template-columns: 18px 36px 1fr; align-items: center; border: 0; border-top: 1px solid #303632; background: transparent; color: #b9bfbb; text-align: left; cursor: pointer; font-size: 7px; }
 .versionList small { color: #a4ada7; text-align: right; padding-right: 8px; }
@@ -119,6 +122,11 @@
 /* Keep every editor control reachable on narrow screens. In document flow,
    side panels cannot cover the canvas or the save/validation controls. */
 @media (max-width: 980px) {
+  /* overflow:hidden would become the runner's nearest scroll box and never
+     scroll, turning its sticky pinning into dead code and burying the run
+     footer ~1500px down the stacked panels. overflow-x:clip still fences
+     stray canvas overflow without creating a scroll container. */
+  .studio { overflow-x: clip; overflow-y: visible; }
   .topbar { height: auto; display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; }
   .crumb { width: 100%; min-width: 0; padding-left: 0; flex-wrap: wrap; }
   .crumb strong { overflow-wrap: anywhere; }
@@ -127,6 +135,9 @@
   .topActions { flex-wrap: wrap; padding-right: 0; }
   .legacy { grid-template-columns: 24px minmax(0, 1fr); }
   .legacy button { grid-column: 2; }
+  /* The wrapped topbar is ~3 rows tall; the fixed toast's 68px offset would
+     sit on top of the workflow selector and the save/validate actions. */
+  .notice { position: static; margin: 10px 14px 0; }
   .workflowStatus { flex-wrap: wrap; gap: 8px; }
   .workflowStatus > div { min-width: 0; flex: 1 1 100px; }
   .workflowStatus button { margin-left: 0; }
