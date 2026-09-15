@@ -354,7 +354,10 @@ os._exit(23)
     env = {key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ}
     env.update(TEMP=str(tmp_path), TMP=str(tmp_path), PYTHONDONTWRITEBYTECODE="1")
     controller = subprocess.Popen(
-        [sys.executable, "-I", "-B", "-c", code, repo, str(tmp_path), str(pointer)],
+        # Windows venv python.exe is a redirector: killing its Popen handle
+        # need not kill the interpreter that owns the journal's Job Object.
+        # This stdlib-only controller must be the actual process under test.
+        [sys._base_executable, "-I", "-B", "-S", "-c", code, repo, str(tmp_path), str(pointer)],
         cwd=tmp_path,
         env=env,
         stdout=subprocess.DEVNULL,
@@ -367,6 +370,10 @@ os._exit(23)
         directory = Path(identity["directory"])
         leaf = int(_wait_process_file(directory / "payload" / "leaf.pid"))
         record = json.loads((directory / "owner.json").read_text(encoding="utf-8"))
+        assert record["controller_pid"] == controller.pid, (
+            f"controller identity mismatch: Popen={controller.pid}, "
+            f"journal={record['controller_pid']}, executable={sys._base_executable}"
+        )
         for pid in [record["processes"][0]["pid"], leaf]:
             handles.append(_checked(api.OpenProcess(0x100000, False, pid)))
         if ending == "kill":

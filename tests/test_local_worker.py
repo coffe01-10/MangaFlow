@@ -39,58 +39,64 @@ def test_local_worker_executes_eight_jobs_with_project_concurrency(monkeypatch):
             f"sqlite:///{Path(directory) / 'jobs.db'}",
             connect_args={"check_same_thread": False},
         )
-        testing_session = sessionmaker(
-            bind=engine, autoflush=False, expire_on_commit=False
-        )
-        Base.metadata.create_all(engine)
-        with testing_session() as db:
-            project = Project(name="本地并发", default_concurrency=2)
-            db.add(project)
-            db.flush()
-            jobs = [
-                GenerationJob(
-                    project_id=project.id,
-                    target_type="CHAPTER",
-                    target_id=f"target-{index}",
-                    job_type="SOURCE_PARSE",
-                    status=JobStatus.QUEUED,
-                )
-                for index in range(8)
-            ]
-            db.add_all(jobs)
-            db.commit()
-            job_ids = [job.id for job in jobs]
+        try:
+            testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+            Base.metadata.create_all(engine)
+            with testing_session() as db:
+                project = Project(name="本地并发", default_concurrency=2)
+                db.add(project)
+                db.flush()
+                jobs = [
+                    GenerationJob(
+                        project_id=project.id,
+                        target_type="CHAPTER",
+                        target_id=f"target-{index}",
+                        job_type="SOURCE_PARSE",
+                        status=JobStatus.QUEUED,
+                    )
+                    for index in range(8)
+                ]
+                db.add_all(jobs)
+                db.commit()
+                job_ids = [job.id for job in jobs]
 
-        monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
-        monkeypatch.setattr(database, "SessionLocal", testing_session)
-        active = 0
-        peak = 0
-        lock = Lock()
+            monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+            monkeypatch.setattr(database, "SessionLocal", testing_session)
+            active = 0
+            peak = 0
+            lock = Lock()
+            pair_started = Event()
 
-        def fake_run(_db, _job):
-            nonlocal active, peak
-            with lock:
-                active += 1
-                peak = max(peak, active)
-            time.sleep(0.04)
-            with lock:
-                active -= 1
+            def fake_run(_db, _job):
+                nonlocal active, peak
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                    if active == 2:
+                        pair_started.set()
+                try:
+                    # Force actual overlap; a 40ms sleep can run serially on a
+                    # cold CI host and falsely fail the peak-concurrency check.
+                    assert pair_started.wait(5), "two project slots never became active"
+                finally:
+                    with lock:
+                        active -= 1
 
-        monkeypatch.setattr(worker_tasks, "_run_story_parse", fake_run)
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = [
-                executor.submit(job_service._execute_locally, job_id)
-                for job_id in job_ids
-            ]
-            for future in futures:
-                future.result(timeout=10)
+            monkeypatch.setattr(worker_tasks, "_run_story_parse", fake_run)
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = [
+                    executor.submit(job_service._execute_locally, job_id) for job_id in job_ids
+                ]
+                for future in futures:
+                    future.result(timeout=10)
 
-        with testing_session() as db:
-            completed = list(db.query(GenerationJob).all())
-            assert all(job.status == JobStatus.COMPLETED for job in completed)
-            assert all(job.attempt_count == 1 for job in completed)
-        assert peak == 2
-        engine.dispose()
+            with testing_session() as db:
+                completed = list(db.query(GenerationJob).all())
+                assert all(job.status == JobStatus.COMPLETED for job in completed)
+                assert all(job.attempt_count == 1 for job in completed)
+            assert peak == 2
+        finally:
+            engine.dispose()
 
 
 def test_duplicate_worker_claim_executes_a_job_only_once(monkeypatch):
@@ -99,9 +105,7 @@ def test_duplicate_worker_claim_executes_a_job_only_once(monkeypatch):
             f"sqlite:///{Path(directory) / 'duplicate.db'}",
             connect_args={"check_same_thread": False},
         )
-        testing_session = sessionmaker(
-            bind=engine, autoflush=False, expire_on_commit=False
-        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         Base.metadata.create_all(engine)
         with testing_session() as db:
             project = Project(name="重复执行", default_concurrency=2)
@@ -148,9 +152,7 @@ def test_active_job_cancellation_is_not_overwritten(monkeypatch):
             f"sqlite:///{Path(directory) / 'cancel.db'}",
             connect_args={"check_same_thread": False},
         )
-        testing_session = sessionmaker(
-            bind=engine, autoflush=False, expire_on_commit=False
-        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         Base.metadata.create_all(engine)
         with testing_session() as db:
             project = Project(name="取消竞态")
@@ -199,9 +201,7 @@ def test_stale_cancel_does_not_overwrite_completed_job(monkeypatch):
             f"sqlite:///{Path(directory) / 'stale-cancel.db'}",
             connect_args={"check_same_thread": False},
         )
-        testing_session = sessionmaker(
-            bind=engine, autoflush=False, expire_on_commit=False
-        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         Base.metadata.create_all(engine)
         with testing_session() as db:
             project = Project(name="完成后取消")
@@ -244,9 +244,7 @@ def test_completed_job_persists_full_progress(monkeypatch):
             f"sqlite:///{Path(directory) / 'progress.db'}",
             connect_args={"check_same_thread": False},
         )
-        testing_session = sessionmaker(
-            bind=engine, autoflush=False, expire_on_commit=False
-        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         Base.metadata.create_all(engine)
         with testing_session() as db:
             project = Project(name="完成进度")
@@ -456,12 +454,8 @@ def test_local_mode_submits_without_touching_redis(db_session, monkeypatch):
     _set_queue_mode(db_session, "LOCAL")
     job = _waiting_job(db_session, "local")
     submitted: list[str] = []
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
-    monkeypatch.setattr(
-        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
 
     result = job_service.enqueue_job(db_session, job)
 
@@ -500,15 +494,11 @@ def test_diagnostics_route_warns_when_auto_redis_is_unreachable(client, monkeypa
         def close(self):
             pass
 
-    monkeypatch.setattr(
-        "redis.Redis.from_url", lambda *_a, **_k: _FailingRedis()
-    )
+    monkeypatch.setattr("redis.Redis.from_url", lambda *_a, **_k: _FailingRedis())
 
     response = client.get("/api/v1/settings/diagnostics")
     assert response.status_code == 200, response.text
-    queue_check = next(
-        check for check in response.json()["checks"] if check["id"] == "queue"
-    )
+    queue_check = next(check for check in response.json()["checks"] if check["id"] == "queue")
     assert queue_check["status"] == "WARNING", queue_check
     assert "Redis 暂不可用" in queue_check["message"], queue_check
 
@@ -521,17 +511,11 @@ def test_diagnostics_route_reports_embedded_auto_as_ok(client, monkeypatch):
 
     monkeypatch.setattr(
         "app.api.routes.settings.get_settings",
-        lambda: Settings(
-            environment="development", mangaflow_desktop_embedded=True
-        ),
+        lambda: Settings(environment="development", mangaflow_desktop_embedded=True),
     )
     response = client.get("/api/v1/settings/diagnostics")
     assert response.status_code == 200, response.text
-    queue_check = next(
-        check
-        for check in response.json()["checks"]
-        if check["id"] == "queue"
-    )
+    queue_check = next(check for check in response.json()["checks"] if check["id"] == "queue")
     assert queue_check["status"] == "OK", queue_check
     assert "按设计本地执行" in queue_check["message"], queue_check
     assert "AUTO" in queue_check["message"], queue_check
@@ -547,23 +531,17 @@ def test_diagnostics_embedded_message_names_the_stored_mode(client, db_session, 
     _set_queue_mode(db_session, "REDIS")
     monkeypatch.setattr(
         "app.api.routes.settings.get_settings",
-        lambda: Settings(
-            environment="development", mangaflow_desktop_embedded=True
-        ),
+        lambda: Settings(environment="development", mangaflow_desktop_embedded=True),
     )
     response = client.get("/api/v1/settings/diagnostics")
     assert response.status_code == 200, response.text
-    queue_check = next(
-        check for check in response.json()["checks"] if check["id"] == "queue"
-    )
+    queue_check = next(check for check in response.json()["checks"] if check["id"] == "queue")
     assert queue_check["status"] == "OK", queue_check
     assert "REDIS" in queue_check["message"], queue_check
     assert "拦截" in queue_check["message"], queue_check
 
 
-def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
-    db_session, monkeypatch
-):
+def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(db_session, monkeypatch):
     """Diagnostics must match enqueue behavior in the embedded runtime:
     with a REACHABLE ambient Redis, AUTO used to report
     actual_executor=REDIS while enqueues ran locally — advertising an
@@ -573,9 +551,7 @@ def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
     from app.services.runtime_settings import queue_execution_state
 
     _set_queue_mode(db_session, "AUTO")
-    settings = Settings(
-        environment="development", mangaflow_desktop_embedded=True
-    )
+    settings = Settings(environment="development", mangaflow_desktop_embedded=True)
 
     class _FakeRedis:
         def ping(self):
@@ -598,9 +574,7 @@ def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
     assert state.can_execute is True
 
 
-def test_embedded_explicit_redis_mode_also_enqueues_locally(
-    db_session, monkeypatch
-):
+def test_embedded_explicit_redis_mode_also_enqueues_locally(db_session, monkeypatch):
     """An explicit REDIS queue_mode must not bypass the embedded guard: a
     desktop DB restored from a server deployment can carry the mode, and
     an ambient Redis answering a ping is still not an executor the
@@ -610,13 +584,11 @@ def test_embedded_explicit_redis_mode_also_enqueues_locally(
     job = _waiting_job(db_session, "embedded-redis")
     submitted: list[str] = []
     monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(
-            environment="development", mangaflow_desktop_embedded=True
-        )
+        job_service,
+        "get_settings",
+        lambda: Settings(environment="development", mangaflow_desktop_embedded=True),
     )
-    monkeypatch.setattr(
-        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
-    )
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
     enqueued: list[str] = []
 
     class _FakeQueue:
@@ -635,7 +607,9 @@ def test_embedded_explicit_redis_mode_also_enqueues_locally(
     assert result.status == JobStatus.QUEUED
     assert result.error_code == "LOCAL_WORKER"
     assert submitted == [job.id]
-    assert enqueued == [], "explicit REDIS must not hand jobs to ambient Redis in the embedded runtime"
+    assert enqueued == [], (
+        "explicit REDIS must not hand jobs to ambient Redis in the embedded runtime"
+    )
 
 
 def test_embedded_explicit_redis_diagnostics_report_local(db_session, monkeypatch):
@@ -647,9 +621,7 @@ def test_embedded_explicit_redis_diagnostics_report_local(db_session, monkeypatc
     from app.services.runtime_settings import queue_execution_state
 
     _set_queue_mode(db_session, "REDIS")
-    settings = Settings(
-        environment="development", mangaflow_desktop_embedded=True
-    )
+    settings = Settings(environment="development", mangaflow_desktop_embedded=True)
 
     class _FakeRedis:
         def ping(self):
@@ -667,9 +639,7 @@ def test_embedded_explicit_redis_diagnostics_report_local(db_session, monkeypatc
     assert state.can_execute is True
 
 
-def test_auto_diagnostics_without_embedded_flag_still_report_redis(
-    db_session, monkeypatch
-):
+def test_auto_diagnostics_without_embedded_flag_still_report_redis(db_session, monkeypatch):
     """Non-embedded control for the embedded pin above: with a REACHABLE
     Redis and no desktop-embedded flag, AUTO diagnostics still report the
     REDIS executor — guarding the embedded branch from ever swallowing the
@@ -696,9 +666,7 @@ def test_auto_diagnostics_without_embedded_flag_still_report_redis(
     assert state.can_execute is True
 
 
-def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
-    db_session, monkeypatch
-):
+def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(db_session, monkeypatch):
     """The desktop-embedded runtime (#721 diagnosis) must not hand AUTO
     jobs to a coincidentally reachable ambient Redis: with
     desktop_embedded=True the LOCAL adoption fires even though a Redis
@@ -710,13 +678,11 @@ def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
     job = _waiting_job(db_session, "embedded")
     submitted: list[str] = []
     monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(
-            environment="development", mangaflow_desktop_embedded=True
-        )
+        job_service,
+        "get_settings",
+        lambda: Settings(environment="development", mangaflow_desktop_embedded=True),
     )
-    monkeypatch.setattr(
-        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
-    )
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
     # A reachable Redis must be IRRELEVANT in the embedded runtime: the
     # fake would record an enqueue if the code ever tried.
     enqueued: list[str] = []
@@ -740,18 +706,12 @@ def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
     assert enqueued == [], "the embedded runtime must not touch Redis"
 
 
-def test_redis_mode_keeps_job_waiting_when_redis_is_unavailable(
-    db_session, monkeypatch
-):
+def test_redis_mode_keeps_job_waiting_when_redis_is_unavailable(db_session, monkeypatch):
     _set_queue_mode(db_session, "REDIS")
     job = _waiting_job(db_session, "redis")
     submitted: list[str] = []
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
-    monkeypatch.setattr(
-        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
     monkeypatch.setattr(
         "redis.Redis.from_url",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionError()),
@@ -764,9 +724,7 @@ def test_redis_mode_keeps_job_waiting_when_redis_is_unavailable(
     assert submitted == []
 
 
-def test_redis_mode_marker_clear_failure_still_downgrades_to_waiting(
-    db_session, monkeypatch
-):
+def test_redis_mode_marker_clear_failure_still_downgrades_to_waiting(db_session, monkeypatch):
     """The except handler must survive a DBAPI error from the marker-clearing
     execute: refreshing a session left in a failed-transaction state used to
     raise again inside the handler, escaping enqueue_job and skipping the
@@ -775,9 +733,7 @@ def test_redis_mode_marker_clear_failure_still_downgrades_to_waiting(
 
     _set_queue_mode(db_session, "REDIS")
     job = _waiting_job(db_session, "marker")
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
 
     class _FakeConnection:
         def ping(self) -> None:
@@ -842,19 +798,15 @@ def test_redis_mode_marker_clear_failure_still_downgrades_to_waiting(
     assert events[failed_at + 1] == "rollback", (
         "the except handler must roll the session back before refreshing the job"
     )
-    assert "refresh" in events[failed_at + 2:]
+    assert "refresh" in events[failed_at + 2 :]
 
 
 def test_auto_mode_falls_back_to_local_in_development(db_session, monkeypatch):
     _set_queue_mode(db_session, "AUTO")
     job = _waiting_job(db_session, "auto")
     submitted: list[str] = []
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
-    monkeypatch.setattr(
-        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
     monkeypatch.setattr(
         "redis.Redis.from_url",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionError()),
@@ -871,12 +823,8 @@ def test_startup_recovery_requeues_waiting_jobs_in_local_mode(db_session, monkey
     _set_queue_mode(db_session, "LOCAL")
     job = _waiting_job(db_session, "recover")
     submitted: list[str] = []
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
-    monkeypatch.setattr(
-        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
 
     recovered = job_service.recover_pending_jobs(db_session)
 
@@ -904,12 +852,8 @@ def test_startup_recovery_reclaims_an_expired_worker_lease(db_session, monkeypat
     db_session.add(job)
     db_session.commit()
     submitted: list[str] = []
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
-    monkeypatch.setattr(
-        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
 
     recovered = job_service.recover_pending_jobs(db_session)
 
@@ -939,12 +883,8 @@ def test_startup_recovery_reclaims_legacy_active_job_without_lease(db_session, m
     db_session.add(job)
     db_session.commit()
     submitted: list[str] = []
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
-    monkeypatch.setattr(
-        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
 
     recovered = job_service.recover_pending_jobs(db_session)
 
@@ -1040,9 +980,7 @@ def test_startup_recovery_marks_exhausted_target_and_workflow_failed(db_session,
     node_run.job_id = job.id
     db_session.commit()
 
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
     monkeypatch.setattr(job_service, "_submit_local", lambda _job_id: None)
 
     recovered = job_service.recover_pending_jobs(db_session)
@@ -1060,9 +998,7 @@ def test_worker_id_generates_unique_token_per_invocation():
     assert len(set(tokens)) == 100
 
 
-def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(
-    db_session, monkeypatch
-):
+def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(db_session, monkeypatch):
     project = Project(name="租约交接", default_concurrency=2)
     db_session.add(project)
     db_session.flush()
@@ -1148,9 +1084,7 @@ def test_startup_recovery_interleaved_with_worker_claim_does_not_overwrite_new_l
     assert claimed is not None
     assert claimed.lease_owner == owner_b
 
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
     monkeypatch.setattr(job_service, "_submit_local", lambda _job_id: None)
 
     # 执行 recovery 扫描
@@ -1179,7 +1113,9 @@ def test_worker_failure_interleaved_with_reclaimed_lease_does_not_mark_failed(db
     page = MangaPage(chapter_id=chapter.id, page_number=1, status=PageStatus.DRAFT_GENERATING)
     db_session.add(page)
     db_session.flush()
-    batch = GenerationBatch(project_id=project.id, chapter_id=chapter.id, page_id=page.id, ordinal=1)
+    batch = GenerationBatch(
+        project_id=project.id, chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
     db_session.add(batch)
     db_session.flush()
     candidate = PageCandidate(
@@ -1232,9 +1168,7 @@ def test_multi_worker_claim_respects_project_concurrency_without_process_lock():
             f"sqlite:///{Path(directory) / 'concurrency.db'}",
             connect_args={"check_same_thread": False},
         )
-        testing_session = sessionmaker(
-            bind=engine, autoflush=False, expire_on_commit=False
-        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         Base.metadata.create_all(engine)
 
         with testing_session() as db:
@@ -1330,8 +1264,7 @@ def test_claim_job_uses_for_update_when_postgresql_dialect(db_session, monkeypat
 
     # 验证在 postgresql 下对 Project 执行了 with_for_update
     project_queries = [
-        stmt for stmt in captured_statements
-        if getattr(stmt, "_for_update_arg", None) is not None
+        stmt for stmt in captured_statements if getattr(stmt, "_for_update_arg", None) is not None
     ]
     assert len(project_queries) == 1
 
@@ -1418,7 +1351,9 @@ def test_retryable_failure_resets_job_to_waiting_for_rq_retry(db_session):
     page = MangaPage(chapter_id=chapter.id, page_number=1, status=PageStatus.DRAFT_GENERATING)
     db_session.add(page)
     db_session.flush()
-    batch = GenerationBatch(project_id=project.id, chapter_id=chapter.id, page_id=page.id, ordinal=1)
+    batch = GenerationBatch(
+        project_id=project.id, chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
     db_session.add(batch)
     db_session.flush()
     candidate = PageCandidate(
@@ -1706,7 +1641,6 @@ def test_redis_enqueue_does_not_overwrite_completed_job(monkeypatch):
         directory.cleanup()
 
 
-
 def test_enqueue_does_not_overwrite_generating_job(db_session, monkeypatch):
     """P1-9: enqueue must not revert a worker-advanced GENERATING row."""
     _set_queue_mode(db_session, "REDIS")
@@ -1715,9 +1649,7 @@ def test_enqueue_does_not_overwrite_generating_job(db_session, monkeypatch):
     job.lease_owner = "active-worker"
     job.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
     db_session.commit()
-    monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development")
-    )
+    monkeypatch.setattr(job_service, "get_settings", lambda: Settings(environment="development"))
     enqueued = []
 
     class FakeRedis:
@@ -1855,9 +1787,7 @@ def test_recover_pending_jobs_skips_job_claimed_by_concurrent_worker(monkeypatch
             f"sqlite:///{Path(directory) / 'recover.db'}",
             connect_args={"check_same_thread": False},
         )
-        testing_session = sessionmaker(
-            bind=engine, autoflush=False, expire_on_commit=False
-        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         Base.metadata.create_all(engine)
         with testing_session() as db:
             project = Project(name="恢复并发", default_concurrency=1)
@@ -1952,9 +1882,7 @@ def test_final_worker_failure_restores_page_from_draft_generating(monkeypatch):
             f"sqlite:///{Path(directory) / 'pagefail.db'}",
             connect_args={"check_same_thread": False},
         )
-        testing_session = sessionmaker(
-            bind=engine, autoflush=False, expire_on_commit=False
-        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         Base.metadata.create_all(engine)
         with testing_session() as db:
             project = Project(name="失败回退", default_concurrency=1)
@@ -2048,9 +1976,7 @@ def test_start_periodic_recovery_runs_repeatedly(monkeypatch):
         assert not thread.is_alive()
 
 
-def test_restore_holds_draft_generating_while_sibling_still_generating(
-    db_session, monkeypatch
-):
+def test_restore_holds_draft_generating_while_sibling_still_generating(db_session, monkeypatch):
     """Multi-candidate batch: when candidate A fails finally while sibling B is
     still GENERATING, the page must hold DRAFT_GENERATING (pre-fix it flipped
     STORYBOARDED, and B's later success was refused by the DRAFT_GENERATING
@@ -2135,9 +2061,7 @@ def test_execute_job_applies_runtime_lease_override(monkeypatch):
             f"sqlite:///{Path(directory) / 'lease-override.db'}",
             connect_args={"check_same_thread": False},
         )
-        testing_session = sessionmaker(
-            bind=engine, autoflush=False, expire_on_commit=False
-        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         Base.metadata.create_all(engine)
 
         settings = get_settings()
