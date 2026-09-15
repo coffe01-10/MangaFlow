@@ -81,6 +81,7 @@ export function UsageBudgetBanner({ groups, filtered = false }: UsageBudgetBanne
   );
   const [currencyDraft, setCurrencyDraft] = useState("");
   const [amountDraft, setAmountDraft] = useState("");
+  const [formError, setFormError] = useState("");
   const [open, setOpen] = useState(false);
 
   const totals = estimatedTotalsByCurrency(groups);
@@ -98,9 +99,17 @@ export function UsageBudgetBanner({ groups, filtered = false }: UsageBudgetBanne
       currency: currencyDraft.trim().toUpperCase(),
       amount: amountDraft.trim(),
     };
-    if (!/^[A-Z]{3}$/.test(next.currency) || !Number.isFinite(Number(next.amount)) || Number(next.amount) <= 0) {
+    // 校验失败必须给出原因：静默 no-op 会让用户以为已保存（表单还开着，
+    // 但没有任何提示说明为什么预算没生效）。
+    if (!/^[A-Z]{3}$/.test(next.currency)) {
+      setFormError("币种须为 3 位字母（如 CNY）");
       return;
     }
+    if (!Number.isFinite(Number(next.amount)) || Number(next.amount) <= 0) {
+      setFormError("预算金额须为正数");
+      return;
+    }
+    setFormError("");
     writeBudget(next);
     setCurrencyDraft("");
     setAmountDraft("");
@@ -152,7 +161,7 @@ export function UsageBudgetBanner({ groups, filtered = false }: UsageBudgetBanne
             placeholder="CNY"
             maxLength={3}
             value={currencyDraft}
-            onChange={(event) => setCurrencyDraft(event.target.value.toUpperCase())}
+            onChange={(event) => { setFormError(""); setCurrencyDraft(event.target.value.toUpperCase()); }}
           />
           <datalist id="usage-budget-currencies">
             {currencyOptions.map((currency) => (
@@ -166,11 +175,14 @@ export function UsageBudgetBanner({ groups, filtered = false }: UsageBudgetBanne
             step="any"
             placeholder="预算金额"
             value={amountDraft}
-            onChange={(event) => setAmountDraft(event.target.value)}
+            onChange={(event) => { setFormError(""); setAmountDraft(event.target.value); }}
           />
           <button type="button" className="button ink compact" onClick={save}>保存</button>
           {budget ? (
             <button type="button" className="button ghost compact" onClick={clear}>清除</button>
+          ) : null}
+          {formError ? (
+            <span className="usage-budget-error" role="alert">{formError}</span>
           ) : null}
         </span>
       ) : (

@@ -1778,6 +1778,7 @@ p { font-size: var(--text-body) !important; }
 .usage-budget-form input { min-height: 36px; padding: 0 10px; border: 1px solid var(--line-dark); background: var(--white); color: var(--ink); font-size: 13px; }
 .usage-budget-form input[aria-label="预算币种"] { width: 72px; text-transform: uppercase; }
 .usage-budget-form input[aria-label="预算金额"] { width: 140px; }
+.usage-budget-error { color: var(--danger); font-size: 12px; }
 .usage-attempts-empty td { padding: 22px 14px; color: var(--muted); font-size: 13px; text-align: center; }
 
 .scene-workspace { display: grid; gap: 16px; }

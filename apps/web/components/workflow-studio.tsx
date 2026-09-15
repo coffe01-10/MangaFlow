@@ -333,7 +333,8 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     setPageChapterId("");
     // Templates can place nodes outside the default viewport; fit the whole
     // graph on first paint instead of an empty-looking canvas.
-    window.setTimeout(() => { void flowInstance.current?.fitView({ padding: 0.15, duration: 250 }); }, 60);
+    const fitTimer = window.setTimeout(() => { void flowInstance.current?.fitView({ padding: 0.15, duration: 250 }); }, 60);
+    return () => window.clearTimeout(fitTimer);
   }, [activeWorkflow]);
 
   useEffect(() => {
@@ -342,7 +343,8 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     try {
       const parsed = JSON.parse(raw) as { nodes?: WorkflowGraph["nodes"]; edges?: WorkflowGraph["edges"] };
       if (Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
-        window.setTimeout(() => setLegacyGraph({ schema_version: 2, nodes: parsed.nodes!, edges: parsed.edges! }), 0);
+        const legacyTimer = window.setTimeout(() => setLegacyGraph({ schema_version: 2, nodes: parsed.nodes!, edges: parsed.edges! }), 0);
+        return () => window.clearTimeout(legacyTimer);
       }
     } catch { /* damaged legacy drafts stay untouched */ }
   }, []);
