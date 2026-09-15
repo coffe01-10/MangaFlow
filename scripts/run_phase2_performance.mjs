@@ -123,6 +123,7 @@ async function main() {
   assertSupervised(3000);
 
   const projects = await json(`${API_ORIGIN}/projects`);
+  if (!Array.isArray(projects)) throw new Error("projects response must be an array");
   const lighthouseProject = projects.find((item) => item.name === "e2e-lighthouse-workbench");
   if (!lighthouseProject) throw new Error("seeded lighthouse project missing");
   summary.project_id = lighthouseProject.id;

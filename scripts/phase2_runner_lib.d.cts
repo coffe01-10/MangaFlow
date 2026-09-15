@@ -9,6 +9,7 @@ export const WEB_URL: string;
 
 export interface SupervisedContext {
   runId: string;
+  runtime: string;
   [key: string]: unknown;
 }
 
@@ -43,10 +44,17 @@ export function waitForOwnedHealth(options: {
   sleep?: (ms: number) => Promise<void>;
 }): Promise<{ e2e_run_id: string; [key: string]: unknown }>;
 
+export interface RunSummary {
+  errors: string[];
+  runtime_removed?: boolean;
+  finished_at?: string;
+  [key: string]: unknown;
+}
+
 export function finalizeOwnedRun(options: {
-  summary: { errors: string[]; runtime_removed?: boolean; [key: string]: unknown };
+  summary: RunSummary;
   cleanup: () => Promise<void>;
-  writeSummary: (summary: unknown) => Promise<void>;
+  writeSummary: (summary: RunSummary) => Promise<void>;
 }): Promise<number>;
 
 export function json<T = unknown>(
