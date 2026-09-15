@@ -95,7 +95,17 @@ internal static class NativeParityChecks
                     // Empty/collapsed generation sections have no painted area.
                     // WPF Rect.IntersectsWith considers coincident 0x0 points
                     // intersecting, which falsely reported overlap at 940px.
-                    if (heading.RenderSize.Width <= 0 || heading.RenderSize.Height <= 0) continue;
+                    if (heading.RenderSize.Width <= 0 || heading.RenderSize.Height <= 0)
+                    {
+                        // Skipping is only legitimate for genuinely unrendered
+                        // sections; a heading that is still visible but shrank
+                        // to zero area is a layout regression, not noise.
+                        Require(IsEffectivelyCollapsed(heading),
+                            $"{definition.WebSection}/{width}: zero-area heading is still visible " +
+                            $"(heading={heading.RenderSize}, visibility={heading.Visibility}, " +
+                            $"text={string.Join(' ', Descendants(heading).OfType<TextBlock>().Select(x => x.Text))})");
+                        continue;
+                    }
                     Require(!Bounds((FrameworkElement)heading.Children[0], heading)
                         .IntersectsWith(Bounds((FrameworkElement)heading.Children[1], heading)),
                         $"{definition.WebSection}/{width}: title and controls do not overlap; " +
@@ -130,6 +140,12 @@ internal static class NativeParityChecks
         yield return root;
         for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
             foreach (var child in Descendants(VisualTreeHelper.GetChild(root, i))) yield return child;
+    }
+    private static bool IsEffectivelyCollapsed(FrameworkElement element)
+    {
+        for (DependencyObject? node = element; node is FrameworkElement step; node = VisualTreeHelper.GetParent(node))
+            if (step.Visibility != Visibility.Visible) return true;
+        return false;
     }
     private static Rect Bounds(FrameworkElement element, Visual relative) =>
         element.TransformToAncestor(relative).TransformBounds(new Rect(element.RenderSize));
