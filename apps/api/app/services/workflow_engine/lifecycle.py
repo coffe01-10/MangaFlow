@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -80,6 +81,16 @@ def approve_node(
             raise ValueError("每次生成候选都必须明确选择 1K、2K 或 4K")
         if node_run.job_id:
             raise ValueError("该节点本次运行已经生成过一个候选")
+        # Lock-order fence (project → run → node): archive claims the project
+        # row and then run rows through cancel_run, while _approve_generate_node
+        # reaches create_generation_batch, which locks the project row — taking
+        # the run row first would form an AB-BA pair with a concurrent archive
+        # on PostgreSQL. Fence the project row first so the approval unit
+        # shares the archive/start/retry order; the conditional claim at the
+        # end of the unit still decides the race semantically.
+        project = lock_entity(db, Project, run.project_id)
+        if project is None or project.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="项目不存在")
         # Lock-order fence (run → node): cancel_run claims the run row first
         # and then sweeps the node/job/page rows, while the approval unit
         # below claims the node row and only touches the run at the end —

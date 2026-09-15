@@ -6,8 +6,6 @@ MangaFlow AI 围绕“原作 → 资产 → 剧本 → 分页 → 单页抽卡 �
 
 ## 2. 系统边界
 
-项目归档、新建工作流运行和任务重试统一先取得项目行锁，再检查归档状态。归档按运行、任务顺序取消，并在同一事务内提交归档标记；调用方可通过 `cancel_run(auto_commit=False)` 保留事务所有权。Vertex 的单次审计记录以 `usage.dispatch_count` 记录凭据管理器的实际派发次数，该字段不作为计费单位。
-
 ```mermaid
 flowchart LR
     U["创作者"] --> W["Next.js Web 工作台"]
@@ -157,7 +155,7 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 付费模型调用在真实派发前以独立事务创建 `ModelCallAttempt`，上游返回后以条件单行 UPDATE 写入终态和结构化 usage。重试、换 Key 与 CLI 派发均保留独立行，缺失计量是 unknown，不是 0；未决 attempt 不进入成本估算。输出资产在其自身事务提交后再幂等挂接到 attempt，不使用尚未持久化的资产 ID。
 
-读端通过 `/api/v1/usage/attempts` 的 keyset 分页和 `/api/v1/usage/summary` 的日/provider/model/channel 聚合消费同一账本。Estimated 金额只使用 attempt 时刻生效的价格版本；运营者录入的 billed 对账记录永不与 estimated 相加。SQLite 以事务内区间查询拒绝重叠账期，PostgreSQL 使用 advisory transaction lock 和 `btree_gist` exclusion constraint 封住并发窗口。
+读端通过 `/api/v1/usage/attempts` 的 keyset 分页和 `/api/v1/usage/summary` 的日/provider/model/channel 聚合消费同一账本。Estimated 金额只使用 attempt 时刻生效的价格版本；运营者录入的 billed 对账记录永不与 estimated 相加。SQLite 以事务内区间查询拒绝重叠账期，PostgreSQL 使用 advisory transaction lock 和 `btree_gist` exclusion constraint 封住并发窗口。Vertex 的单次审计记录以 `usage.dispatch_count` 记录凭据管理器的实际派发次数，该字段不作为计费单位。
 
 ## 8. 安全与可观测性
 
@@ -179,6 +177,8 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 
 ## 10. 序号分配与事务所有权（P1-5）
+
+项目归档、新建工作流运行、任务重试和 GENERATE 审批统一先取得项目行锁，再检查归档状态；运行行锁始终在项目行锁之后获取。归档按运行、任务顺序取消，并在同一事务内提交归档标记；调用方可通过 `cancel_run(auto_commit=False)` 保留事务所有权。
 
 章节、原文修订、生成批次和页面/素材候选的序号使用既有唯一约束，分配逻辑集中在服务层。PostgreSQL 按项目、章节或页面、批次的顺序获取相关行锁；不使用进程内互斥锁冒充跨 Worker 并发控制。
 
