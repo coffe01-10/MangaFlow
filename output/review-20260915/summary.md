@@ -32,7 +32,7 @@ The original documentation-only PR #782 was reviewed separately. Its original CI
 
 ![Workflow at 914px](web-workflow-914.png)
 
-Additional evidence: [390px full page](web-workflow-390.png), [1320px desktop](web-workflow-1320.png), [persisted numeric inputs](web-workflow.png), [native generation at 940px](native-generate-940.png).
+Additional evidence: [1320px desktop](web-workflow-1320.png), [persisted numeric inputs](web-workflow.png), [native generation at 940px](native-generate-940.png). The browser's 390px full-page capture contained stitching artifacts and was discarded; the 390px interaction checks used live viewport observations.
 
 ## Boundaries and resource ownership
 
