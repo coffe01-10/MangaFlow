@@ -1381,6 +1381,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   }).catch((error: unknown) => {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      // 调用方主动取消不是连接故障：原样抛出，让调用方按取消语义处理。
+      throw error;
+    }
     if (error instanceof DOMException && error.name === "TimeoutError") {
       throw new ApiError("请求超时，请检查本地 API 状态后重试", 0, error);
     }
