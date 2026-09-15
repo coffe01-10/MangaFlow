@@ -16,8 +16,19 @@ down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# Single source for the shared native types this revision owns: the upgrade
+# creates them through _owned_enum, the downgrade drops exactly this set.
+OWNED_ENUM_NAMES: tuple[str, ...] = (
+    "resolution",
+    "workflowmode",
+    "assetstatus",
+    "jobstatus",
+    "stylestatus",
+    "pagestatus",
+)
 
-def _owned_enum(*values: str, name: str):
+
+def _owned_enum(*values: str, name: str) -> sa.Enum:
     # This base revision owns the six shared native types. Table events must
     # never issue an unconditional CREATE TYPE on a later Alembic invocation.
     if op.get_bind().dialect.name != "postgresql":
@@ -536,12 +547,5 @@ def downgrade() -> None:
     op.drop_table("continuity_snapshots")
     # ### end Alembic commands ###
     if op.get_bind().dialect.name == "postgresql":
-        for name in (
-            "resolution",
-            "workflowmode",
-            "assetstatus",
-            "jobstatus",
-            "stylestatus",
-            "pagestatus",
-        ):
+        for name in OWNED_ENUM_NAMES:
             postgresql.ENUM(name=name).drop(op.get_bind(), checkfirst=True)
