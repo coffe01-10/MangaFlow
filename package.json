@@ -18,7 +18,7 @@
     "serve:e2e:web": "npm run start --workspace @mangaflow/web -- --hostname 127.0.0.1",
     "serve:e2e:api": ".venv\\Scripts\\python.exe -m uvicorn app.main:app --app-dir apps/api --host 127.0.0.1 --port 8000",
     "test:e2e": ".venv\\Scripts\\python.exe scripts/run_e2e_owned.py playwright",
-    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json && tsc -p tsconfig.runners.json",
     "check:neutrality": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\check-provider-neutrality.ps1",
     "check": "npm run check:neutrality && npm run lint && npm run typecheck:scripts && npm run test && npm run test:web && npm run build",
     "check:full": ".venv\\Scripts\\python.exe scripts/run_e2e_owned.py full",
