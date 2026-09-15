@@ -601,3 +601,7 @@
 - **"111" tip 提交**：coffe01-10 直推，含 native-assets PNG 与批量内容——0 文件位于 `apps/desktop/native/**`（冻结树未触），但提交信息卫生与 62 提交批内直推值得记录。
 
 **认证**：journal+verify+guard+env **74/74**；shell-core **168/168**。
+
+**§35 补充（夜班 02:00 段）**：
+- **E 轮**：`test_mjs_no_undef.py` 交叉审+认证（RUN 0.76s passed）——eslint no-undef 静态门恰捕 #713 类（块级作用域名函数域读取，node --check 通过）；留两 nit（npx 有而无本地 eslint 时假红；_GLOBALS 维护性）。`e2e_runtime.py` + `owned_processes.py`（新 Windows Job 验收运行时，448 行）全文审：suspend→assign→resume 次序、KILL_ON_JOB_CLOSE 无 breakaway-ok、`Local\`+uuid4 命名、`-I -B -S` 隔离 bootstrap、最小句柄权（QUERY_LIMITED|SYNCHRONIZE）、TCP 表缓冲 TOCTOU 处理、ntohs 等价换算、逐 pid 作业成员校验 fail-closed—— exemplary，静态无发现（Windows 活体 NOT RUN）。
+- **B/E 状态**：新增量全读后无新实质发现；B 配额缺口（0/20）如实记录——产出依赖新增量或更深模拟，不水文。
