@@ -116,7 +116,36 @@
 .approval { position: absolute; right: 14px; bottom: 68px; min-height: 47px; display: flex; align-items: center; gap: 7px; padding: 8px; border: 1px solid #725b34; background: #2d271e; box-shadow: 0 8px 24px rgba(0,0,0,.3); }
 .approval strong { margin-right: 8px; color: #eadcbf; font-size: 8px; }
 .approval a { border-right: 1px solid #3b413d; }
-@media (max-width: 980px) { .topbar { grid-template-columns: 1fr auto; }.workflowSelect { display: none; }.topActions button:not(.publish), .topActions label { display: none; }.body { grid-template-columns: 0 1fr 0; }.library, .inspector { position: absolute; z-index: 30; top: 58px; bottom: 60px; width: min(320px, 88vw); }.library { left: 0; }.inspector { right: 0; }.libraryClosed .library, .inspectorClosed .inspector { display: none; }.runner { flex-wrap: wrap; }.runState { display: none; }.runActions { margin-left: 0; }.approval { left: 14px; right: 14px; overflow-x: auto; } }
+/* Keep every editor control reachable on narrow screens. In document flow,
+   side panels cannot cover the canvas or the save/validation controls. */
+@media (max-width: 980px) {
+  .topbar { height: auto; display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; }
+  .crumb { width: 100%; min-width: 0; padding-left: 0; flex-wrap: wrap; }
+  .crumb strong { overflow-wrap: anywhere; }
+  .workflowSelect { flex: 1; min-width: 220px; }
+  .workflowSelect select { width: 100%; min-width: 0; }
+  .topActions { flex-wrap: wrap; padding-right: 0; }
+  .legacy { grid-template-columns: 24px minmax(0, 1fr); }
+  .legacy button { grid-column: 2; }
+  .workflowStatus { flex-wrap: wrap; gap: 8px; }
+  .workflowStatus > div { min-width: 0; flex: 1 1 100px; }
+  .workflowStatus button { margin-left: 0; }
+  .body, .body.libraryClosed, .body.inspectorClosed,
+  .body.libraryClosed.inspectorClosed, .studio:has(.legacy) .body {
+    height: auto; grid-template-columns: minmax(0, 1fr);
+  }
+  .canvas { grid-row: 1; height: 520px; }
+  .canvasToolbar { max-width: calc(100% - 24px); flex-wrap: wrap; }
+  .library { height: 320px; }
+  .inspector { height: 480px; }
+  .libraryClosed .library, .inspectorClosed .inspector { display: none; }
+  .runner { position: sticky; flex-wrap: wrap; }
+  .runScope { flex-wrap: wrap; min-width: 0; }
+  .runScope select { max-width: 100%; }
+  .runState { display: none; }
+  .runActions { margin-left: 0; flex-wrap: wrap; }
+  .approval { left: 14px; right: 14px; overflow-x: auto; }
+}
 
 /* Workflow uses a dense dark canvas, but text and controls still keep the shared baseline. */
 .studio :is(span, small, label, button, select, input, textarea, a, p, li, code, em) { font-size: 12px !important; }
