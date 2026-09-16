@@ -113,3 +113,50 @@ def test_favorite_page_candidate_still_uses_page_shape(client, db_session):
     assert body["id"] == candidate.id
     assert body["page_id"] == page.id
     assert body["is_favorite"] is True
+
+
+def test_favorite_page_candidate_reports_true_staleness(client, db_session):
+    """candidate_read without a page hard-coded version_state "CURRENT"; the
+    favorite response must reflect storyboard drift like the workbench does."""
+
+    from app.models import Chapter, MangaPage, PageCandidate
+
+    project = Project(name="favorite-page-candidate-stale")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="c1", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1, storyboard_version=2)
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id,
+        chapter_id=chapter.id,
+        page_id=page.id,
+        ordinal=2,
+    )
+    db_session.add(batch)
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.test",
+        resolution="DRAFT_1K",
+        status="READY",
+        based_on_storyboard_version=1,
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    response = client.patch(
+        f"/api/v1/candidates/{candidate.id}/favorite",
+        json={"is_favorite": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_favorite"] is True
+    assert body["version_state"] == "STALE"
+    assert body["staleness_reasons"] == ["STORYBOARD_CHANGED"]

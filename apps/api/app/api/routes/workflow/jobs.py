@@ -85,6 +85,8 @@ def _job_reads(db: Session, jobs: list[GenerationJob]) -> list[JobRead]:
     def job_result(job: GenerationJob) -> JobResultRead | None:
         page_candidate = page_by_job.get(job.id) or page_by_id.get(job.target_id)
         if page_candidate and page_candidate.asset_id:
+            # JobResultRead only carries content/thumbnail URLs; version_state
+            # is not serialized here, so candidate_read needs no page join.
             value = candidate_read(page_candidate)
             return JobResultRead(
                 kind="IMAGE",

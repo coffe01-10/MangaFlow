@@ -179,3 +179,56 @@ def test_delete_loses_to_concurrent_select(client, db_session):
     row = db_session.get(PageCandidate, candidate.id)
     assert row.deleted_at is None
     assert row.is_selected is True
+
+
+def test_delete_page_candidate_keeps_needs_review_job_intact(client, db_session):
+    """NEEDS_REVIEW is terminal: deleting its candidate must not rewrite the
+    job to CANCELLED. An inline terminal set without NEEDS_REVIEW would, and
+    cancel_job escalates to cancel_run for a bound, non-terminal node run —
+    killing the whole run over an already-finished review state."""
+
+    from app.models import Chapter, MangaPage, PageCandidate
+
+    project = Project(name="del-candidate-needs-review")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="c1", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1)
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id, chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
+    db_session.add(batch)
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.test",
+        resolution="DRAFT_1K",
+        status="READY",
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status="NEEDS_REVIEW",
+    )
+    db_session.add(job)
+    candidate.job_id = job.id
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/candidates/{candidate.id}")
+    assert response.status_code == 204
+
+    db_session.expire_all()
+    refreshed_job = db_session.get(GenerationJob, job.id)
+    assert refreshed_job.status == "NEEDS_REVIEW"
+    refreshed_candidate = db_session.get(PageCandidate, candidate.id)
+    assert refreshed_candidate.deleted_at is not None
