@@ -483,6 +483,22 @@ describe("生成工作台修复/升清回归", () => {
     });
     expect(workspace().reviewCandidateId).toBe(null);
   });
+
+  // 升清是会真实调用图片模型的付费操作，且错误条此前只挂在检查面板内：
+  // 面板未开时失败完全无提示，用户会以为任务已入队。失败必须写进
+  // actionError（生成区错误条的谓词），与 favorite/delete/generate 一致。
+  it("升清失败把错误写进 actionError，而不是只落在未打开的检查面板里", async () => {
+    batchesApi.mockResolvedValue([workbenchFixture().current_batch!]);
+    candidatesApi.mockResolvedValue([candidateFixture({ resolution: "2K" })]);
+    upscaleApi.mockRejectedValue(new Error("升清配额不足"));
+    const { workspace } = renderGenerationProbe();
+
+    workspace().upscaleCandidate.mutate({ candidateId: "candidate-1", resolution: "2K" });
+    await vi.waitFor(() => {
+      expect(workspace().upscaleCandidate.isError).toBe(true);
+    });
+    expect(workspace().actionError?.message).toBe("升清配额不足");
+  });
 });
 
 function AssetsProbe({ collect }: { collect: (value: unknown) => void }) {

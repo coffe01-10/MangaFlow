@@ -1391,7 +1391,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError("无法连接 MangaFlow 服务，请确认本地 API 已启动后重试", 0, error);
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: "请求失败" }));
+    // 读取错误响应体期间调用方取消/默认 GET 超时同样会以 AbortError/
+    // TimeoutError 拒绝：按上面 fetch 分支的语义透传，而不是吞成「请求失败」。
+    const body = await response.json().catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw error;
+      }
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new ApiError("请求超时，请检查本地 API 状态后重试", 0, error);
+      }
+      return { detail: "请求失败" };
+    });
     const rawDetail = body.detail;
     const detail = typeof rawDetail === "string"
       ? rawDetail

@@ -7,7 +7,21 @@ import { api, type MangaPage, type ModelCapability, type WorkflowDefinition, typ
 import WorkflowStudio, { workflowRunsPollInterval } from "./workflow-studio";
 
 vi.mock("@xyflow/react", () => ({
-  ReactFlow: ({ children }: { children?: unknown }) => <div data-testid="react-flow">{children as never}</div>,
+  ReactFlow: (props: {
+    children?: unknown;
+    nodes?: { id: string }[];
+    onNodesChange?: (changes: { type: "remove"; id: string }[]) => void;
+  }) => (
+    <div data-testid="react-flow">
+      {/* 模拟 deleteKeyCode 删除：真实 ReactFlow 把 Backspace/Delete 转成
+          remove 变更交给 onNodesChange；mock 用按钮触发同一入口测撤销契约。 */}
+      <button
+        data-testid="mock-keyboard-delete"
+        onClick={() => props.onNodesChange?.((props.nodes ?? []).map((node) => ({ type: "remove" as const, id: node.id })))}
+      >模拟键盘删除</button>
+      {props.children as never}
+    </div>
+  ),
   Background: () => null,
   BackgroundVariant: { Dots: "dots" },
   Controls: () => null,
@@ -16,7 +30,8 @@ vi.mock("@xyflow/react", () => ({
   Position: { Left: "left", Right: "right" },
   addEdge: (edge: unknown, edges: unknown[]) => [...edges, edge],
   applyEdgeChanges: (_changes: unknown, edges: unknown[]) => edges,
-  applyNodeChanges: (_changes: unknown, nodes: unknown[]) => nodes,
+  applyNodeChanges: (changes: { type: string; id?: string }[], nodes: { id: string }[]) =>
+    nodes.filter((node) => !changes.some((change) => change.type === "remove" && change.id === node.id)),
 }));
 
 function deferred<T>() {
@@ -170,6 +185,44 @@ describe("WorkflowStudio 草稿保存与发布", () => {
     await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(2));
     expect(updateSpy.mock.calls[1][2].draft_graph?.nodes[0].config[key as "temperature"])
       .toBe(expected);
+  });
+
+  // 键盘删除（deleteKeyCode=Backspace/Delete）走 onNodesChange 的 remove
+  // 变更而非 deleteSelected：该路径必须先 record() 删除前快照，否则误按
+  // 删除无法撤销，且残留 future 会在重做时把已删节点整图复活。
+  it("键盘删除进入撤销栈：撤销一步恢复被删节点，而不是回到空画布", async () => {
+    updateSpy.mockImplementation(async (_id, _version, payload) => workflow({
+      version: 2, draft_version: 2, draft_graph: payload.draft_graph,
+    }));
+    renderStudio();
+    fireEvent.click(await screen.findByRole("button", { name: /解析原作/ }));
+    // addNode 已记录一步（撤销可用），键盘删除必须再记一步。
+    expect(screen.getByRole("button", { name: /撤销/ })).toBeEnabled();
+
+    await act(async () => {
+      screen.getByTestId("mock-keyboard-delete").click();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+    expect(updateSpy.mock.calls[0][2].draft_graph?.nodes).toHaveLength(0);
+
+    // 撤销一步应恢复被删节点；未接入撤销栈时这里会回到加节点前的空图。
+    await act(async () => {
+      screen.getByRole("button", { name: /撤销/ }).click();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(2));
+    expect(updateSpy.mock.calls[1][2].draft_graph?.nodes).toHaveLength(1);
+  });
+
+  // agent/quality/director 节点默认 model_alias="auto"：目录不含 "auto" 行，
+  // 下拉若无对应 option 会显示为空白，且选过具体模型后无法回到自动路由。
+  it("文本模型下拉始终提供自动路由选项，默认 auto 不再显示为空白", async () => {
+    renderStudio();
+    fireEvent.click(await screen.findByRole("button", { name: /解析原作/ }));
+    const modelSelect = screen.getByRole("combobox", { name: "文本模型" });
+    expect(modelSelect).toHaveValue("auto");
+    expect(within(modelSelect).getByRole("option", { name: /自动路由/ })).toBeInTheDocument();
   });
 
   it("保存中继续改图会补交最新草稿，已保存与持久化内容一致", async () => {
