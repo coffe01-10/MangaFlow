@@ -128,7 +128,13 @@ internal static class NativeIssue426Checks
         {
             var body = Field<StackPanel>(view, "body");
             await Until(() => body.Children.OfType<SceneSection>().Any());
-            SceneSection Scene() => body.Children.OfType<SceneSection>().Single();
+            SceneSection Scene()
+            {
+                view.Measure(new Size(1200, 1600));
+                view.Arrange(new Rect(0, 0, 1200, 1600));
+                view.UpdateLayout();
+                return body.Children.OfType<SceneSection>().Single();
+            }
 
             // ── 1. #426：删除一个角色指定 + 换另一个角色的装 → 恰好一个全量 PATCH ──
             var scene = Scene();
@@ -148,6 +154,8 @@ internal static class NativeIssue426Checks
             Require(!outfitSave.IsEnabled, "首次点击进入在途后保存按钮必须禁用（视觉反馈，#448 同款守卫）");
             Click(outfitSave);
             await Until(() => fixture.OutfitPatches >= 1);
+            await Settle();
+            Require(!removal.IsEnabled && !change.IsEnabled, "all wardrobe selectors stay disabled throughout the pending PATCH so new input cannot be lost");
 
             var payload = fixture.OutfitBody;
             Require(payload.TryGetProperty("version", out var version) && version.ValueKind == JsonValueKind.Number && version.GetInt32() == 3,
@@ -163,9 +171,22 @@ internal static class NativeIssue426Checks
 
             outfitPending.SetResult(Json("""{"scene_id":"sc-1","assignments":{"ch-keep":"o-k2"}}"""));
             await Until(() => fixture.ScriptReads > reads);
-            await Until(() => body.Children.OfType<SceneSection>().Any());
+            await Until(() => body.Children.OfType<SceneSection>().Any(s => !ReferenceEquals(s, scene)));
             Require(fixture.OutfitPatches == 1,
                 $"两处脏改必须恰好一个 PATCH（实际 {fixture.OutfitPatches} 个——第二个 PATCH 会复活已删除的指定，#426）");
+
+            // A failed automatic save must preserve its input and re-enable retry.
+            scene = Scene();
+            change = Descendants(scene).OfType<ComboBox>().Single(box => box.Items.OfType<ComboBoxItem>().Any(i => (string?)i.Tag == "o-k2"));
+            Require(change.IsEnabled && (string?)((ComboBoxItem)change.SelectedItem).Tag == "o-k2", "successful reload retains saved outfit and unlocks selection");
+            var failurePending = new TaskCompletionSource<HttpResponseMessage>();
+            fixture.PendingOutfitPatch = failurePending;
+            SelectCombo(change, "o-k1");
+            await Until(() => fixture.OutfitPatches == 2);
+            Require(!change.IsEnabled && fixture.OutfitBody.Number("version") == 4, "next automatic save uses the refreshed version and locks input");
+            failurePending.SetResult(new(HttpStatusCode.Conflict) { Content = new StringContent("{\"detail\":\"版本冲突\"}") });
+            await Until(() => change.IsEnabled);
+            Require(ReferenceEquals(Scene(), scene) && (string?)((ComboBoxItem)change.SelectedItem).Tag == "o-k1", "failed save retains unsaved selection for retry");
 
             // ── 2. #448：场景保存双击守卫 ──
             scene = Scene();
@@ -280,7 +301,13 @@ internal static class NativeIssue426Checks
             if (path.EndsWith("/scenes/sc-1/outfits"))
             {
                 OutfitPatches++; OutfitPaths.Add(path); OutfitBody = body;
-                if (PendingOutfitPatch is { } pending) { PendingOutfitPatch = null; return await pending.Task; }
+                if (PendingOutfitPatch is { } pending)
+                {
+                    PendingOutfitPatch = null;
+                    var response = await pending.Task;
+                    if (response.IsSuccessStatusCode) outfitSaved = true;
+                    return response;
+                }
                 outfitSaved = true;
                 return Json("""{"scene_id":"sc-1","assignments":{"ch-keep":"o-k2"}}""");
             }

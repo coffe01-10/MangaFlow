@@ -44,6 +44,12 @@ internal static class NativeGeneratePageChecks
             await Until(() => Field<JsonElement>(view, "workbench").ValueKind == JsonValueKind.Object); Layout(view, 1240, 1800);
             Require(Texts(view).Contains("本页主场景将进入生成输入") && Texts(view).Any(text => text.Contains("京都老宅")),
                 "scene inheritance card shows the bound page scene asset");
+            Require(fixture.SceneOffsets.SequenceEqual(new[] { 0, 50 }), "scene inheritance follows pagination to the bound 51st asset");
+            fixture.ArchivedScene = true;
+            await Invoke(view, "LoadWorkbenchAsync"); Layout(view, 1240, 1800);
+            Require(Texts(view).Any(text => text.Contains("京都老宅 已归档")), "archived bound asset is identified separately from a missing asset");
+            fixture.ArchivedScene = false;
+            await Invoke(view, "LoadWorkbenchAsync"); Layout(view, 1240, 1800);
             Require(Texts(view).Contains("第 1 页候选") && Texts(view).Contains("130 字") && Texts(view).Contains(fixture.Source), "header and source strip use current workbench data");
             Require(Field<WrapPanel>(view, "pageBar").Children.Count == 11 && Field<WrapPanel>(view, "pageBar").Children.OfType<ToggleButton>().All(b => b.MinWidth == 42), "page picker uses compact numbered squares");
             var diagnostics = Desc(view).OfType<Expander>().Single(e => Equals(e.Header, "查看原文覆盖、供应商目录与执行器诊断"));
@@ -86,7 +92,26 @@ internal static class NativeGeneratePageChecks
             Require(!Button(view, "＋ 新批次").IsEnabled && !Button(view, "先完成页面生产准备").IsEnabled, "readiness blockers disable batch creation and generation");
             Click(Button(view, "去处理")); Require(destination == "assets?view=characters&character=c1", "readiness action keeps blocker target");
             Render(view, 1240, 1800, Path.Combine(output, "native-generate-blocked.png"));
-            Console.WriteLine("PASS: generation wide/narrow layout, source data, warning target, compact pages, history guard, model/version payload, new batch dedup/error recovery, readiness gate and blocker navigation.");
+            var pane = new DirectorPane(view);
+            await Invoke(pane, "LoadHistoryAsync");
+            for (var step = 0; step < 6; step++)
+            {
+                Layout(pane, 1000, 1800);
+                var actionLabel = step % 2 == 0 ? "撤销" : "重做";
+                var buttons = Desc(pane).OfType<Button>().Where(b => Equals(b.Content, "撤销") || Equals(b.Content, "重做")).ToList();
+                Require(buttons.Count == 1 && Equals(buttons[0].Content, actionLabel), "history exposes only the applicable inverse-chain action");
+                Click(buttons[0]);
+                await Until(() => !pane.Busy);
+                Require(fixture.JournalStep == step + 1, "journal posts the latest executable command ID, including repeated undo/redo");
+            }
+            foreach (var status in new[] { "ACCEPTED", "SUPERSEDED", "FAILED" })
+            {
+                var unavailable = JsonSerializer.Deserialize<JsonElement>($"[{{\"command_id\":\"blocked\",\"status\":\"{status}\"}}]").EnumerateArray().ToList();
+                Require(DirectorPane.HistoryActionIds(unavailable) == (null, null), "non-executed history has no undo/redo action");
+            }
+            var region = JsonSerializer.Deserialize<JsonElement>("""[{"command_id":"region","status":"EXECUTED","operation":"regenerate_region"}]""").EnumerateArray().ToList();
+            Require(DirectorPane.HistoryActionIds(region) == (null, null), "image regeneration is not exposed as reversible");
+            Console.WriteLine("PASS: generation layout, full scene pagination/archive state, inverse-chain undo/redo, payloads, dedup/error recovery and readiness navigation.");
             Console.WriteLine("Offscreen WPF + HTTP fixtures; live backend/provider, high-DPI window and frame timing NOT RUN.");
         }
         finally { view.Deactivate(); }
@@ -117,6 +142,15 @@ internal static class NativeGeneratePageChecks
         internal bool Ready = true, FailBatch, ShowCandidates;
         internal TaskCompletionSource<bool>? HoldBatch;
         internal JsonElement GenerationBody;
+        internal readonly List<int> SceneOffsets = [];
+        internal bool ArchivedScene;
+        internal int JournalStep;
+        private object[] History() => new object[] { new { command_group_id = "history", commands = Enumerable.Range(0, JournalStep + 1).Select(i => new
+        {
+            command_id = $"cmd-{i}", inverse_of_command_id = i == 0 ? null : $"cmd-{i - 1}",
+            operation = "update_panel_shot", status = i == JournalStep ? "EXECUTED" : "SUPERSEDED",
+            source = new { user_prompt = i == 0 ? "改成远景" : "" },
+        }).ToArray() } };
         private object Page(int n) => new { id = $"pg-{n}", chapter_id = "ch", page_number = n, panel_count = 3, storyboard_version = 7, estimated_text_chars = 130, estimated_bubbles = 3, continuity_status = "NEEDS_REVIEW", scene_ids = new[] { "sc-1" }, source_coverage = new { ranges = new[] { new { text = Source } } } };
         private static object Batch(int n) => new { id = $"batch-{n}", ordinal = n, status = "COMPLETED" };
         private static HttpResponseMessage Json(object data) => new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(data)) };
@@ -129,7 +163,17 @@ internal static class NativeGeneratePageChecks
                 if (path.EndsWith("/models")) return Json(new[] { new { logical_alias = "model-a", model_type = "IMAGE", enabled = true, display_enabled = true, display_name = "Codex CLI ImageGen", provider = "Codex CLI", model_id = "codex-imagegen", operations = new[] { "image_edit" } }, new { logical_alias = "model-b", model_type = "IMAGE", enabled = true, display_enabled = true, display_name = "Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)", provider = "OpenRouter", model_id = "google/gemini-3.1-flash-image-preview", operations = new[] { "image_edit" } } });
                 if (path.EndsWith("/pages")) return Json(Enumerable.Range(1, 11).Select(Page).ToArray());
                 if (path.EndsWith("/script")) return Json(new { scenes = new[] { new { id = "sc-1", ordinal = 1, location = "京都，爸爸的灵牌前", scene_asset_id = "asset1", scene_asset_variant_id = "rain" } } });
-                if (path.EndsWith("/scene-assets")) return Json(new[] { new { id = "asset1", name = "京都老宅", deleted_at = (string?)null, variants = new[] { new { id = "rain", name = "小雨", deleted_at = (string?)null } } } });
+                if (path.EndsWith("/command-groups")) return Json(History());
+                if (path.EndsWith("/scene-assets"))
+                {
+                    var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
+                    var offset = int.TryParse(query["offset"], out var value) ? value : 0;
+                    var limit = int.TryParse(query["limit"], out var count) ? count : 50;
+                    SceneOffsets.Add(offset);
+                    var assets = Enumerable.Range(0, 51).Select(i => new { id = i == 50 ? "asset1" : $"other-{i}", name = i == 50 ? "京都老宅" : $"场景{i}", deleted_at = i == 50 && ArchivedScene ? "2026-09-16T00:00:00Z" : null, variants = new[] { new { id = "rain", name = "小雨", deleted_at = (string?)null } } });
+                    if (query["include_deleted"] != "true") assets = assets.Where(a => a.deleted_at == null);
+                    return Json(assets.Skip(offset).Take(limit).ToArray());
+                }
                 if (path.EndsWith("/batches")) return Json(Enumerable.Range(1, Latest).Select(Batch).ToArray());
                 if (path.EndsWith("/generation-workbench"))
                 {
@@ -139,6 +183,13 @@ internal static class NativeGeneratePageChecks
                         candidates = ShowCandidates ? new object[] { new { id = "candidate-1", ordinal = 1, status = "FAILED", model_alias = "model-a", resolution = "1K", version_state = "CURRENT" }, new { id = "candidate-2", ordinal = 2, status = "QUEUED", model_alias = "model-b", resolution = "1K", version_state = "CURRENT" } } : Array.Empty<object>(), production = new { ready = false, blockers = new[] { new { message = "请先人工校对并暂选候选" } } } });
                 }
                 return Json(Array.Empty<object>());
+            }
+            if (path.Contains("/director/commands/"))
+            {
+                var action = JournalStep % 2 == 0 ? "undo" : "redo";
+                if (!path.EndsWith($"/cmd-{JournalStep}/{action}")) return new(HttpStatusCode.Conflict) { Content = new StringContent("{\"detail\":\"wrong inverse command\"}") };
+                JournalStep++;
+                return Json(History()[0]);
             }
             if (path.EndsWith("/batches"))
             {

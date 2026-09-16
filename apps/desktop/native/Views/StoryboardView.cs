@@ -1079,14 +1079,23 @@ public sealed partial class StoryboardView : WorkspaceView
         card.Children.Add(props);
         card.Children.Add(bleed);
         card.Children.Add(borderless);
-        var savePanel = Kit.Act("保存本格", async (_, _) =>
+        var panelSaveBusy = false;
+        var savePanel = Kit.Act("保存本格", async (sender, _) =>
         {
+            if (panelSaveBusy) return;
+            panelSaveBusy = true;
+            var button = (Button)sender!;
+            button.IsEnabled = false;
+            var actions = source.Element("actions").ValueKind == JsonValueKind.Object
+                ? source.Element("actions").EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone())
+                : new Dictionary<string, object?>();
+            actions["script_action"] = scriptAction.Text;
             var payload = new Dictionary<string, object?>
             {
                 ["version"] = source.Number("version"),
                 ["shot_type"] = (shot.SelectedItem as ComboBoxItem)?.Tag as string ?? panel.ShotType,
                 ["camera_angle"] = (angle.SelectedItem as ComboBoxItem)?.Tag as string ?? panel.CameraAngle,
-                ["script_action"] = scriptAction.Text,
+                ["actions"] = actions,
                 ["background"] = background.Text,
                 ["props"] = props.Text.Split('、', ',', '，').Select(p => p.Trim()).Where(p => p.Length > 0).ToList(),
                 ["bleed"] = bleed.IsChecked == true,
@@ -1097,10 +1106,12 @@ public sealed partial class StoryboardView : WorkspaceView
                 await Api.SendAsync($"panels/{panel.Id}", HttpMethod.Patch, payload, cancellation: lifetime.Token);
                 if (currentPage != null) await SelectPageAsync(currentPage, preserveDrafts: true);
             }
+            catch (OperationCanceledException) { }
             catch (Exception error) when (error is not OperationCanceledException)
             {
                 MessageBox.Show(Host, error.Message, "保存本格未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
+            finally { panelSaveBusy = false; button.IsEnabled = true; }
         }, "InkButton");
         savePanel.Margin = new Thickness(0, 4, 0, 8);
         card.Children.Add(savePanel);

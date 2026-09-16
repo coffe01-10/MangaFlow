@@ -366,8 +366,12 @@ public sealed partial class GenerateView : WorkspaceView
             pageBatches = batches;
             workbench = next;
             if (next.Element("page").ValueKind == JsonValueKind.Object) currentPage = PageItem.From(next.Element("page"));
+            var previousScenes = string.Join("", scriptScenes.Select(s => s.GetRawText()));
+            var previousAssets = string.Join("", sceneAssets.Select(a => a.GetRawText()));
             await LoadSceneInheritanceAsync(token);
             if (token.IsCancellationRequested || request != workbenchRead || currentPage?.Id != requestedPage) return;
+            unchanged &= previousScenes == string.Join("", scriptScenes.Select(s => s.GetRawText()))
+                && previousAssets == string.Join("", sceneAssets.Select(a => a.GetRawText()));
             notice.Text = "";
             if (!unchanged || body.Children.Count == 0) Render();
         }
@@ -917,18 +921,33 @@ public sealed partial class GenerateView : WorkspaceView
         {
             if (chapterId.Length == 0) { scriptScenes = []; sceneAssets = []; return; }
             var scriptTask = Api.SendAsync($"chapters/{chapterId}/script", cancellation: token);
-            var assetsTask = Api.SendAsync($"projects/{ProjectId}/scene-assets", cancellation: token);
+            var assetsTask = LoadSceneAssetsAsync(token);
             await Task.WhenAll(scriptTask, assetsTask);
             if (token.IsCancellationRequested) return;
             scriptScenes = (await scriptTask).Array("scenes");
-            var loaded = await assetsTask;
-            sceneAssets = loaded.ValueKind == JsonValueKind.Array ? loaded.EnumerateArray().ToList() : [];
+            sceneAssets = await assetsTask;
         }
         catch (OperationCanceledException) { }
         catch (Exception)
         {
             scriptScenes = [];
             sceneAssets = [];
+        }
+    }
+
+    private async Task<List<JsonElement>> LoadSceneAssetsAsync(CancellationToken token)
+    {
+        const int limit = 50;
+        var assets = new List<JsonElement>();
+        var projectId = ProjectId;
+        for (var offset = 0; ; offset += limit)
+        {
+            var result = await Api.SendAsync(QueryBuilder.Build($"projects/{projectId}/scene-assets",
+                ("limit", limit), ("offset", offset), ("include_deleted", "true")), cancellation: token);
+            token.ThrowIfCancellationRequested();
+            var rows = result.EnumerateArray().ToList();
+            assets.AddRange(rows);
+            if (rows.Count < limit) return assets;
         }
     }
 
@@ -1829,7 +1848,11 @@ internal sealed class DirectorPane : Border
             }
             foreach (var group in rows)
             {
-                var command = group.Array("commands").FirstOrDefault();
+                var commands = group.Array("commands");
+                var command = commands.LastOrDefault();
+                var origin = commands.FirstOrDefault(c => c.Text("inverse_of_command_id").Length == 0);
+                if (origin.ValueKind != JsonValueKind.Object) origin = command;
+                var (undoId, redoId) = HistoryActionIds(commands);
                 var item = new StackPanel { Margin = new Thickness(0, 6, 0, 10) };
                 var status = command.Text("status", "PROPOSED");
                 item.Children.Add(new TextBlock
@@ -1839,7 +1862,7 @@ internal sealed class DirectorPane : Border
                 });
                 item.Children.Add(new TextBlock
                 {
-                    Text = command.Element("source").Text("user_prompt"), FontStyle = FontStyles.Italic,
+                    Text = origin.Element("source").Text("user_prompt"), FontStyle = FontStyles.Italic,
                     Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 3, 0, 0),
                 });
                 if (status is "FAILED" or "REJECTED")
@@ -1860,15 +1883,15 @@ internal sealed class DirectorPane : Border
                     retry.Margin = new Thickness(0, 6, 0, 0);
                     item.Children.Add(retry);
                 }
-                if (status is "EXECUTED" or "ACCEPTED")
+                if (undoId != null)
                 {
-                    var undo = Kit.Act("撤销", async (_, _) => await JournalCommandAsync(command.Text("command_id"), "undo"), "Outline");
+                    var undo = Kit.Act("撤销", async (_, _) => await JournalCommandAsync(undoId, "undo"), "Outline");
                     undo.Margin = new Thickness(0, 6, 8, 0);
                     item.Children.Add(undo);
                 }
-                if (status is "SUPERSEDED")
+                if (redoId != null)
                 {
-                    var redo = Kit.Act("重做", async (_, _) => await JournalCommandAsync(command.Text("command_id"), "redo"), "Outline");
+                    var redo = Kit.Act("重做", async (_, _) => await JournalCommandAsync(redoId, "redo"), "Outline");
                     redo.Margin = new Thickness(0, 6, 0, 0);
                     item.Children.Add(redo);
                 }
@@ -1885,6 +1908,23 @@ internal sealed class DirectorPane : Border
             }
         }
         catch (Exception) { }
+    }
+
+    internal static (string? UndoId, string? RedoId) HistoryActionIds(IReadOnlyList<JsonElement> commands)
+    {
+        var latest = commands.LastOrDefault();
+        if (latest.Text("status") != "EXECUTED" || latest.Text("operation") == "regenerate_region")
+            return (null, null);
+        var current = latest;
+        var inverse = false;
+        var visited = new HashSet<string>();
+        while (current.Text("inverse_of_command_id") is { Length: > 0 } parentId)
+        {
+            if (!visited.Add(parentId)) return (null, null);
+            inverse = !inverse;
+            current = commands.FirstOrDefault(c => c.Text("command_id") == parentId);
+        }
+        return inverse ? (null, latest.Text("command_id")) : (latest.Text("command_id"), null);
     }
 
     private static DirectorScope? SelectionFromTarget(JsonElement target)

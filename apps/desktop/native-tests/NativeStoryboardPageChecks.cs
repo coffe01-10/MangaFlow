@@ -58,6 +58,16 @@ internal static class NativeStoryboardPageChecks
                 "panel inspector shows background inline");
             Require(NativeParityChecks.Descendants(view).OfType<Button>().Any(button => Equals(button.Content, "保存本格")),
                 "panel inspector has inline save");
+            var action = NativeParityChecks.Descendants(view).OfType<TextBox>().Single(box => System.Windows.Automation.AutomationProperties.GetName(box) == "动作与表演");
+            action.Text = "回头望向窗外";
+            Click(NativeParityChecks.Descendants(view).OfType<Button>().Single(button => Equals(button.Content, "保存本格")));
+            await Until(() => fixture.Patches == 1 && fixture.Reads > 1);
+            Layout(view, 1320, 900);
+            Require(!fixture.PanelBody.TryGetProperty("script_action", out _) && fixture.PanelBody.Element("actions").Text("script_action") == "回头望向窗外",
+                "inline save sends the backend actions.script_action contract");
+            Require(fixture.PanelBody.Element("actions").Text("source_text") == "不可改写原文" && fixture.PanelBody.Element("actions").Element("metadata").Number("count") == 2,
+                "inline save preserves source and structured action fields");
+            Require(NativeParityChecks.Descendants(view).OfType<TextBox>().Any(box => box.Text == "回头望向窗外"), "saved action survives storyboard reload");
             var reads = fixture.Reads; var active = strip.Children.OfType<ToggleButton>().First(); active.IsChecked = false; Click(active);
             Require(active.IsChecked == true && fixture.Reads == reads, "active page click preserves selection without reloading");
             Field<ToggleButton>(view, "focusButton").IsChecked = true; Click(Field<ToggleButton>(view, "focusButton")); Layout(view, 1320, 900);
@@ -92,25 +102,35 @@ internal static class NativeStoryboardPageChecks
     private static void Render(FrameworkElement e, int w, int h, string path) { Layout(e, w, h); var bitmap = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32); bitmap.Render(e); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); using var f = File.Create(path); encoder.Save(f); }
     private sealed class Fixture : HttpMessageHandler
     {
-        internal int Reads;
+        internal int Reads, Patches;
+        internal JsonElement PanelBody;
+        private string actionText = "“我”跪在爸爸的灵牌前，肩膀颤抖，失声痛哭。窗外下着淅淅沥沥的小雨。";
         private static object Page(int n) => new { id = $"pg-{n}", chapter_id = "ch", page_number = n, panel_count = 3, storyboard_version = 7, estimated_text_chars = 130, estimated_bubbles = 3, scene_ids = new[] { "s1" }, beat_ids = new[] { "b1", "b2", "b3" }, continuity_status = "NEEDS_REVIEW", canvas = new { width_mm = 182, height_mm = 257, bleed_mm = 3, safe_mm = 5 } };
-        private static object Panel(int n) => new
+        private object Panel(int n) => new
         {
             id = $"panel-{n}", reading_order = n, version = 2,
             bounds = new { x = n == 2 ? .52 : .012, y = n == 1 ? .012 : .47, width = n == 1 ? .976 : .468, height = n == 1 ? .436 : .518 },
-            shot_type = "establishing", camera_angle = "eye_level", actions = new { script_action = "“我”跪在爸爸的灵牌前，肩膀颤抖，失声痛哭。窗外下着淅淅沥沥的小雨。" },
+            shot_type = "establishing", camera_angle = "eye_level", actions = new { script_action = actionText, source_text = "不可改写原文", metadata = new { count = 2 } },
             background = "京都，爸爸的灵牌前", props = new[] { "爸爸的灵牌" }, characters = new[] { "c1" }, character_presence = new Dictionary<string, string> { ["c1"] = "VISIBLE" },
             dialogues = new[] { new { id = $"dlg-{n}", panel_id = $"panel-{n}", reading_order = 1, target_text = "四月初，京都下起了小雨。", text_direction = "vertical", rewrite_forbidden = true } }
         };
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
+            if (request.Method == HttpMethod.Patch && request.RequestUri!.AbsolutePath.EndsWith("/panels/panel-1"))
+            {
+                PanelBody = JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(token));
+                // Model the real API: only actions.script_action updates the stored action.
+                if (PanelBody.Element("actions").ValueKind == JsonValueKind.Object) actionText = PanelBody.Element("actions").Text("script_action");
+                Patches++;
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
+            }
             if (request.Method != HttpMethod.Get) throw new Exception("Layout checks must not issue writes");
             var path = request.RequestUri!.AbsolutePath; object data = Array.Empty<object>();
             if (path.EndsWith("/chapters")) data = new[] { new { id = "ch", ordinal = 1, title = "第一章", page_count = 11 } };
             else if (path.EndsWith("/characters")) data = new[] { new { id = "c1", primary_name = "我" } };
             else if (path.EndsWith("/pages")) data = Enumerable.Range(1, 11).Select(Page).ToArray();
             else if (path.EndsWith("/storyboard")) { Reads++; int n = int.Parse(path.Split('/')[^2].Split('-')[1]); data = new { page = Page(n), panels = Enumerable.Range(1, 3).Select(Panel).ToArray() }; }
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(data)) });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(data)) };
         }
     }
 }

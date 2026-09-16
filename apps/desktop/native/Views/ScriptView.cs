@@ -770,8 +770,16 @@ internal sealed class SceneSection : Border
             if (!dirty) return;
             saveBusy = true;
             save.IsEnabled = false;
+            // A successful save rebuilds this scene. Prevent edits to controls that
+            // would otherwise be discarded while the captured assignment map is in flight.
+            foreach (var (_, selector) in selectors) selector.IsEnabled = false;
             try { await view.SaveOutfitAssignments(scene, final); }
-            finally { saveBusy = false; save.IsEnabled = true; }
+            finally
+            {
+                saveBusy = false;
+                save.IsEnabled = true;
+                foreach (var (_, selector) in selectors) selector.IsEnabled = true;
+            }
         }
         void ScheduleOutfitSave()
         {
