@@ -605,3 +605,13 @@
 **§35 补充（夜班 02:00 段）**：
 - **E 轮**：`test_mjs_no_undef.py` 交叉审+认证（RUN 0.76s passed）——eslint no-undef 静态门恰捕 #713 类（块级作用域名函数域读取，node --check 通过）；留两 nit（npx 有而无本地 eslint 时假红；_GLOBALS 维护性）。`e2e_runtime.py` + `owned_processes.py`（新 Windows Job 验收运行时，448 行）全文审：suspend→assign→resume 次序、KILL_ON_JOB_CLOSE 无 breakaway-ok、`Local\`+uuid4 命名、`-I -B -S` 隔离 bootstrap、最小句柄权（QUERY_LIMITED|SYNCHRONIZE）、TCP 表缓冲 TOCTOU 处理、ntohs 等价换算、逐 pid 作业成员校验 fail-closed—— exemplary，静态无发现（Windows 活体 NOT RUN）。
 - **B/E 状态**：新增量全读后无新实质发现；B 配额缺口（0/20）如实记录——产出依赖新增量或更深模拟，不水文。
+
+---
+
+## 36. 新夜窗开跑（20260916 夜，基线 d949ab5；自 2371437 以来 180 提交）
+
+**新增量审计（desktop 生产 delta 全读）**：protocol.rs +15 为 monotonicity 钉（测试）；helper.py +14 为我 #732/#697 合入的回声；verify-static-origin.mjs +25 为 plan-B API 计数的**二次加固**——同源（origin 相等）+ `/api/` pathname 双条件，封堵 CSP `localhost:*` 允许的跨源回环调用满足"直连 API"门的假证路径；picker_policy 为 doc-comment 风格调整。
+
+**认证**：Python 五套 **75/75**；shell-core **169/169**。
+
+**新窗配额状态**：B 0/20、C 0/6、E 1/6（§35-36 两轮审计计入）。继续挖。
