@@ -775,7 +775,11 @@ def _workflow_node_blocks_recovery(db: Session, node_run_id: str) -> bool:
     node_run = db.get(WorkflowNodeRun, node_run_id)
     if node_run is None:
         return False
-    if node_run.status == "WAITING":
+    if node_run.status in {"WAITING", "SKIPPED"}:
+        # WAITING: never scheduled — reconcile's role. SKIPPED: a dead-branch
+        # node whose planning job must be cancelled by reconcile (the skip
+        # branch heals it), never executed by recovery — enqueueing it here
+        # would run and pay for a branch the condition did not select.
         return True
     run = db.get(WorkflowRun, node_run.workflow_run_id)
     return run is not None and run.status == "PAUSED"
