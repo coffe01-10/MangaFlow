@@ -36,5 +36,9 @@ export function buildContentSecurityPolicy(nonce: string, isDev: boolean): strin
     "object-src 'none'",
     "base-uri 'self'",
     "frame-src 'none'",
+    // All app forms submit via fetch, but form-action is not covered by
+    // default-src: pin it so a future native-submit path can never exfiltrate
+    // credentials off-origin even before anyone notices.
+    "form-action 'self'",
   ].join("; ");
 }

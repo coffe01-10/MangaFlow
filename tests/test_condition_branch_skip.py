@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import (
     GenerationJob,
+    JobDependency,
     Project,
     WorkflowDefinition,
     WorkflowNodeRun,
@@ -26,6 +27,7 @@ from app.models import (
     WorkflowVersion,
     utcnow,
 )
+from app.services.job_service import dependencies_complete
 from app.services.workflow_engine import reconcile_run
 from app.services.workflow_engine.catalog import _edge, _node, graph_checksum
 from app.services.workflow_engine.validation import validate_graph
@@ -186,8 +188,11 @@ def test_unselected_branch_skip_is_transitive(db_session, monkeypatch):
     assert statuses["dead_b"].output_refs.get("reason") == "CONDITION_BRANCH_NOT_SELECTED"
     for job in (job_a, job_b):
         row = db_session.get(GenerationJob, job.id)
-        assert row.status == JobStatus.WAITING  # never enqueued…
-        assert row.error_code is None  # …not even stamped QUEUE_DISABLED
+        # Dead-branch planning jobs are CANCELLED at skip time, not left
+        # WAITING: a stranded WAITING row both deadlocks diamond merges
+        # (dependencies require every parent job COMPLETED) and hands the
+        # recovery loop a row it would resurrect — and paid-execute.
+        assert row.status == JobStatus.CANCELLED
 
 
 @pytest.mark.parametrize("selected_port", ["true", "false"])
@@ -302,3 +307,254 @@ def test_merge_with_dead_and_selected_parents_runs(db_session, monkeypatch, sele
     assert statuses["down"].status == "RUNNING"
     assert statuses["down"].job_id is not None
     assert result.status == "RUNNING"
+
+
+# P1（第 12 轮主循环第 3 批审查）：菱形 merge 从 WAITING 被调度时，死分支
+# 遗留的 WAITING planning job 会让 dependencies_complete（要求全部依赖
+# COMPLETED）永远为假——run 卡死 RUNNING，唯一活跃 run 守卫锁死 scope；
+# 而恢复循环又会把死分支 job 重新入队、真实执行（含付费调用）死分支。
+# 跳过时必须取消死 job 并收回其入边依赖，让 merge 只依赖活分支。
+def test_diamond_merge_scheduling_survives_dead_branch_job(db_session, monkeypatch):
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    graph = {
+        "schema_version": 2,
+        "nodes": [
+            _node("src", "source.chapter", "章节", 0, 0),
+            _node("parse", "agent.parse", "解析", 180, 0, model_alias="auto"),
+            _node(
+                "cond",
+                "control.condition",
+                "条件",
+                360,
+                0,
+                condition={"path": "$.story.ready", "operator": "eq", "value": True},
+            ),
+            _node(
+                "alive",
+                "control.condition",
+                "活分支",
+                540,
+                0,
+                condition={"path": "$.value", "operator": "exists"},
+            ),
+            _node(
+                "dead",
+                "control.condition",
+                "死分支",
+                540,
+                200,
+                condition={"path": "$.value", "operator": "exists"},
+            ),
+            _node("merge", "control.merge", "合并", 720, 100),
+            _node(
+                "down",
+                "control.condition",
+                "下游",
+                900,
+                100,
+                condition={"path": "$.merged", "operator": "exists"},
+            ),
+        ],
+        "edges": [
+            _edge("src", "source", "parse", "source"),
+            _edge("parse", "story", "cond", "value"),
+            _edge("cond", "true", "alive", "value"),
+            _edge("cond", "false", "dead", "value"),
+            _edge("alive", "true", "merge", "left"),
+            _edge("dead", "true", "merge", "right"),
+            _edge("merge", "merged", "down", "value"),
+        ],
+    }
+    project, run = _seed_graph_run(db_session, "菱形合并死锁", graph)
+    _node_run(
+        db_session, run, "src", "source.chapter", status="COMPLETED",
+        output_refs={"kind": "source"},
+    )
+    _node_run(
+        db_session, run, "parse", "agent.parse", status="COMPLETED",
+        output_refs={"story": {"ready": True}},
+    )
+    cond = _node_run(
+        db_session,
+        run,
+        "cond",
+        "control.condition",
+        output_refs={"selected_port": "true", "matched": True, "value": True},
+    )
+    cond_job = _node_job(db_session, project, run, cond, status=JobStatus.COMPLETED)
+    alive = _node_run(
+        db_session,
+        run,
+        "alive",
+        "control.condition",
+        output_refs={"selected_port": "true", "matched": True},
+    )
+    alive_job = _node_job(db_session, project, run, alive, status=JobStatus.COMPLETED)
+    dead = _node_run(db_session, run, "dead", "control.condition")
+    dead_job = _node_job(db_session, project, run, dead)
+    # Merge waits for scheduling with planning-wired dependencies on BOTH
+    # branch jobs — the exact shape create_workflow_run produces.
+    merge = _node_run(db_session, run, "merge", "control.merge")
+    merge_job = _node_job(db_session, project, run, merge)
+    db_session.add_all(
+        [
+            JobDependency(job_id=merge_job.id, depends_on_job_id=alive_job.id),
+            JobDependency(job_id=merge_job.id, depends_on_job_id=dead_job.id),
+        ]
+    )
+    down = _node_run(db_session, run, "down", "control.condition")
+    down_job = _node_job(db_session, project, run, down)
+    db_session.add(JobDependency(job_id=down_job.id, depends_on_job_id=merge_job.id))
+    db_session.commit()
+
+    result = reconcile_run(db_session, run.id)
+
+    db_session.expire_all()
+    statuses = _node_statuses(db_session, run.id)
+    assert statuses["dead"].status == "SKIPPED"
+    # The dead branch's planning job is retired, so recovery can never
+    # resurrect (and pay for) the branch the condition did not select.
+    assert db_session.get(GenerationJob, dead_job.id).status == JobStatus.CANCELLED
+    # Its inbound dependency edge is retracted: the merge no longer waits on
+    # the dead job. The dependency walk may traverse the skipped node up to
+    # the completed condition (harmless — already COMPLETED); the essential
+    # property is that every remaining dependency is satisfied.
+    merge_deps = list(
+        db_session.scalars(
+            select(JobDependency.depends_on_job_id).where(
+                JobDependency.job_id == merge_job.id
+            )
+        )
+    )
+    assert dead_job.id not in merge_deps
+    assert set(merge_deps) <= {alive_job.id, cond_job.id}
+    assert dependencies_complete(db_session, db_session.get(GenerationJob, merge_job.id))
+    # The merge is scheduled (node RUNNING; queue disabled stamps the job
+    # QUEUE_DISABLED instead of executing) — not wedged WAITING forever.
+    assert statuses["merge"].status == "RUNNING"
+    merge_job_row = db_session.get(GenerationJob, merge_job.id)
+    assert merge_job_row.error_code == "QUEUE_DISABLED"
+    # Downstream still waits on the merge; the run is legitimately RUNNING
+    # (scheduling made progress), not a zombie.
+    assert statuses["down"].status == "WAITING"
+    assert result.status == "RUNNING"
+
+    # Idempotent second pass: the healed state must not regress.
+    reconcile_run(db_session, run.id)
+    db_session.expire_all()
+    assert (
+        db_session.get(GenerationJob, dead_job.id).status == JobStatus.CANCELLED
+    )
+    assert _node_statuses(db_session, run.id)["merge"].status == "RUNNING"
+
+
+def test_recovery_refuses_skipped_nodes(db_session):
+    """A SKIPPED node's job belongs to reconcile (cancellation), never to the
+    recovery loop — enqueueing it would execute the dead branch."""
+    from app.services.job_service import _workflow_node_blocks_recovery
+
+    project, run = _seed_graph_run(
+        db_session,
+        "恢复阻断",
+        {
+            "schema_version": 2,
+            "nodes": [
+                _node("src", "source.chapter", "章节", 0, 0),
+                _node("parse", "agent.parse", "解析", 200, 0, model_alias="auto"),
+                _node("n", "agent.adapt", "节点", 400, 0, model_alias="auto"),
+            ],
+            "edges": [
+                _edge("src", "source", "parse", "source"),
+                _edge("parse", "story", "n", "story"),
+            ],
+        },
+    )
+    item = _node_run(db_session, run, "n", "agent.adapt", status="SKIPPED")
+    db_session.commit()
+
+    assert _workflow_node_blocks_recovery(db_session, item.id) is True
+
+
+def test_reconcile_heals_skipped_node_with_stranded_waiting_job(db_session, monkeypatch):
+    """Legacy rows (skipped under the pre-fix code, job left WAITING) are
+    healed on the first reconcile: the job is cancelled and its inbound
+    dependency edges retracted."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    graph = {
+        "schema_version": 2,
+        "nodes": [
+            _node("src", "source.chapter", "章节", 0, 0),
+            _node("parse", "agent.parse", "解析", 200, 0, model_alias="auto"),
+            _node(
+                "cond",
+                "control.condition",
+                "条件",
+                400,
+                0,
+                condition={"path": "$.story.ready", "operator": "eq", "value": True},
+            ),
+            _node("dead", "agent.adapt", "死分支", 600, 0, model_alias="auto"),
+            _node("merge", "control.merge", "合并", 800, 0),
+        ],
+        "edges": [
+            _edge("src", "source", "parse", "source"),
+            _edge("parse", "story", "cond", "value"),
+            _edge("cond", "false", "dead", "story"),
+            _edge("cond", "true", "merge", "left"),
+            _edge("dead", "script", "merge", "right"),
+        ],
+    }
+    project, run = _seed_graph_run(db_session, "死分支遗留自愈", graph)
+    _node_run(
+        db_session, run, "src", "source.chapter", status="COMPLETED",
+        output_refs={"kind": "source"},
+    )
+    _node_run(
+        db_session, run, "parse", "agent.parse", status="COMPLETED",
+        output_refs={"story": {"ready": True}},
+    )
+    cond = _node_run(
+        db_session,
+        run,
+        "cond",
+        "control.condition",
+        status="COMPLETED",
+        output_refs={"selected_port": "true", "matched": True, "value": True},
+    )
+    cond_job = _node_job(db_session, project, run, cond, status=JobStatus.COMPLETED)
+    # The legacy shape: node already SKIPPED, planning job still WAITING, and
+    # the merge's dependency set still contains the dead job.
+    dead = _node_run(
+        db_session,
+        run,
+        "dead",
+        "agent.adapt",
+        status="SKIPPED",
+        output_refs={"reason": "CONDITION_BRANCH_NOT_SELECTED"},
+    )
+    dead_job = _node_job(db_session, project, run, dead)
+    merge = _node_run(db_session, run, "merge", "control.merge")
+    merge_job = _node_job(db_session, project, run, merge)
+    db_session.add_all(
+        [
+            JobDependency(job_id=merge_job.id, depends_on_job_id=cond_job.id),
+            JobDependency(job_id=merge_job.id, depends_on_job_id=dead_job.id),
+        ]
+    )
+    db_session.commit()
+
+    reconcile_run(db_session, run.id)
+
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, dead_job.id).status == JobStatus.CANCELLED
+    merge_deps = list(
+        db_session.scalars(
+            select(JobDependency.depends_on_job_id).where(
+                JobDependency.job_id == merge_job.id
+            )
+        )
+    )
+    assert merge_deps == [cond_job.id]
+    statuses = _node_statuses(db_session, run.id)
+    assert statuses["merge"].status == "RUNNING"
+

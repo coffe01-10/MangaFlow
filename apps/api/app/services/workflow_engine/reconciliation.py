@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import candidate_version_state
@@ -50,7 +50,14 @@ def get_run(db: Session, run_id: str) -> WorkflowRun:
         db.scalars(
             select(WorkflowNodeRun)
             .where(WorkflowNodeRun.workflow_run_id == run.id)
-            .order_by(WorkflowNodeRun.started_at, WorkflowNodeRun.node_id)
+            # Not-yet-started rows carry NULL started_at, and NULL ordering is
+            # backend-defined (SQLite sorts NULL first, PostgreSQL last): pin
+            # the dev-and-test shape (queued rows lead) on both backends.
+            .order_by(
+                WorkflowNodeRun.started_at.is_(None).desc(),
+                WorkflowNodeRun.started_at,
+                WorkflowNodeRun.node_id,
+            )
         )
     )
     return run
@@ -202,6 +209,33 @@ def _create_inspection_job(
         "asset_id": candidate.asset_id,
     }
     return job
+
+
+def _terminate_skipped_node_job(
+    db: Session, item: WorkflowNodeRun, job: GenerationJob
+) -> None:
+    """Retire the planning job of a dead-branch node without committing.
+
+    A SKIPPED node must carry no live planning job: merge jobs depend on every
+    parent job reaching COMPLETED, so a WAITING job stranded on the dead
+    branch both deadlocks the merge behind it and hands the recovery loop a
+    row it would happily re-enqueue — executing (and paying for) a branch the
+    condition explicitly did not select. Cancel the job and retract its
+    inbound dependency edges so dependents re-wire to live parents only
+    (_parent_job_ids excludes SKIPPED nodes, keeping the sync from re-adding
+    them). Terminal COMPLETED/FAILED jobs are left alone, mirroring the
+    stranded-children sweep: the run result must keep showing what happened.
+    """
+
+    if job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}:
+        return
+    mark_job_cancelled(db, job)
+    # mark_job_cancelled flips the bound node_run to CANCELLED as part of its
+    # generic sweep; a dead-branch node must keep SKIPPED semantics (SKIPPED
+    # is success-shaped for run completion, CANCELLED would fail the run).
+    item.status = "SKIPPED"
+    item.finished_at = item.finished_at or utcnow()
+    db.execute(delete(JobDependency).where(JobDependency.depends_on_job_id == job.id))
 
 
 def _sweep_stranded_children(db: Session, run: WorkflowRun) -> None:
@@ -378,6 +412,15 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             item.finished_at = utcnow()
             failed = True
         if item.status != "WAITING":
+            if item.status == "SKIPPED":
+                # Heal pre-fix rows: a SKIPPED node must not keep a live
+                # planning job (see the skip branch below). Recovery routes
+                # blocked SKIPPED-node jobs here via reconcile_run, closing
+                # both the stale dependency edge and the resurrection window
+                # on the first pass after upgrade.
+                if job is not None:
+                    _terminate_skipped_node_job(db, item, job)
+                continue
             if item.status == "WAITING_APPROVAL":
                 paused = True
             continue
@@ -391,6 +434,12 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             item.status = "SKIPPED"
             item.finished_at = utcnow()
             item.output_refs = {"reason": "CONDITION_BRANCH_NOT_SELECTED"}
+            # Dead branches keep no live planning job: the job stays WAITING
+            # forever otherwise, deadlocking diamond merges (dependencies
+            # require every parent job COMPLETED) and inviting the recovery
+            # loop to resurrect — and paid-execute — the dead branch.
+            if job is not None:
+                _terminate_skipped_node_job(db, item, job)
             continue
         spec = NODE_TYPE_MAP[node_map[node_id].type]
         if spec.barrier:
@@ -546,7 +595,10 @@ def _parent_job_ids(db: Session, run: WorkflowRun, graph: WorkflowGraph, node_id
         for item in db.scalars(
             select(WorkflowNodeRun).where(WorkflowNodeRun.workflow_run_id == run.id)
         )
-        if item.job_id
+        # SKIPPED nodes contribute no dependency: their jobs are cancelled by
+        # the skip branch and their inbound edges retracted, so admitting one
+        # here would re-block the very merge the skip just unblocked.
+        if item.job_id and item.status != "SKIPPED"
     }
     pending = deque(parent_nodes[node_id])
     visited: set[str] = set()

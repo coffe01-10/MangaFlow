@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,21 @@ from app.models import (
 from app.services.page_completion import build_page_production_readiness
 from app.services.workflow_engine.scope import _graph_for_run, _latest_script, _scope_chapter
 from app.workflow_schemas import WorkflowGraph
+
+
+class WorkflowNodeExecutionError(RuntimeError):
+    """Deterministic, non-retryable workflow-node failure.
+
+    These conditions (missing scope, incomplete inputs, page not
+    production-ready, unsupported node type) cannot change outcome on a
+    retry, and their messages state the blocking condition in user terms —
+    unlike unclassified exceptions whose raw text must stay out of
+    user-visible error fields (see worker_tasks' sanitization rule). Retrying
+    them by max_attempts used to burn three no-op attempts and replace the
+    actionable message with the generic「未分类异常」text.
+    """
+
+    error_code = "NODE_PRECONDITION_FAILED"
 
 
 def _condition_value(payload: dict[str, Any], path: str) -> Any:
@@ -86,12 +102,16 @@ def _parent_payloads(
 def execute_workflow_node(db: Session, job: GenerationJob) -> None:
     node_run = db.get(WorkflowNodeRun, job.target_id)
     if not node_run:
-        raise RuntimeError("工作流节点运行不存在")
+        raise WorkflowNodeExecutionError("工作流节点运行不存在")
     node_run.status = "RUNNING"
     node_run.started_at = node_run.started_at or utcnow()
+    # Job-level retries re-claim the row (attempt_count + 1 in _claim_job);
+    # mirror that onto the node run so the exposed count reflects scheduling
+    # attempts instead of staying pinned at the planning-time 1.
+    node_run.attempt_count = max(node_run.attempt_count, job.attempt_count)
     run = db.get(WorkflowRun, node_run.workflow_run_id)
     if not run:
-        raise RuntimeError("工作流运行不存在")
+        raise WorkflowNodeExecutionError("工作流运行不存在")
     graph = _graph_for_run(db, run)
     by_node = {
         item.node_id: item
@@ -103,7 +123,9 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
     if node_run.node_type == "agent.adapt":
         script = _latest_script(db, run)
         if not script or script.status != "READY":
-            raise RuntimeError("UNSUPPORTED_INPUT: 剧本改编需要完整的 ScriptRevision")
+            raise WorkflowNodeExecutionError(
+                "UNSUPPORTED_INPUT: 剧本改编需要完整的 ScriptRevision"
+            )
         node_run.output_refs = {
             "job_id": job.id,
             "node_type": node_run.node_type,
@@ -115,7 +137,7 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
 
         chapter = _scope_chapter(db, run)
         if not chapter:
-            raise RuntimeError("分页与分镜节点必须使用章节、页面或候选范围")
+            raise WorkflowNodeExecutionError("分页与分镜节点必须使用章节、页面或候选范围")
         pages = plan_chapter_pages(db, chapter, replace_existing=False)
         node_run.output_refs = {
             "job_id": job.id,
@@ -148,11 +170,13 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
     ):
         page = db.get(MangaPage, run.scope_id) if run.scope_id else None
         if not page:
-            raise RuntimeError("UNSUPPORTED_INPUT: 单页成品节点需要页面运行范围")
+            raise WorkflowNodeExecutionError(
+                "UNSUPPORTED_INPUT: 单页成品节点需要页面运行范围"
+            )
         production = build_page_production_readiness(db, page)
         if not production.ready:
             messages = "；".join(item.message for item in production.blockers)
-            raise RuntimeError(f"PAGE_NOT_PRODUCTION_READY: {messages}")
+            raise WorkflowNodeExecutionError(f"PAGE_NOT_PRODUCTION_READY: {messages}")
         candidate = db.get(PageCandidate, page.selected_candidate_id)
         node_run.output_refs = {
             "job_id": job.id,
@@ -168,20 +192,29 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
 
         chapter = _scope_chapter(db, run)
         if not chapter:
-            raise RuntimeError("UNSUPPORTED_INPUT: 整章导出节点需要章节运行范围")
+            raise WorkflowNodeExecutionError(
+                "UNSUPPORTED_INPUT: 整章导出节点需要章节运行范围"
+            )
         # Job reclaim / RQ redelivery re-executes this handler after a previous
         # attempt already committed the bundle for the same deterministic
         # artifact; reuse that row instead of duplicating it. (Only sequential
         # re-execution is covered; truly concurrent double-execution would need
         # a DB unique constraint, which requires a migration.)
-        bundle = create_export(
-            chapter.id,
-            ExportRequest(export_type="JSON"),
-            db,
-            reuse_existing=True,
-        )
+        try:
+            bundle = create_export(
+                chapter.id,
+                ExportRequest(export_type="JSON"),
+                db,
+                reuse_existing=True,
+            )
+        except HTTPException as error:
+            # The route's 4xx detail (e.g. 第 N 页尚未达到生产通过状态) is the
+            # actionable cause; as a deterministic precondition failure it must
+            # surface on the node instead of being retried and masked as an
+            # unclassified exception.
+            raise WorkflowNodeExecutionError(str(error.detail)) from error
         if not isinstance(bundle, ExportBundle):
-            raise RuntimeError("导出节点没有产生 ExportBundle")
+            raise WorkflowNodeExecutionError("导出节点没有产生 ExportBundle")
         node_run.output_refs = {
             "job_id": job.id,
             "node_type": node_run.node_type,
@@ -190,5 +223,5 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
             "storage_key": bundle.storage_key,
         }
     else:
-        raise RuntimeError(f"UNSUPPORTED_NODE_TYPE: {node_run.node_type}")
+        raise WorkflowNodeExecutionError(f"UNSUPPORTED_NODE_TYPE: {node_run.node_type}")
     db.flush()

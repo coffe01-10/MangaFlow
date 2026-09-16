@@ -36,6 +36,7 @@ from app.services.worker_handlers.inspection import _run_inspection
 from app.services.worker_handlers.page_generate import _run_page_generate
 from app.services.worker_handlers.story_parse import _run_story_parse
 from app.services.worker_handlers.style_analyze import _run_style_analyze
+from app.services.workflow_engine.execution import WorkflowNodeExecutionError
 
 LOGGER = logging.getLogger("mangaflow.worker")
 
@@ -752,6 +753,33 @@ def execute_job(job_id: str) -> None:
             # (in REDIS mode it would burn an RQ payload retry that no-ops
             # against the FAILED row); log and continue so the original
             # failure still propagates.
+            try:
+                from app.services.workflow_engine import reconcile_run
+
+                reconcile_run(db, workflow_run_id)
+            except Exception:
+                LOGGER.exception(
+                    "workflow run %s reconcile failed after job failure",
+                    workflow_run_id,
+                )
+        raise
+    except WorkflowNodeExecutionError as error:
+        db.rollback()
+        # Deterministic precondition failures (missing scope/input, page not
+        # production-ready, unsupported node) keep their actionable message —
+        # which page, which input — instead of being retried max_attempts
+        # times and masked as「未分类异常」by the sanitizing branch below.
+        marked, workflow_run_id, is_final = _mark_worker_failure(
+            db,
+            job_id,
+            owner,
+            error.error_code,
+            str(error),
+            retryable=False,
+        )
+        if not marked:
+            return
+        if workflow_run_id and is_final:
             try:
                 from app.services.workflow_engine import reconcile_run
 

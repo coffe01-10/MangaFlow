@@ -63,5 +63,7 @@ describe("web CSP 契约（#300 nonce 化）", () => {
     );
     expect(directive(csp, "object-src")).toBe("object-src 'none'");
     expect(directive(csp, "frame-src")).toBe("frame-src 'none'");
+    // form-action 不受 default-src 兜底：钉住 self，原生表单提交也出不了站。
+    expect(directive(csp, "form-action")).toBe("form-action 'self'");
   });
 });

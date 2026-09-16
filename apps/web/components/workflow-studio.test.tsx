@@ -225,6 +225,42 @@ describe("WorkflowStudio 草稿保存与发布", () => {
     expect(within(modelSelect).getByRole("option", { name: /自动路由/ })).toBeInTheDocument();
   });
 
+  // 后端按 JSON 类型比较且发布校验允许布尔条件（test_workflow_validation_sweep
+  // 钉住 value: true）：比较值输入必须把 true/false/数字解析为类型字面量提交，
+  // 否则 $.ready eq "true" 恒为假分支；exists 不读比较值，保持原样字符串。
+  it("条件比较值按类型字面量提交，exists 保持字符串", async () => {
+    updateSpy.mockImplementation(async (_id, _version, payload) => workflow({
+      version: 2, draft_version: 2, draft_graph: payload.draft_graph,
+    }));
+    catalogSpy.mockResolvedValue([{
+      ...nodeType,
+      type: "control.condition",
+      label: "条件分支",
+    }]);
+    renderStudio();
+    fireEvent.click(await screen.findByRole("button", { name: /条件分支/ }));
+
+    const operator = screen.getByRole("combobox", { name: "比较符" });
+    const value = screen.getByRole("textbox", { name: "比较值" });
+
+    fireEvent.change(operator, { target: { value: "eq" } });
+    fireEvent.change(value, { target: { value: "true" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+    expect(updateSpy.mock.calls[0][2].draft_graph?.nodes[0].config.condition?.value).toBe(true);
+
+    fireEvent.change(value, { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(2));
+    expect(updateSpy.mock.calls[1][2].draft_graph?.nodes[0].config.condition?.value).toBe(3);
+
+    fireEvent.change(operator, { target: { value: "exists" } });
+    fireEvent.change(value, { target: { value: "true" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(3));
+    expect(updateSpy.mock.calls[2][2].draft_graph?.nodes[0].config.condition?.value).toBe("true");
+  });
+
   it("保存中继续改图会补交最新草稿，已保存与持久化内容一致", async () => {
     const first = deferred<WorkflowDefinition>();
     const second = deferred<WorkflowDefinition>();
