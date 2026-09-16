@@ -288,3 +288,40 @@ def test_library_10000_candidate_hot_request_benchmark(client, db_session):
     p95_ms = sorted(elapsed_ms)[18]
     assert select_count <= 20 * 5
     assert p95_ms <= 500
+
+
+def test_library_reports_true_candidate_staleness(client, db_session):
+    """candidate_read without a page hard-coded version_state "CURRENT"; the
+    library must reflect storyboard drift like the workbench does, or stale
+    favorites would silently masquerade as current."""
+
+    project = client.post("/api/v1/projects", json={"name": "过期素材库"}).json()
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1, storyboard_version=2)
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project["id"], chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
+    db_session.add(batch)
+    db_session.flush()
+    db_session.add(
+        PageCandidate(
+            batch_id=batch.id,
+            page_id=page.id,
+            ordinal=1,
+            model_alias="image.nano_banana_2",
+            resolution=Resolution.DRAFT_1K,
+            based_on_storyboard_version=1,
+        )
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/projects/{project['id']}/library")
+
+    assert response.status_code == 200, response.text
+    candidates = response.json()["groups"][0]["candidates"]
+    assert candidates[0]["version_state"] == "STALE"
+    assert candidates[0]["staleness_reasons"] == ["STORYBOARD_CHANGED"]

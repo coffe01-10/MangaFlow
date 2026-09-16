@@ -130,4 +130,17 @@ describe("ProviderCard 脏集合生命周期（#546-5）", () => {
     expect(screen.getByLabelText("API Key")).toHaveValue("sk-half-typed");
     confirmSpy.mockRestore();
   });
+
+  // 删除供应商、启停换分组等路径会不经确认直接卸载卡片：卸载时必须把
+  // 脏标记清回 false，否则页面级 beforeunload 与搜索变更确认持续误报。
+  it("卡片卸载时把脏标记清回 false，页面级脏态不残留", async () => {
+    const onDirtyChange = vi.fn();
+    const { unmount } = renderCard(makeProvider(), onDirtyChange);
+
+    fireEvent.change(await screen.findByLabelText("API Key"), { target: { value: "sk-half-typed" } });
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
+
+    unmount();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
 });

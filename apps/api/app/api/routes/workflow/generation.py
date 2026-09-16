@@ -13,7 +13,7 @@ from app.api.helpers import (
 from app.api.routes.workflow.common import _new_batch, _page
 from app.config import get_settings
 from app.database import get_db
-from app.domain.states import JobStatus, PageStatus
+from app.domain.states import PageStatus
 from app.models import (
     Asset,
     AssetCandidate,
@@ -208,7 +208,9 @@ def favorite_candidate(
     # page_id/is_selected fields an AssetCandidate does not have.
     if isinstance(candidate, AssetCandidate):
         return asset_candidate_read(candidate)
-    return candidate_read(candidate)
+    # candidate_read without a page reports version_state "CURRENT" regardless
+    # of storyboard drift; the favorite response must reflect true staleness.
+    return candidate_read(candidate, db.get(MangaPage, candidate.page_id))
 
 
 @router.delete("/candidates/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -342,13 +344,12 @@ def delete_candidate(
     # cancel_job commits, persisting the soft-delete above and the CANCELLED
     # stamp as one final committed state.  The trailing commit is a no-op on
     # that path and the real commit on the cancel_run path, which returns
-    # without committing.
+    # without committing.  NEEDS_REVIEW belongs to the terminal set (see
+    # _JOB_TERMINAL_STATUSES above): an inline set without it would rewrite a
+    # review-pending job to CANCELLED — and cancel_job escalates to
+    # cancel_run for a bound, non-terminal node run, killing the whole run.
     job = db.get(GenerationJob, candidate.job_id) if candidate.job_id else None
-    if job is not None and job.status not in {
-        JobStatus.COMPLETED,
-        JobStatus.CANCELLED,
-        JobStatus.FAILED,
-    }:
+    if job is not None and job.status not in _JOB_TERMINAL_STATUSES:
         cancel_job(db, job)
     db.commit()
 

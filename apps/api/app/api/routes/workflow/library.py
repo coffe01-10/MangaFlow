@@ -187,10 +187,30 @@ def library(
         if resolution:
             page_query = page_query.where(PageCandidate.resolution == resolution)
             asset_query = asset_query.where(AssetCandidate.resolution == resolution)
-        for item in db.scalars(
-            page_query.order_by(PageCandidate.batch_id, PageCandidate.ordinal.desc())
-        ):
-            candidates_by_batch[item.batch_id].append(candidate_read(item))
+        page_candidates = list(
+            db.scalars(
+                page_query.order_by(PageCandidate.batch_id, PageCandidate.ordinal.desc())
+            )
+        )
+        # candidate_read without a page reports version_state "CURRENT"
+        # regardless of storyboard drift; the library must reflect true
+        # staleness so old favorites surface the same warning as the workbench.
+        manga_page_by_id = {
+            item.id: item
+            for item in (
+                db.scalars(
+                    select(MangaPage).where(
+                        MangaPage.id.in_({c.page_id for c in page_candidates})
+                    )
+                )
+                if page_candidates
+                else []
+            )
+        }
+        for item in page_candidates:
+            candidates_by_batch[item.batch_id].append(
+                candidate_read(item, manga_page_by_id.get(item.page_id))
+            )
         for item in db.scalars(
             asset_query.order_by(AssetCandidate.batch_id, AssetCandidate.ordinal.desc())
         ):

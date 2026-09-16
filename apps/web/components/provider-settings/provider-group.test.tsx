@@ -134,4 +134,17 @@ describe("ProviderGroup 脏集合生命周期（#546-5）", () => {
     expect(screen.getByLabelText("API Key")).toHaveValue("sk-half-typed");
     confirmSpy.mockRestore();
   });
+
+  // 筛选变化导致分组跨组搬移等路径会直接卸载分组：卸载时必须把脏标记
+  // 清回 false，否则页面级 beforeunload 持续误报直到整页重载。
+  it("分组卸载时把脏标记清回 false，页面级脏态不残留", async () => {
+    const onDirtyChange = vi.fn();
+    const { unmount } = renderGroup([makeProvider()], onDirtyChange);
+
+    fireEvent.change(await screen.findByLabelText("API Key"), { target: { value: "sk-half-typed" } });
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
+
+    unmount();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
 });
