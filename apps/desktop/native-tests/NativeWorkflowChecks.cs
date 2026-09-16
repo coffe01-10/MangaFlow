@@ -37,6 +37,7 @@ internal static class NativeWorkflowChecks
             if (path.EndsWith("/projects/p1/chapters")) return Task.FromResult(Response("[]"));
             if (path.EndsWith("/workflows/wf-1"))
                 return Task.FromResult(Response("""{"id":"wf-1","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            if (path.EndsWith("/versions")) return Task.FromResult(Response("[]"));
             return Task.FromResult(Response("{}"));
         }));
         var context = new WorkspaceContext

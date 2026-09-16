@@ -35,8 +35,11 @@ public sealed partial class WorkflowView : WorkspaceView
     private readonly StackPanel inspector = new();
     private readonly StackPanel runMonitor = new();
     private readonly TextBlock statusLine = new() { Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)) };
-    private readonly ComboBox scopeType = new() { Width = 110 };
-    private readonly ComboBox scopeTarget = new() { Width = 170 };
+    private readonly ComboBox scopeType = Selector("运行范围类型", 110);
+    // PAGE 范围的所属章节；CHAPTER 范围隐藏。此前 PAGE 恒取 chapters[0]，
+    // 多章项目无法对第 2+ 章的页面发起单页流程（对齐 web pageChapterId）。
+    private readonly ComboBox scopeChapter = Selector("页面所属章节", 170);
+    private readonly ComboBox scopeTarget = Selector("运行目标", 170);
     private readonly List<WorkflowNode> nodes = [];
     private readonly List<WorkflowEdge> edges = [];
     // 每条边两份 Path：可视层（2px 实线）+ 命中层（14px 透明加宽，解决细线难点中）
@@ -48,6 +51,9 @@ public sealed partial class WorkflowView : WorkspaceView
     private List<JsonElement> runRows = [];       // 运行历史：GET workflows/{id}/runs 原序（created_at 倒序）
     private List<ChapterItem> chapters = [];
     private List<PageItem> scopePages = [];
+    private string pageChapterId = "";
+    private int scopeLoadVersion;
+    private bool suppressScopeEvents;
     private JsonElement current;
     private string workflowId = "";
     // #427: 画布当前图归属的工作流 id（version/current 与它同组提交）。快速切换时
@@ -69,11 +75,24 @@ public sealed partial class WorkflowView : WorkspaceView
     private System.Windows.Shapes.Path? pendingWire;   // 连线拖拽中的虚线预览
     private Action? cancelWire;                        // Escape 取消进行中的连线拖拽
     private readonly StackPanel runHistory = new();    // 属性面板下方的运行历史列表（轮询刷新不重建属性面板）
+    private readonly StackPanel versionList = new();   // 发布版本列表（网页 inspector 的 versionList）
     private readonly StackPanel approvalQueue = new(); // 页脚审批队列（网页 footer 的 WAITING_APPROVAL 行）
+    private static readonly (string Name, string Template)[] DefaultWorkflowTemplates =
+    [
+        ("单页生产流程", "manga_default"),
+        ("整章导出流程", "chapter_export"),
+    ];
     private string drawModel = "";                     // 审批时选择的图片模型（网页 drawModel 状态）
     private string drawResolution = "1K";              // 审批清晰度（网页 drawResolution 状态）
     private bool approving;                            // 审批动作防重入（网页 approveNode.isPending 禁用）
+    private bool retrying;                             // FAILED 重试防重入（网页 retryRun.isPending 禁用）
+    private bool restoring;                            // 恢复版本防重入（网页 restoreVersion.isPending）
+    private bool retryCreatePending;
+    private string createFailed = "";
+    private List<JsonElement> publishedVersions = [];
+    private bool versionsFailed;
     private int runsLoading;                           // LoadRunsAsync 防重入（3s 轮询上一轮未返回时跳过）
+    private bool runsReloadRequested;                  // 在途 LoadRuns 期间的后续刷新请求
 
     public WorkflowView()
     {
@@ -216,11 +235,24 @@ public sealed partial class WorkflowView : WorkspaceView
         scopeType.Items.Add(new ComboBoxItem { Tag = "CHAPTER", Content = "章节" });
         scopeType.Items.Add(new ComboBoxItem { Tag = "PAGE", Content = "页面" });
         scopeType.SelectedIndex = 0;
-        scopeType.SelectionChanged += async (_, _) => await LoadScopeTargetsAsync();
+        scopeType.SelectionChanged += async (_, _) =>
+        {
+            if (suppressScopeEvents) return;
+            await LoadScopeTargetsAsync();
+        };
+        scopeChapter.Margin = new Thickness(8, 0, 0, 0);
+        scopeChapter.Visibility = Visibility.Collapsed;
+        scopeChapter.SelectionChanged += async (_, _) =>
+        {
+            if (suppressScopeEvents) return;
+            pageChapterId = (scopeChapter.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            await LoadPageTargetsAsync();
+        };
         var scopeRow = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
         var label = new TextBlock { Text = "运行范围  ", VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)), FontSize = 12 };
         scopeRow.Children.Add(label);
         scopeRow.Children.Add(scopeType);
+        scopeRow.Children.Add(scopeChapter);
         scopeTarget.Margin = new Thickness(8, 0, 0, 0);
         scopeRow.Children.Add(scopeTarget);
         runMonitor.Margin = new Thickness(12, 0, 0, 0);
@@ -250,18 +282,19 @@ public sealed partial class WorkflowView : WorkspaceView
             chapters = (await chaptersTask).EnumerateArray().Select(ChapterItem.From).ToList();
             await LoadModelsAsync();
             RenderLibrary();
-            workflowSelector.Items.Clear();
-            foreach (var workflow in workflows)
-                workflowSelector.Items.Add(new ComboBoxItem { Tag = workflow.Text("id"), Content = workflow.Text("name") });
+            FillWorkflowSelector();
+            if (workflows.Count == 0)
+                await CreateDefaultWorkflowsAsync(DefaultWorkflowTemplates);
             if (workflows.Count == 0)
             {
-                var created = await Api.SendAsync($"projects/{ProjectId}/workflows", HttpMethod.Post,
-                    new { name = "单页生产流程", template = "manga_default", description = "" }, cancellation: lifetime.Token);
-                workflows = [created];
-                workflowSelector.Items.Add(new ComboBoxItem { Tag = created.Text("id"), Content = created.Text("name") });
+                statusLine.Text = createFailed.Length > 0 ? createFailed : "尚未创建工作流";
+                UpdateCreateFailedUi();
+                return;
             }
             var targetId = workflowId;
             var target = workflows.FirstOrDefault(w => w.Text("id") == targetId);
+            if (target.ValueKind != JsonValueKind.Object)
+                target = workflows.FirstOrDefault(w => w.Text("name") == DefaultWorkflowTemplates[0].Name);
             if (target.ValueKind != JsonValueKind.Object) target = workflows[0];
             // #427: 先提交 id 再拨选择器（ScriptView/StoryboardView 的 Activate 同款
             // 纪律）：SelectionChanged 处理器的 id != workflowId 检查保持静默，由
@@ -280,34 +313,198 @@ public sealed partial class WorkflowView : WorkspaceView
         }
     }
 
+    private void FillWorkflowSelector()
+    {
+        workflowSelector.Items.Clear();
+        foreach (var workflow in workflows)
+            workflowSelector.Items.Add(new ComboBoxItem { Tag = workflow.Text("id"), Content = workflow.Text("name") });
+    }
+
+    private async Task CreateDefaultWorkflowsAsync(IReadOnlyList<(string Name, string Template)> missing)
+    {
+        if (missing.Count == 0)
+        {
+            createFailed = "";
+            UpdateCreateFailedUi();
+            return;
+        }
+        var tasks = missing.Select(async template =>
+        {
+            try
+            {
+                var created = await Api.SendAsync($"projects/{ProjectId}/workflows", HttpMethod.Post,
+                    new { name = template.Name, template = template.Template, description = "" },
+                    cancellation: lifetime.Token);
+                return (template.Name, created, (string?)null);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                return (template.Name, default(JsonElement), error.Message);
+            }
+        });
+        (string Name, JsonElement Created, string? Error)[] results;
+        try
+        {
+            results = await Task.WhenAll(tasks);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        foreach (var item in results)
+        {
+            if (item.Error != null || item.Created.ValueKind != JsonValueKind.Object) continue;
+            if (workflows.Any(row => row.Text("id") == item.Created.Text("id"))) continue;
+            workflows.Add(item.Created);
+            workflowSelector.Items.Add(new ComboBoxItem { Tag = item.Created.Text("id"), Content = item.Created.Text("name") });
+        }
+        var failures = results.Where(item => item.Error != null).Select(item => item.Error!).ToList();
+        createFailed = failures.Count == 0
+            ? ""
+            : $"部分默认工作流创建失败：{string.Join("；", failures)}。点击「重试创建」只会补建缺失的流程。";
+        if (createFailed.Length > 0) statusLine.Text = createFailed;
+        UpdateCreateFailedUi();
+    }
+
+    private async Task RetryCreateMissingWorkflowsAsync()
+    {
+        if (retryCreatePending) return;
+        retryCreatePending = true;
+        UpdateCreateFailedUi();
+        try
+        {
+            JsonElement list;
+            try
+            {
+                list = await Api.SendAsync($"projects/{ProjectId}/workflows", cancellation: lifetime.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception error)
+            {
+                createFailed = $"工作流列表刷新失败：{error.Message.Split('\n')[0]}。请重试。";
+                statusLine.Text = createFailed;
+                UpdateCreateFailedUi();
+                return;
+            }
+            workflows = list.EnumerateArray().ToList();
+            FillWorkflowSelector();
+            var existing = workflows.Select(row => row.Text("name")).ToHashSet();
+            var missing = DefaultWorkflowTemplates.Where(template => !existing.Contains(template.Name)).ToList();
+            if (missing.Count == 0)
+            {
+                createFailed = "";
+                UpdateCreateFailedUi();
+            }
+            else await CreateDefaultWorkflowsAsync(missing);
+            if (workflows.Count == 0 || lifetime.Token.IsCancellationRequested) return;
+            if (workflowId.Length == 0 || workflows.All(row => row.Text("id") != workflowId))
+            {
+                var preferred = workflows.FirstOrDefault(row => row.Text("name") == DefaultWorkflowTemplates[0].Name);
+                if (preferred.ValueKind != JsonValueKind.Object) preferred = workflows[0];
+                workflowId = preferred.Text("id");
+                SelectWorkflowItem(workflowId);
+                await LoadWorkflowAsync(workflowId);
+                await LoadScopeTargetsAsync();
+            }
+        }
+        finally
+        {
+            retryCreatePending = false;
+            UpdateCreateFailedUi();
+        }
+    }
+
+    private void UpdateCreateFailedUi()
+    {
+        if (retryCreateButton == null) return;
+        retryCreateButton.Visibility = createFailed.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        retryCreateButton.IsEnabled = !retryCreatePending;
+    }
+
     private async Task LoadScopeTargetsAsync()
     {
         // SelectionChanged 的 async 链路：未捕获异常会崩进程
+        if (suppressScopeEvents) return;
         try
         {
-            scopeTarget.Items.Clear();
             var isPageScope = (scopeType.SelectedItem as ComboBoxItem)?.Tag as string == "PAGE";
-            if (isPageScope)
+            scopeChapter.Visibility = isPageScope ? Visibility.Visible : Visibility.Collapsed;
+            if (!isPageScope)
             {
-                var chapter = chapters.FirstOrDefault();
-                if (chapter != null)
-                {
-                    var rows = await Api.SendAsync($"chapters/{chapter.Id}/pages", cancellation: lifetime.Token);
-                    scopePages = rows.EnumerateArray().Select(PageItem.From).ToList();
-                    foreach (var page in scopePages)
-                        scopeTarget.Items.Add(new ComboBoxItem { Tag = page.Id, Content = $"第 {page.PageNumber} 页" });
-                }
+                scopeLoadVersion++;
+                FillChapterTargets();
+                return;
             }
-            else
-            {
-                foreach (var chapter in chapters)
-                    scopeTarget.Items.Add(new ComboBoxItem { Tag = chapter.Id, Content = $"第 {chapter.Ordinal} 章 · {chapter.Title}" });
-            }
-            if (scopeTarget.Items.Count > 0) scopeTarget.SelectedIndex = 0;
+            RebuildPageChapterSelector();
+            await LoadPageTargetsAsync();
         }
-         catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            scopeTarget.SelectedItem = null;
+            statusLine.Text = $"运行范围读取失败：{error.Message}";
+        }
+    }
+
+    private void FillChapterTargets()
+    {
+        scopeTarget.Items.Clear();
+        foreach (var chapter in chapters)
+            scopeTarget.Items.Add(new ComboBoxItem { Tag = chapter.Id, Content = $"第 {chapter.Ordinal} 章 · {chapter.Title}" });
+        if (scopeTarget.Items.Count > 0) scopeTarget.SelectedIndex = 0;
+    }
+
+    private void RebuildPageChapterSelector()
+    {
+        suppressScopeEvents = true;
+        try
+        {
+            scopeChapter.Items.Clear();
+            foreach (var chapter in chapters)
+                scopeChapter.Items.Add(new ComboBoxItem { Tag = chapter.Id, Content = $"第 {chapter.Ordinal} 章 · {chapter.Title}" });
+            var keep = pageChapterId.Length > 0 && chapters.Any(chapter => chapter.Id == pageChapterId)
+                ? pageChapterId
+                : chapters.FirstOrDefault()?.Id ?? "";
+            pageChapterId = keep;
+            foreach (var item in scopeChapter.Items.OfType<ComboBoxItem>())
+                if ((string?)item.Tag == keep) { scopeChapter.SelectedItem = item; break; }
+        }
+        finally
+        {
+            suppressScopeEvents = false;
+        }
+    }
+
+    private async Task LoadPageTargetsAsync()
+    {
+        try
+        {
+            var chapterId = (scopeChapter.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            pageChapterId = chapterId;
+            var load = ++scopeLoadVersion;
+            scopeTarget.Items.Clear();
+            scopePages = [];
+            if (chapterId.Length == 0) return;
+            var rows = await Api.SendAsync($"chapters/{chapterId}/pages", cancellation: lifetime.Token);
+            if (load != scopeLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            if ((scopeType.SelectedItem as ComboBoxItem)?.Tag as string != "PAGE") return;
+            if ((scopeChapter.SelectedItem as ComboBoxItem)?.Tag as string != chapterId) return;
+            scopePages = rows.EnumerateArray().Select(PageItem.From).ToList();
+            foreach (var page in scopePages)
+                scopeTarget.Items.Add(new ComboBoxItem { Tag = page.Id, Content = $"第 {page.PageNumber} 页" });
+            if (scopeTarget.Items.Count > 0) scopeTarget.SelectedIndex = 0;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            if ((scopeChapter.SelectedItem as ComboBoxItem)?.Tag as string != pageChapterId) return;
             scopeTarget.SelectedItem = null;
             statusLine.Text = $"运行范围读取失败：{error.Message}";
         }
@@ -401,43 +598,184 @@ public sealed partial class WorkflowView : WorkspaceView
         // workflowId 已指向新工作流——下一次编辑的 ScheduleSave 就会把旧图 PATCH 进
         // 新工作流（版本恰好相等时后端 CAS 也拦不住）。非最新请求的响应整份丢弃。
         var requestVersion = ++workflowLoadVersion;
+        publishedVersions = [];
+        versionsFailed = false;
+        RenderVersionList();
         try
         {
             var loaded = await Api.SendAsync($"workflows/{requestedId}", cancellation: lifetime.Token);
             if (requestVersion != workflowLoadVersion || lifetime.Token.IsCancellationRequested) return;
             // 提交块：画布归属、当前选择、版本号与 current 同组落地（都在 UI 线程，
             // 中间无 await），三者永不描述不同的工作流。
-            current = loaded;
-            validationValue.Text = "未校验";
-            workflowId = requestedId;
-            canvasWorkflowId = requestedId;
-            version = current.Number("version");
-            nodes.Clear();
-            edges.Clear();
-            draftPositions.Clear();
-            var graph = current.Element("draft_graph");
-            foreach (var row in graph.Array("nodes"))
-            {
-                var node = WorkflowNode.From(row);
-                nodes.Add(node);
-                AttachNodeHandlers(node);
-            }
-            foreach (var row in graph.Array("edges"))
-                edges.Add(new WorkflowEdge(
-                    row.Text("source_node"), row.Text("source_port"),
-                    row.Text("target_node"), row.Text("target_port")));
-            history.Clear();
-            historyIndex = 0;
-            PushHistory(Snapshot("基线"));   // 基线快照：首个命令可一步撤销
-            RenderCanvas();
-            RenderInspector();
-            UpdateStatus("已保存");
+            CommitLoadedWorkflow(loaded, requestedId);
             _ = LoadRunsAsync();
+            _ = LoadVersionsAsync(requestedId, requestVersion);
         }
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             statusLine.Text = $"工作流载入失败：{error.Message}";
+        }
+    }
+
+    private void CommitLoadedWorkflow(JsonElement loaded, string requestedId)
+    {
+        current = loaded;
+        validationValue.Text = "未校验";
+        workflowId = requestedId;
+        canvasWorkflowId = requestedId;
+        version = current.Number("version");
+        nodes.Clear();
+        edges.Clear();
+        draftPositions.Clear();
+        selected = null;
+        selectedEdgeKey = null;
+        var graph = current.Element("draft_graph");
+        foreach (var row in graph.Array("nodes"))
+        {
+            var node = WorkflowNode.From(row);
+            nodes.Add(node);
+            AttachNodeHandlers(node);
+        }
+        foreach (var row in graph.Array("edges"))
+            edges.Add(new WorkflowEdge(
+                row.Text("source_node"), row.Text("source_port"),
+                row.Text("target_node"), row.Text("target_port")));
+        history.Clear();
+        historyIndex = 0;
+        PushHistory(Snapshot("基线"));
+        RenderCanvas();
+        RenderInspector();
+        UpdateStatus("已保存");
+    }
+
+    private async Task LoadVersionsAsync(string workflow, int requestVersion)
+    {
+        try
+        {
+            var rows = await Api.SendAsync($"workflows/{workflow}/versions", cancellation: lifetime.Token);
+            if (requestVersion != workflowLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            if (workflow != canvasWorkflowId) return;
+            publishedVersions = rows.ValueKind == JsonValueKind.Array ? rows.EnumerateArray().ToList() : [];
+            versionsFailed = false;
+            RenderVersionList();
+            UpdatePublishedMetric();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            if (requestVersion != workflowLoadVersion || workflow != canvasWorkflowId) return;
+            publishedVersions = [];
+            versionsFailed = true;
+            RenderVersionList();
+            publishedValue.Text = "读取失败";
+            if (createFailed.Length == 0)
+                statusLine.Text = $"发布版本列表读取失败：{error.Message.Split('\n')[0]}";
+        }
+    }
+
+    private void RenderVersionList()
+    {
+        versionList.Children.Clear();
+        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
+        header.Children.Add(new TextBlock
+        {
+            Text = "发布版本", FontSize = 11,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var count = new TextBlock
+        {
+            Text = versionsFailed ? "读取失败" : publishedVersions.Count.ToString(),
+            FontSize = 12, FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+        };
+        DockPanel.SetDock(count, Dock.Right);
+        header.Children.Add(count);
+        versionList.Children.Add(header);
+        if (versionsFailed)
+        {
+            versionList.Children.Add(new TextBlock
+            {
+                Text = "发布版本列表读取失败，请稍后重试",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6),
+            });
+            var retry = FlowAction("重试", async (_, _) =>
+            {
+                if (canvasWorkflowId.Length == 0) return;
+                await LoadVersionsAsync(canvasWorkflowId, workflowLoadVersion);
+            }, "Compact");
+            System.Windows.Automation.AutomationProperties.SetName(retry, "重试发布版本");
+            versionList.Children.Add(retry);
+            return;
+        }
+        foreach (var row in publishedVersions.Take(4))
+        {
+            var id = row.Text("id");
+            var revision = row.Number("revision");
+            var time = DateTimeOffset.TryParse(row.Text("published_at"), out var date)
+                ? date.ToLocalTime().ToString("yyyy/M/d HH:mm:ss") : "";
+            var button = FlowAction($"V{revision}", async (_, _) => await RestoreVersionAsync(id, revision), "Compact");
+            button.IsEnabled = !restoring;
+            System.Windows.Automation.AutomationProperties.SetName(button, $"V{revision}");
+            button.Margin = new Thickness(0, 4, 0, 0);
+            versionList.Children.Add(button);
+            if (time.Length > 0)
+                versionList.Children.Add(new TextBlock
+                {
+                    Text = time, FontSize = 10, Margin = new Thickness(0, 2, 0, 0),
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                });
+        }
+    }
+
+    private async Task RestoreVersionAsync(string versionId, int revision)
+    {
+        if (restoring || versionId.Length == 0) return;
+        var message = $"用发布版本 V{revision} 覆盖当前草稿？未保存的草稿修改会丢失。";
+        var confirm = RestoreConfirmOverride is { } prompt
+            ? await prompt(message)
+            : Host != null && MessageBox.Show(Host, message, "恢复版本", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+        if (!confirm) return;
+        restoring = true;
+        RenderVersionList();
+        var restoreFor = canvasWorkflowId;
+        var restoreToken = workflowLoadVersion;
+        var pending = autosave is { Enabled: true };
+        autosave?.Stop();
+        try
+        {
+            var restored = await Api.SendAsync($"workflow-versions/{versionId}/restore", HttpMethod.Post,
+                new { version }, cancellation: lifetime.Token);
+            if (restoreToken != workflowLoadVersion || restoreFor != canvasWorkflowId) return;
+            CommitLoadedWorkflow(restored, restoreFor);
+            statusLine.Text = $"已恢复发布版本到草稿（V{version}）";
+            _ = LoadRunsAsync();
+            _ = LoadVersionsAsync(restoreFor, restoreToken);
+        }
+        catch (OperationCanceledException) { }
+        catch (ApiException conflict) when (conflict.Status == 409)
+        {
+            if (restoreFor == canvasWorkflowId)
+                await RefreshWorkflowVersionAsync(restoreFor);
+            statusLine.Text = conflict.Message.Split('\n')[0];
+            if (Host != null)
+                MessageBox.Show(Host, conflict.Message, "恢复版本失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            statusLine.Text = $"恢复版本失败：{error.Message.Split('\n')[0]}";
+            if (Host != null)
+                MessageBox.Show(Host, error.Message, "恢复版本失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            restoring = false;
+            if (pending && restoreToken == workflowLoadVersion && restoreFor == canvasWorkflowId
+                && statusLine.Text.Contains("失败", StringComparison.Ordinal))
+                ScheduleSave();
+            RenderVersionList();
         }
     }
 
@@ -1158,6 +1496,7 @@ public sealed partial class WorkflowView : WorkspaceView
             await Api.SendAsync($"workflows/{workflowId}/publish", HttpMethod.Post, cancellation: lifetime.Token);
             statusLine.Text = "已发布不可变版本";
             State.Status = "工作流版本已发布";
+            await LoadVersionsAsync(workflowId, workflowLoadVersion);
         }
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -1270,15 +1609,23 @@ public sealed partial class WorkflowView : WorkspaceView
     private long lastPausedFetchTicks;
 
     // 运行数据端点与刷新时机对齐网页：GET workflows/{id}/runs（后端 created_at
-    // 倒序）；启动/取消/审批后立即重取；轮询条件是列表里任一运行处于 RUNNING
+    // 倒序）；启动/取消/重试/审批后立即重取；轮询条件是列表里任一运行处于 RUNNING
     // 或 PAUSED（#380：审批栅栏不该让轮询停摆）——RUNNING 每 tick 重取（网页
     // refetchInterval 3000），仅剩 PAUSED 时降频为约 10s 一次（网页 10000）。
     private async Task LoadRunsAsync()
     {
-        // 防重入：上一轮请求未返回时跳过本轮，避免晚到的旧响应覆盖新结果
-        if (Interlocked.CompareExchange(ref runsLoading, 1, 0) != 0) return;
+        // 防重入：上一轮请求未返回时合并为一次后续刷新，避免晚到的旧响应覆盖新结果，
+        // 也不丢掉启动/取消/重试后的立即重取。
+        if (Interlocked.CompareExchange(ref runsLoading, 1, 0) != 0)
+        {
+            runsReloadRequested = true;
+            return;
+        }
         try
         {
+            do
+            {
+            runsReloadRequested = false;
             var runs = await Api.SendAsync($"workflows/{workflowId}/runs", cancellation: lifetime.Token);
             if (lifetime.Token.IsCancellationRequested) return;
             runRows = runs.EnumerateArray().ToList();
@@ -1301,7 +1648,7 @@ public sealed partial class WorkflowView : WorkspaceView
                     VerticalAlignment = VerticalAlignment.Center,
                 });
                 RenderRunHistory();
-                return;
+                continue;
             }
             latestRun = runRows[0];   // 后端倒序，首条即网页 displayedRun 的 runs.data[0] 回退
             var nodeRuns = latestRun.Array("node_runs");
@@ -1323,7 +1670,8 @@ public sealed partial class WorkflowView : WorkspaceView
             // CANCELLED/FAILED）——取消入口必须在 PAUSED 也可用；否则同 scope 的
             // 重复运行守卫 409（planning 把 PAUSED 算活跃）会指示一个 UI 上做不到
             // 的动作。取消仍是唯一的停止途径，不发明别的端点。
-            if (latestRun.Text("status") is "RUNNING" or "PAUSED")
+            var status = latestRun.Text("status");
+            if (status is "RUNNING" or "PAUSED")
             {
                 var cancel = FlowAction("取消", async (_, _) =>
                 {
@@ -1338,10 +1686,22 @@ public sealed partial class WorkflowView : WorkspaceView
                 cancel.Margin = new Thickness(12, 0, 0, 0);
                 runMonitor.Children.Add(cancel);
             }
+            // B04：FAILED 页脚重试对齐网页 retryRun。后端 retry_run 会按失败运行
+            // 当时的版本/范围克隆新运行，不会自动触发；按钮在途禁用防双击。
+            // PAUSED/RUNNING/CANCELLED 不露出重试（网页同款）。
+            if (status == "FAILED")
+            {
+                var runId = latestRun.Text("id");
+                var retry = FlowAction("重试", async (_, _) => await RetryRunAsync(runId), "Compact");
+                retry.IsEnabled = !retrying;
+                retry.Margin = new Thickness(12, 0, 0, 0);
+                runMonitor.Children.Add(retry);
+            }
             RenderApprovals(latestRun);
             RenderRunHistory();
+            } while (runsReloadRequested && !lifetime.Token.IsCancellationRequested);
         }
-         catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             _ = error;
@@ -1349,6 +1709,31 @@ public sealed partial class WorkflowView : WorkspaceView
         finally
         {
             Interlocked.Exchange(ref runsLoading, 0);
+        }
+    }
+
+    private async Task RetryRunAsync(string runId)
+    {
+        if (retrying || runId.Length == 0) return;
+        retrying = true;
+        foreach (var button in runMonitor.Children.OfType<Button>().Where(item => Equals(item.Content, "重试")))
+            button.IsEnabled = false;
+        try
+        {
+            await Api.SendAsync($"workflow-runs/{runId}/retry", HttpMethod.Post, cancellation: lifetime.Token);
+            statusLine.Text = "已重试运行";
+            await LoadRunsAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            MessageBox.Show(Host, error.Message, "重试运行失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            retrying = false;
+            foreach (var button in runMonitor.Children.OfType<Button>().Where(item => Equals(item.Content, "重试")))
+                button.IsEnabled = true;
         }
     }
 
@@ -1504,11 +1889,18 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private void UpdateStatus(string label)
     {
-        var published = current.Text("published_version_id").Length > 0;
-        draftValue.Text = $"V{current.Number("draft_version")}";
-        publishedValue.Text = published ? "版本就绪" : "尚未发布";
+        draftValue.Text = current.ValueKind == JsonValueKind.Object ? $"V{current.Number("draft_version")}" : "—";
+        UpdatePublishedMetric();
         saveValue.Text = label.Split('·')[0].Trim();
-        statusLine.Text = "";
+        if (createFailed.Length == 0) statusLine.Text = "";
+    }
+
+    private void UpdatePublishedMetric()
+    {
+        publishedValue.Text = versionsFailed ? "读取失败"
+            : publishedVersions.Count > 0 ? $"V{publishedVersions[0].Number("revision")}"
+            : current.ValueKind == JsonValueKind.Object && current.Text("published_version_id").Length > 0 ? "版本就绪"
+            : "尚未发布";
     }
 
     // ============ 节点检查器（配置项/出现条件/值域对齐网页 workflow-studio） ============
@@ -1771,6 +2163,7 @@ public sealed partial class WorkflowView : WorkspaceView
     // 测试缝：headless 检查无法驱动保存失败后的放弃/留下确认（ProjectSettingsView
     // 的 LeaveConfirmOverride 同款目的）。null 时走 MessageBox。
     internal Func<string, Task<bool>>? SaveFailLeaveOverride;
+    internal Func<string, Task<bool>>? RestoreConfirmOverride;
 
     public override async Task<bool> ConfirmLeaveAsync()
     {

@@ -24,6 +24,10 @@ using MangaFlow.Native.Views;
 //     POST approve 的请求路径与 JSON 载荷、审批后列表重取）；
 //  ③补 #391：审批选中的模型别名失效（目录剔除/清空）后，「确认继续」按
 //     imageModels 全目录成员资格禁用（与 web #387-round-4 谓词同构）。
+//  B02：PAGE 运行范围可选后续章节页面；迟到的第一章页面响应不得覆盖已选章节。
+//  B04：FAILED 页脚重试 POST /workflow-runs/{id}/retry，在途防重，不自动触发。
+//  B03：空列表创建 manga_default + chapter_export；部分失败后按名称补建。
+//  B01：发布版本列表/恢复/409/迟到响应隔离。
 //
 // 注册说明（需 lead 注册）：本仓库的发现机制是 NativeInteractionChecks.RunIsolated
 // 里的手动调用列表（--render STA 链，Application 已带 Theme 资源）。因文件级互斥
@@ -49,13 +53,19 @@ internal static class NativeWorkflowRunChecks
             await StaleApprovalModelChecks();
             await DuplicateAutosaveChecks();
             await DebounceSwitchChecks();
+            await PageScopeChapterChecks();
+            await FailedRunRetryChecks();
+            await DefaultWorkflowTemplateChecks();
+            await VersionRestoreChecks();
+            await VersionListFailureChecks();
+            await VersionStaleResponseChecks();
         }
         catch (Exception error)
         {
             Console.WriteLine("FAIL: workflow inspector/run checks: " + error.Message);
             throw;
         }
-        Console.WriteLine("PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract, stale approval model alias gating");
+        Console.WriteLine("PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract, stale approval model alias gating, PAGE scope chapter picker (B02), FAILED run retry (B04), default templates (B03), version restore (B01)");
     }
 
     // ── ① 检查器按节点类型渲染的配置项集合（对齐网页 workflow-studio 出现条件） ──
@@ -269,6 +279,7 @@ internal static class NativeWorkflowRunChecks
                 """[{"catalog_id":"mi","logical_alias":"image.b","provider":"乙","display_name":"图片模型B","model_type":"IMAGE","operations":["image_edit"],"enabled":true,"display_enabled":true}]"""));
             if (path.EndsWith("/workflows/wf-1"))
                 return Task.FromResult(Response("""{"id":"wf-1","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            if (path.EndsWith("/versions")) return Task.FromResult(Response("[]"));
             throw new Exception("Unexpected workflow request: " + request.RequestUri);
         }));
         var view = new WorkflowView();
@@ -337,6 +348,8 @@ internal static class NativeWorkflowRunChecks
             await Until(() => runMonitor.Children.OfType<Button>().Any(button => (string?)button.Content == "取消"));
             Require(runMonitor.Children.OfType<TextBlock>().Any(block => block.Text.Contains("暂停中")),
                 "PAUSED 运行的页脚摘要必须显示中文状态（Labels.WorkflowRunStatus 补 PAUSED）");
+            Require(runMonitor.Children.OfType<Button>().All(button => (string?)button.Content != "重试"),
+                "PAUSED 不是 FAILED：不渲染重试入口");
             // #380：PAUSED 不再让轮询停摆，而是降频重取（网页 refetchInterval 10000）。
             // RefreshAsync 刚取回 PAUSED 列表 → 节流窗口已重置：窗口内 PollTick 不得重取。
             var pausedBefore = runsGets;
@@ -403,6 +416,7 @@ internal static class NativeWorkflowRunChecks
                 return Task.FromResult(Response("""[{"id":"ch-1","title":"第一章","ordinal":1,"status":"READY"}]"""));
             if (path.EndsWith("/workflows/wf-st"))
                 return Task.FromResult(Response("""{"id":"wf-st","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            if (path.EndsWith("/versions")) return Task.FromResult(Response("[]"));
             throw new Exception("Unexpected stale-alias check request: " + request.RequestUri);
         }));
         var view = new WorkflowView();
@@ -497,6 +511,7 @@ internal static class NativeWorkflowRunChecks
             if (path.EndsWith("/workflows/wf-dup/runs")) return Task.FromResult(Response("[]"));
             if (path.EndsWith("/workflows/wf-dup"))
                 return Task.FromResult(Response($"{{\"id\":\"wf-dup\",\"name\":\"复制检查\",\"version\":3,\"draft_version\":1,\"draft_graph\":{graph}}}"));
+            if (path.EndsWith("/versions")) return Task.FromResult(Response("[]"));
             throw new Exception("Unexpected duplicate-check request: " + request.RequestUri);
         }));
         var view = new WorkflowView();
@@ -608,6 +623,7 @@ internal static class NativeWorkflowRunChecks
             if (path.EndsWith("/projects/p1/chapters")) return Response("[]");
             if (path.EndsWith("/models")) return Response("[]");
             if (path.EndsWith("/runs")) return Response("[]");
+            if (path.EndsWith("/versions")) return Response("[]");
             throw new Exception("Unexpected debounce-check request: " + request.RequestUri);
         }));
         var view = new WorkflowView();
@@ -659,6 +675,453 @@ internal static class NativeWorkflowRunChecks
         {
             bLoadGate.TrySetResult(Response("{}"));
             bFlushGate.TrySetResult(Response("{}"));
+            StopAutosave(view);
+        }
+    }
+
+    // B02：PAGE 运行范围必须能选后续章节的页面。此前恒取 chapters[0]，
+    // 多章项目无法对第 2+ 章发起单页流程。迟到的第一章页面响应不得覆盖已选章节。
+    private static async Task PageScopeChapterChecks()
+    {
+        var pageGets = new List<string>();
+        var runBody = default(JsonElement);
+        var ch1Pages = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-1","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]"""));
+            if (path.EndsWith("/projects/p1/chapters"))
+                return Task.FromResult(Response(
+                    """[{"id":"ch-1","title":"第一章","ordinal":1,"status":"READY"},{"id":"ch-2","title":"第二章","ordinal":2,"status":"READY"}]"""));
+            if (path.EndsWith("/models")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-1/runs") && request.Method == HttpMethod.Get)
+                return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-1") && request.Method == HttpMethod.Get)
+                return Task.FromResult(Response("""{"id":"wf-1","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            if (path.EndsWith("/chapters/ch-1/pages"))
+            {
+                pageGets.Add("ch-1");
+                return ch1Pages.Task;
+            }
+            if (path.EndsWith("/chapters/ch-2/pages"))
+            {
+                pageGets.Add("ch-2");
+                return Task.FromResult(Response(
+                    """[{"id":"p-2-1","page_number":1},{"id":"p-2-2","page_number":2}]"""));
+            }
+            if (path.EndsWith("/workflows/wf-1/runs") && request.Method == HttpMethod.Post)
+            {
+                runBody = JsonDocument.Parse(request.Content!.ReadAsStringAsync().Result).RootElement.Clone();
+                return Task.FromResult(Response("""{"id":"run-page","status":"QUEUED"}"""));
+            }
+            if (path.EndsWith("/versions")) return Task.FromResult(Response("[]"));
+            throw new Exception("Unexpected workflow request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "范围测试", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => Field<string>(view, "workflowId") == "wf-1");
+
+            var typeBox = Field<ComboBox>(view, "scopeType");
+            var chapterBox = Field<ComboBox>(view, "scopeChapter");
+            var targetBox = Field<ComboBox>(view, "scopeTarget");
+            Require(Name(typeBox) == "运行范围类型" && Name(chapterBox) == "页面所属章节" && Name(targetBox) == "运行目标",
+                "运行范围下拉缺少与网页一致的无障碍名称");
+            Require(chapterBox.Visibility == Visibility.Collapsed, "CHAPTER 范围不应显示页面所属章节");
+            Require(pageGets.Count == 0, "CHAPTER 范围不应预取页面列表");
+
+            typeBox.SelectedItem = typeBox.Items.Cast<ComboBoxItem>().Single(item => (string?)item.Tag == "PAGE");
+            await Until(() => chapterBox.Visibility == Visibility.Visible
+                && chapterBox.Items.OfType<ComboBoxItem>().Any(item => (string?)item.Tag == "ch-2")
+                && pageGets.Contains("ch-1"));
+            Require((string?)((ComboBoxItem?)chapterBox.SelectedItem)?.Tag == "ch-1",
+                "PAGE 范围默认应落在第一章");
+
+            chapterBox.SelectedItem = chapterBox.Items.Cast<ComboBoxItem>().Single(item => (string?)item.Tag == "ch-2");
+            await Until(() => pageGets.Contains("ch-2")
+                && targetBox.Items.OfType<ComboBoxItem>().Any(item => (string?)item.Tag == "p-2-2"));
+            Require((string?)((ComboBoxItem?)targetBox.SelectedItem)?.Tag == "p-2-1",
+                "切到第二章后运行目标应默认第一章以外的该章首页");
+            Require(targetBox.Items.OfType<ComboBoxItem>().Select(item => (string?)item.Content).Contains("第 2 页"),
+                "第二章的第 2 页未进入运行目标");
+
+            ch1Pages.TrySetResult(Response("""[{"id":"p-1-1","page_number":1}]"""));
+            await Task.Delay(50);
+            Require((string?)((ComboBoxItem?)targetBox.SelectedItem)?.Tag == "p-2-1"
+                && !targetBox.Items.OfType<ComboBoxItem>().Any(item => (string?)item.Tag == "p-1-1"),
+                "迟到的第一章页面响应覆盖了已选第二章");
+
+            await (Task)typeof(WorkflowView).GetMethod("RunAsync", All)!.Invoke(view, [Array.Empty<string>(), Array.Empty<string>()])!;
+            await Until(() => runBody.ValueKind == JsonValueKind.Object);
+            Require(runBody.Text("scope_type") == "PAGE" && runBody.Text("scope_id") == "p-2-1",
+                "运行载荷必须带 PAGE 与第二章页面 id，而不是第一章");
+
+            view.Deactivate();
+        }
+        finally
+        {
+            ch1Pages.TrySetResult(Response("[]"));
+            StopAutosave(view);
+        }
+    }
+
+    // B04：FAILED 运行在页脚提供重试，POST /workflow-runs/{id}/retry，在途防重，
+    // 成功后刷新列表。不在 Activate/轮询时自动重试，PAUSED/RUNNING 不露出该入口。
+    private static async Task FailedRunRetryChecks()
+    {
+        var retries = 0;
+        var runsGets = 0;
+        var runsJson = """
+            [{"id":"run-1","workflow_id":"wf-1","scope_type":"CHAPTER","scope_id":"ch-1","status":"FAILED","created_at":"2026-09-08T01:02:03Z",
+              "node_runs":[{"id":"nr-1","workflow_run_id":"run-1","node_id":"gen-page-1","node_type":"generator.page","status":"FAILED"}]}]
+            """;
+        var retriedJson = """
+            [{"id":"run-2","workflow_id":"wf-1","scope_type":"CHAPTER","scope_id":"ch-1","status":"RUNNING","created_at":"2026-09-08T01:03:03Z",
+              "node_runs":[{"id":"nr-2","workflow_run_id":"run-2","node_id":"gen-page-1","node_type":"generator.page","status":"RUNNING"}]}]
+            """;
+        var retryGate = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-1","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]"""));
+            if (path.EndsWith("/projects/p1/chapters"))
+                return Task.FromResult(Response("""[{"id":"ch-1","title":"第一章","ordinal":1,"status":"READY"}]"""));
+            if (path.EndsWith("/models")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-1") && request.Method == HttpMethod.Get)
+                return Task.FromResult(Response("""{"id":"wf-1","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            if (path.EndsWith("/workflows/wf-1/runs") && request.Method == HttpMethod.Get)
+            {
+                runsGets++;
+                return Task.FromResult(Response(runsJson));
+            }
+            if (path.EndsWith("/workflow-runs/run-1/retry") && request.Method == HttpMethod.Post)
+            {
+                retries++;
+                return retryGate.Task;
+            }
+            if (path.EndsWith("/versions")) return Task.FromResult(Response("[]"));
+            throw new Exception("Unexpected workflow request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "重试测试", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => Field<string>(view, "workflowId") == "wf-1" && runsGets >= 1);
+            Require(retries == 0, "载入 FAILED 运行不得自动触发付费重试");
+
+            var runMonitor = Field<StackPanel>(view, "runMonitor");
+            await Until(() => runMonitor.Children.OfType<Button>().Any(button => (string?)button.Content == "重试"));
+            Require(runMonitor.Children.OfType<TextBlock>().Any(block => block.Text.Contains("已失败")),
+                "FAILED 运行的页脚摘要必须显示中文状态");
+            Require(runMonitor.Children.OfType<Button>().All(button => (string?)button.Content != "取消"),
+                "FAILED 终态不渲染取消，只露出重试");
+
+            var retry = runMonitor.Children.OfType<Button>().Single(button => (string?)button.Content == "重试");
+            retry.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            retry.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Until(() => retries == 1 && !retry.IsEnabled);
+            Require(retries == 1, "重试请求必须防重，双击不得发出第二次 POST");
+
+            var getsBefore = runsGets;
+            runsJson = retriedJson;
+            retryGate.TrySetResult(Response("""{"id":"run-2","status":"RUNNING"}"""));
+            await Until(() => runsGets > getsBefore
+                && Field<StackPanel>(view, "runMonitor").Children.OfType<Button>().Any(button => (string?)button.Content == "取消"));
+            Require(Field<StackPanel>(view, "runMonitor").Children.OfType<Button>().All(button => (string?)button.Content != "重试"),
+                "重试成功后页脚应切到新运行，不再显示重试");
+            Require(retries == 1, "刷新列表不得再次 POST retry");
+
+            view.Deactivate();
+        }
+        finally
+        {
+            retryGate.TrySetResult(Response("{}"));
+            StopAutosave(view);
+        }
+    }
+
+    // B03：空列表并行创建单页生产流程 + 整章导出流程；部分失败后重试只补缺失项，双击不重复创建。
+    private static async Task DefaultWorkflowTemplateChecks()
+    {
+        var created = new List<(string Name, string Template)>();
+        var listCalls = 0;
+        var listJson = "[]";
+        var failExport = true;
+        var listGate = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+            if (path.EndsWith("/projects/p1/chapters") || path.EndsWith("/models") || path.EndsWith("/runs") || path.EndsWith("/versions"))
+                return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/projects/p1/workflows") && request.Method == HttpMethod.Get)
+            {
+                listCalls++;
+                if (listCalls > 1) return listGate.Task;
+                return Task.FromResult(Response(listJson));
+            }
+            if (path.EndsWith("/projects/p1/workflows") && request.Method == HttpMethod.Post)
+            {
+                var body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().Result).RootElement;
+                var name = body.Text("name");
+                var template = body.Text("template");
+                created.Add((name, template));
+                if (failExport && template == "chapter_export")
+                    return Task.FromResult(Response("""{"detail":"整章创建被拒"}""", HttpStatusCode.BadGateway));
+                var id = template == "chapter_export" ? "wf-export" : "wf-page";
+                return Task.FromResult(Response($"{{\"id\":\"{id}\",\"name\":\"{name}\",\"template\":\"{template}\",\"version\":1,\"draft_version\":1,\"draft_graph\":{{\"schema_version\":2,\"nodes\":[],\"edges\":[]}}}}"));
+            }
+            if (path.EndsWith("/workflows/wf-page") || path.EndsWith("/workflows/wf-export"))
+                return Task.FromResult(Response("""{"id":"wf-page","name":"单页生产流程","version":1,"draft_version":1,"draft_graph":{"schema_version":2,"nodes":[],"edges":[]}}"""));
+            throw new Exception("Unexpected template-check request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "模板测试", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => created.Count == 2 && Field<string>(view, "createFailed").Length > 0);
+            Require(created.Select(item => item.Template).OrderBy(item => item).SequenceEqual(["chapter_export", "manga_default"]),
+                "空列表必须并行创建 manga_default 与 chapter_export");
+            var selector = Field<ComboBox>(view, "workflowSelector");
+            Require(selector.Items.OfType<ComboBoxItem>().Any(item => (string?)item.Content == "单页生产流程"),
+                "部分失败时已建成的单页流程必须进入选择器");
+            Require(!selector.Items.OfType<ComboBoxItem>().Any(item => (string?)item.Content == "整章导出流程"),
+                "失败的整章导出流程不应进入选择器");
+            var retry = Field<Button>(view, "retryCreateButton");
+            Require(retry.Visibility == Visibility.Visible && retry.IsEnabled, "部分失败必须露出重试创建");
+
+            failExport = false;
+            listJson = """[{"id":"wf-page","name":"单页生产流程","version":1,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]""";
+            created.Clear();
+            retry.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            retry.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Until(() => listCalls >= 2 && !retry.IsEnabled);
+            Require(created.Count == 0, "重试进行中不得并发补建");
+            listGate.TrySetResult(Response(listJson));
+            await Until(() => created.Count == 1);
+            Require(created.Single() is { Name: "整章导出流程", Template: "chapter_export" },
+                "重试只补建缺失的整章导出流程");
+            await Until(() => selector.Items.OfType<ComboBoxItem>().Any(item => (string?)item.Content == "整章导出流程"));
+            Require(Field<string>(view, "createFailed").Length == 0, "补建成功后应清除失败状态");
+            view.Deactivate();
+        }
+        finally
+        {
+            listGate.TrySetResult(Response("[]"));
+            StopAutosave(view);
+        }
+    }
+
+    // B01：发布版本列表、覆盖确认、409 不覆盖草稿、切换后隔离迟到版本响应。
+    private static async Task VersionRestoreChecks()
+    {
+        var restores = 0;
+        var restoreBody = default(JsonElement);
+        var versionsJson = """
+            [{"id":"ver-3","workflow_id":"wf-1","revision":3,"published_at":"2026-08-27T12:00:00Z"},
+             {"id":"ver-2","workflow_id":"wf-1","revision":2,"published_at":"2026-08-26T12:00:00Z"}]
+            """;
+        var workflowJson = """
+            {"id":"wf-1","name":"流程","version":5,"draft_version":2,"published_version_id":"ver-3",
+             "draft_graph":{"schema_version":2,"nodes":[{"id":"draft-node","type":"agent.parse","name":"草稿节点","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{}}],"edges":[]}}
+            """;
+        var restoredJson = """
+            {"id":"wf-1","name":"流程","version":8,"draft_version":4,"published_version_id":"ver-3",
+             "draft_graph":{"schema_version":2,"nodes":[{"id":"restored-node","type":"agent.parse","name":"恢复节点","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{}}],"edges":[]}}
+            """;
+        var conflict = false;
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+            if (request.Method == HttpMethod.Patch)
+                return Task.FromResult(Response("""{"id":"wf-1","name":"流程","version":10,"draft_version":5,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-1","name":"流程"},{"id":"wf-2","name":"另一条"}]"""));
+            if (path.EndsWith("/projects/p1/chapters") || path.EndsWith("/models") || path.EndsWith("/runs"))
+                return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-1/versions")) return Task.FromResult(Response(versionsJson));
+            if (path.EndsWith("/workflows/wf-2/versions"))
+                return Task.FromResult(Response("""[{"id":"ver-b","workflow_id":"wf-2","revision":1,"published_at":"2026-08-27T00:00:00Z"}]"""));
+            if (path.EndsWith("/workflows/wf-2"))
+                return Task.FromResult(Response("""{"id":"wf-2","name":"另一条","version":1,"draft_version":1,"draft_graph":{"schema_version":2,"nodes":[{"id":"b-node","type":"agent.parse","name":"乙","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{}}],"edges":[]}}"""));
+            if (path.EndsWith("/workflows/wf-1") && request.Method == HttpMethod.Get)
+                return Task.FromResult(Response(workflowJson));
+            if (path.EndsWith("/workflow-versions/ver-3/restore") && request.Method == HttpMethod.Post)
+            {
+                restores++;
+                restoreBody = JsonDocument.Parse(request.Content!.ReadAsStringAsync().Result).RootElement.Clone();
+                if (conflict)
+                    return Task.FromResult(Response("""{"detail":"工作流已被其他页面修改，请刷新后重试"}""", HttpStatusCode.Conflict));
+                return Task.FromResult(Response(restoredJson));
+            }
+            throw new Exception("Unexpected version-check request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.RestoreConfirmOverride = _ => Task.FromResult(true);
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "版本测试", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => NodeNames(view).Contains("草稿节点")
+                && Field<StackPanel>(view, "versionList").Children.OfType<Button>().Any(button => Name(button) == "V3"));
+            Require(Field<TextBlock>(view, "publishedValue").Text == "V3", "已发布版本指标应显示最新 revision，而不是尚未发布");
+            Require(Field<StackPanel>(view, "versionList").Children.OfType<Button>().Any(button => Name(button) == "V2"),
+                "版本列表应展示最近发布版本");
+
+            conflict = true;
+            workflowJson = """{"id":"wf-1","name":"流程","version":9,"draft_version":2,"published_version_id":"ver-3","draft_graph":{"schema_version":2,"nodes":[{"id":"draft-node","type":"agent.parse","name":"草稿节点","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{}}],"edges":[]}}""";
+            Field<StackPanel>(view, "versionList").Children.OfType<Button>().Single(button => Name(button) == "V3")
+                .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Until(() => restores == 1 && Field<int>(view, "version") == 9);
+            Require(NodeNames(view).Contains("草稿节点") && !NodeNames(view).Contains("恢复节点"),
+                "409 恢复不得用版本图覆盖本地草稿");
+            Require(restoreBody.Number("version") == 5, "恢复必须携带当前草稿 version 做 CAS");
+
+            conflict = false;
+            Field<StackPanel>(view, "versionList").Children.OfType<Button>().Single(button => Name(button) == "V3")
+                .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Until(() => restores == 2 && NodeNames(view).Contains("恢复节点"));
+            Require(!NodeNames(view).Contains("草稿节点"), "恢复成功后画布应换成发布版本的图");
+            Require(Field<int>(view, "version") == 8, "恢复成功后应采用服务端新 version");
+
+            var selector = Field<ComboBox>(view, "workflowSelector");
+            selector.SelectedItem = selector.Items.OfType<ComboBoxItem>().Single(item => (string?)item.Tag == "wf-2");
+            await Until(() => Field<string>(view, "workflowId") == "wf-2" && NodeNames(view).Contains("乙"));
+            Require(Field<StackPanel>(view, "versionList").Children.OfType<Button>().All(button => Name(button) != "V3"),
+                "切换工作流后不得继续显示上一条的发布版本");
+            Require(Field<TextBlock>(view, "publishedValue").Text == "V1", "切换后已发布版本指标应跟随新工作流");
+
+            view.Deactivate();
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+    }
+
+    private static async Task VersionListFailureChecks()
+    {
+        var versionCalls = 0;
+        var fail = true;
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-1","name":"流程"}]"""));
+            if (path.EndsWith("/projects/p1/chapters") || path.EndsWith("/models") || path.EndsWith("/runs"))
+                return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-1/versions"))
+            {
+                versionCalls++;
+                if (fail) return Task.FromResult(Response("""{"detail":"版本接口 500"}""", HttpStatusCode.InternalServerError));
+                return Task.FromResult(Response("""[{"id":"ver-3","workflow_id":"wf-1","revision":3,"published_at":"2026-08-27T00:00:00Z"}]"""));
+            }
+            if (path.EndsWith("/workflows/wf-1"))
+                return Task.FromResult(Response("""{"id":"wf-1","name":"流程","version":1,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            throw new Exception("Unexpected version-failure request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "版本失败", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => Field<TextBlock>(view, "publishedValue").Text == "读取失败");
+            Require(Field<TextBlock>(view, "publishedValue").Text != "尚未发布",
+                "版本列表读取失败不得谎报尚未发布");
+            var retry = Field<StackPanel>(view, "versionList").Children.OfType<Button>().Single(button => Name(button) == "重试发布版本");
+            fail = false;
+            retry.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Until(() => Field<TextBlock>(view, "publishedValue").Text == "V3");
+            Require(versionCalls >= 2, "失败后的重试必须重新请求版本列表");
+            view.Deactivate();
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+    }
+
+    private static async Task VersionStaleResponseChecks()
+    {
+        var gate = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response("[]"));
+            if (request.Method == HttpMethod.Patch)
+                return Task.FromResult(Response("""{"id":"wf-a","version":4,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-a","name":"甲"},{"id":"wf-b","name":"乙"}]"""));
+            if (path.EndsWith("/projects/p1/chapters") || path.EndsWith("/models") || path.EndsWith("/runs"))
+                return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-a/versions")) return gate.Task;
+            if (path.EndsWith("/workflows/wf-b/versions"))
+                return Task.FromResult(Response("""[{"id":"ver-b","workflow_id":"wf-b","revision":1,"published_at":"2026-08-27T00:00:00Z"}]"""));
+            if (path.EndsWith("/workflows/wf-a"))
+                return Task.FromResult(Response("""{"id":"wf-a","name":"甲","version":2,"draft_version":1,"draft_graph":{"schema_version":2,"nodes":[{"id":"a-node","type":"agent.parse","name":"甲","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{}}],"edges":[]}}"""));
+            if (path.EndsWith("/workflows/wf-b"))
+                return Task.FromResult(Response("""{"id":"wf-b","name":"乙","version":3,"draft_version":1,"draft_graph":{"schema_version":2,"nodes":[{"id":"b-node","type":"agent.parse","name":"乙","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{}}],"edges":[]}}"""));
+            throw new Exception("Unexpected stale-version request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "版本隔离", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => NodeNames(view).Contains("甲"));
+            var selector = Field<ComboBox>(view, "workflowSelector");
+            selector.SelectedItem = selector.Items.OfType<ComboBoxItem>().Single(item => (string?)item.Tag == "wf-b");
+            await Until(() => Field<string>(view, "workflowId") == "wf-b" && NodeNames(view).Contains("乙")
+                && Field<TextBlock>(view, "publishedValue").Text == "V1");
+            gate.TrySetResult(Response("""[{"id":"ver-a","workflow_id":"wf-a","revision":99,"published_at":"2026-08-27T00:00:00Z"}]"""));
+            await Task.Delay(80);
+            Require(Field<TextBlock>(view, "publishedValue").Text == "V1",
+                "迟到的上一工作流版本列表不得覆盖当前工作流");
+            Require(Field<StackPanel>(view, "versionList").Children.OfType<Button>().All(button => Name(button) != "V99"),
+                "迟到响应不得把旧工作流的版本画进新工作流");
+            view.Deactivate();
+        }
+        finally
+        {
+            gate.TrySetResult(Response("[]"));
             StopAutosave(view);
         }
     }

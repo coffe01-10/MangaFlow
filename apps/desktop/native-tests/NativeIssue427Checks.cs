@@ -97,6 +97,7 @@ internal static class NativeIssue427Checks
             if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-a")) return await gateA.Task;
             if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-b")) return await gateB.Task;
             if (path.EndsWith("/runs")) return Response("[]");
+            if (path.EndsWith("/versions")) return Response("[]");
             if (request.Method == HttpMethod.Patch) return Response(EmptyDefinition("wf-x"));
             throw new Exception("Unexpected load-race request: " + path);
         }));
@@ -166,6 +167,7 @@ internal static class NativeIssue427Checks
             if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-c"))
                 return Response(Definition("wf-c", 7, "c-node", "丙"));
             if (path.EndsWith("/runs")) return Response("[]");
+            if (path.EndsWith("/versions")) return Response("[]");
             throw new Exception("Unexpected switch-race request: " + path);
         }));
         var view = new WorkflowView();
@@ -248,6 +250,7 @@ internal static class NativeIssue427Checks
             if (path.EndsWith("/projects/p1/chapters")) return Task.FromResult(Response("[]"));
             if (path.EndsWith("/models")) return Task.FromResult(Response("[]"));
             if (path.EndsWith("/runs")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/versions")) return Task.FromResult(Response("[]"));
             throw new Exception("Unexpected activate-race request: " + path);
         }));
         var view = new WorkflowView();

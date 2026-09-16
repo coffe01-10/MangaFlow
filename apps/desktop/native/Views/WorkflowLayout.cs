@@ -13,7 +13,7 @@ public sealed partial class WorkflowView
     private bool libraryOpen = true, inspectorOpen = true, compactStudio;
     private Button libraryToggle = null!, inspectorToggle = null!;
     private Button undoButton = null!, redoButton = null!, copyButton = null!;
-    private Button runNodeButton = null!, runFromButton = null!;
+    private Button runNodeButton = null!, runFromButton = null!, retryCreateButton = null!;
     private readonly TextBlock draftValue = MetricValue("—"), publishedValue = MetricValue("—"),
         saveValue = MetricValue("正在读取"), validationValue = MetricValue("未校验");
     private readonly TextBlock zoomLabel = new() { Text = "75%", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 10, 0) };
@@ -42,14 +42,25 @@ public sealed partial class WorkflowView
         studioBody.Children.Add(libraryPane);
         var inspectorDock = new Grid();
         inspectorDock.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        inspectorDock.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto, MaxHeight = 150 });
         inspectorDock.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto, MaxHeight = 160 });
         inspectorDock.Children.Add(new ScrollViewer { Content = inspector, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(12) });
+        var versionsScroll = new ScrollViewer
+        {
+            Content = versionList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Padding = new Thickness(12, 8, 12, 8), MaxHeight = 140,
+        };
+        var versionsPane = new Border
+        {
+            BorderBrush = FlowBrush("#383d39"), BorderThickness = new Thickness(0, 1, 0, 0), Child = versionsScroll,
+        };
+        Grid.SetRow(versionsPane, 1); inspectorDock.Children.Add(versionsPane);
         var history = new DockPanel();
         var historyLabel = new Border { BorderBrush = FlowBrush("#383d39"), BorderThickness = new Thickness(0, 1, 0, 1),
             Padding = new Thickness(12, 10, 12, 10), Child = MetricValue("运行历史") };
         DockPanel.SetDock(historyLabel, Dock.Top); history.Children.Add(historyLabel);
         history.Children.Add(new ScrollViewer { Content = runHistory, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(12), MaxHeight = 112 });
-        Grid.SetRow(history, 1); inspectorDock.Children.Add(history);
+        Grid.SetRow(history, 2); inspectorDock.Children.Add(history);
         inspectorPane = SidePane("INSPECTOR", inspectorHeading, inspectorDock, () => ToggleInspector(false), scroll: false);
         Grid.SetColumn(inspectorPane, 2); studioBody.Children.Add(inspectorPane);
 
@@ -114,6 +125,10 @@ public sealed partial class WorkflowView
         var hidden = new DataTrigger { Binding = new Binding("Text") { RelativeSource = RelativeSource.Self }, Value = "" };
         hidden.Setters.Add(new Setter(VisibilityProperty, Visibility.Collapsed)); noticeStyle.Triggers.Add(hidden); statusLine.Style = noticeStyle;
         stackAll.Children.Add(statusLine);
+        retryCreateButton = FlowAction("重试创建", async (_, _) => await RetryCreateMissingWorkflowsAsync(), "Compact");
+        retryCreateButton.Margin = new Thickness(12, 6, 0, 0);
+        retryCreateButton.Visibility = Visibility.Collapsed;
+        stackAll.Children.Add(retryCreateButton);
         return new Border { Child = stackAll, Background = FlowBrush("#171a18"), BorderBrush = FlowBrush("#383d39"),
             BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(0, 6, 12, 6) };
     }
