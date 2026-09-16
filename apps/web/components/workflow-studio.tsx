@@ -173,6 +173,20 @@ function downloadJson(name: string, value: unknown) {
   URL.revokeObjectURL(url);
 }
 
+// 后端按 JSON 类型比较（布尔/数字与字符串永不相等），发布校验也允许布尔值
+// 条件：true/false/数字必须解析为类型字面量提交，否则 $.ready eq "true"
+// 恒为假分支。仅显式比较符做字面量化；"exists" 不读比较值。
+function parseConditionValue(raw: string, operator: string): string | number | boolean {
+  const trimmed = raw.trim();
+  const numeric = Number(trimmed);
+  if (["gt", "gte", "lt", "lte", "eq", "ne", "contains"].includes(operator)) {
+    if (trimmed === "true") return true;
+    if (trimmed === "false") return false;
+    if (trimmed !== "" && Number.isFinite(numeric)) return numeric;
+  }
+  return raw;
+}
+
 // #380：PAUSED（审批栅栏）也是活跃态。旧谓词只认 RUNNING——审批通过或取消后，
 // run 已不是 RUNNING，轮询彻底停摆，页脚状态与节点徽标冻结在旧数据上直到手动
 // 刷新。契约：任一 run RUNNING → 3s；否则任一 run PAUSED → 10s 折中降频；
@@ -885,13 +899,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             {selected.data.graphNode.type === "control.condition" ? <><label>JSON 路径<input value={String(selected.data.graphNode.config.condition.path ?? "$")} onChange={(event) => updateSelected({}, { condition: { ...selected.data.graphNode.config.condition, path: event.target.value } })} /></label><label>比较符<select value={String(selected.data.graphNode.config.condition.operator ?? "exists")} onChange={(event) => updateSelected({}, { condition: { ...selected.data.graphNode.config.condition, operator: event.target.value } })}><option value="exists">存在</option><option value="eq">等于</option><option value="ne">不等于</option><option value="contains">包含</option><option value="gt">大于</option><option value="gte">大于等于</option><option value="lt">小于</option><option value="lte">小于等于</option></select></label><label>比较值<input value={selected.data.graphNode.config.condition.value === undefined || selected.data.graphNode.config.condition.value === null ? "" : String(selected.data.graphNode.config.condition.value)} onChange={(event) => {
                 const raw = event.target.value;
                 const operator = String(selected.data.graphNode.config.condition.operator ?? "exists");
-                const numeric = Number(raw);
-                const value = ["gt", "gte", "lt", "lte"].includes(operator)
-                  && raw.trim() !== ""
-                  && Number.isFinite(numeric)
-                  ? numeric
-                  : raw;
-                updateSelected({}, { condition: { ...selected.data.graphNode.config.condition, value } });
+                updateSelected({}, { condition: { ...selected.data.graphNode.config.condition, value: parseConditionValue(raw, operator) } });
               }} placeholder="除“存在”外必须填写" /></label></> : null}
             <label>备注<textarea value={selected.data.graphNode.config.notes} onChange={(event) => updateSelected({}, { notes: event.target.value })} /></label>
             {selectedNodeRun ? <section className={styles.nodeRuntime}><strong>{statusLabel[selectedNodeRun.status] ?? selectedNodeRun.status}</strong><span>{selectedNodeRun.started_at && selectedNodeRun.finished_at ? `耗时 ${((new Date(selectedNodeRun.finished_at).getTime() - new Date(selectedNodeRun.started_at).getTime()) / 1000).toFixed(1)} 秒` : "尚未产生完整耗时"}</span><pre>{JSON.stringify(selectedNodeRun.output_refs, null, 2)}</pre>{selectedNodeRun.error_message ? <em>{selectedNodeRun.error_code ? `${selectedNodeRun.error_code} · ` : ""}{selectedNodeRun.error_message}</em> : null}</section> : null}

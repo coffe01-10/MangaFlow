@@ -27,27 +27,43 @@ import { useLibraryWorkspace } from "./project-workspace/use-library-workspace";
 // one — the Lighthouse unused-JS attribution on the storyboard route
 // (810ms) and the route's LCP/TBT tail. Split per section so each route
 // fetches only the code it renders; data hooks stay eager above, so
-// queries start before the section chunk arrives.
+// queries start before the section chunk arrives. The loading fallback
+// keeps the canvas from flashing empty on cold cache before the chunk lands.
+function SectionLoading() {
+  return (
+    <div className="full-loading" role="status" aria-label="正在加载工作区分区">
+      <LoaderCircle className="spin" size={18} aria-hidden />
+      正在加载分区…
+    </div>
+  );
+}
 const SourceSection = dynamic(
   () => import("./project-workspace/source-section").then((m) => m.SourceSection),
+  { loading: SectionLoading },
 );
 const AssetsSection = dynamic(
   () => import("./project-workspace/assets-section").then((m) => m.AssetsSection),
+  { loading: SectionLoading },
 );
 const ScriptSection = dynamic(
   () => import("./project-workspace/script-section").then((m) => m.ScriptSection),
+  { loading: SectionLoading },
 );
 const StoryboardSection = dynamic(
   () => import("./project-workspace/storyboard-section").then((m) => m.StoryboardSection),
+  { loading: SectionLoading },
 );
 const GenerateSection = dynamic(
   () => import("./project-workspace/generate-section").then((m) => m.GenerateSection),
+  { loading: SectionLoading },
 );
 const LibrarySection = dynamic(
   () => import("./project-workspace/library-section").then((m) => m.LibrarySection),
+  { loading: SectionLoading },
 );
 const JobsSection = dynamic(
   () => import("./project-workspace/jobs-section").then((m) => m.JobsSection),
+  { loading: SectionLoading },
 );
 import {
   ImageLightbox,
