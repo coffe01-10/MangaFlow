@@ -237,6 +237,17 @@ fn directory_pick_validates_type_and_symlinks() {
         Err(PickError::NotADirectory)
     ));
 
+    // A trailing slash / inner dot on the picked directory must not
+    // change the reported name: the page renders the picked folder's
+    // display name verbatim, and a trailing separator would leak into it.
+    let trailing = dir.join("素材").join("");
+    let picked_trailing = validate_picked_directory(&trailing).unwrap();
+    assert_eq!(picked_trailing.name, "素材", "trailing separator must not leak into the name");
+    assert_eq!(
+        picked_trailing.path, picked.path,
+        "the canonical directory must be identical"
+    );
+
     let link = dir.join("dir-link");
     if dir_link(&material, &link) {
         assert!(matches!(
