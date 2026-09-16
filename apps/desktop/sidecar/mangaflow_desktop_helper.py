@@ -851,6 +851,7 @@ def _node_child_env() -> dict[str, str]:
     # set those) would ride through an exact-name pop while node still
     # reads it as the canonical name.
     dropped = {
+        "MANGAFLOW_DESKTOP_EMBEDDED",
         "MANGAFLOW_DESKTOP_TOKEN",
         "MANGAFLOW_DESKTOP_JOURNAL",
         "MANGAFLOW_DESKTOP_HELPER",
