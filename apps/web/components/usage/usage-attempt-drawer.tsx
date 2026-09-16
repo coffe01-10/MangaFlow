@@ -21,14 +21,19 @@ interface UsageAttemptDrawerProps {
 export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+  // Latest-callback ref（ConfirmDialog 同款）：父组件每次渲染都传新的
+  // onClose 闭包（窗口聚焦触发 refetch 即会重渲染），若 effect 依赖它，
+  // 重订阅的 cleanup 会在对话框中途把焦点抢回触发元素再拉回（焦点抖动），
+  // 读屏器用户会听到焦点跳出对话框。
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; });
 
   useEffect(() => {
-    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeButtonRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        onClose();
+        onCloseRef.current();
         return;
       }
       // aria-modal dialogs must keep Tab inside (same trap the scene modal uses).
@@ -50,9 +55,9 @@ export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
-      previousFocusRef.current?.focus();
+      previouslyFocused?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   const mode = attemptCostMode(attempt);
   const meta = COST_MODE_META[mode];

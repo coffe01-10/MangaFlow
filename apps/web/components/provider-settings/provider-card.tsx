@@ -2,7 +2,7 @@
 
 import type { ModelCapability, ProviderProfile } from "@/lib/api";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ConnectionPanel } from "./connection-panel";
 import { mapCategory, mapRisk } from "./provider-copy";
@@ -42,7 +42,16 @@ export function ProviderCard({
   // 随之丢失）。各连接面板上抛脏标记，收起前确认。
   const [dirtyConnectionIds, setDirtyConnectionIds] = useState<Set<string>>(new Set());
   const cardDirty = dirtyConnectionIds.size > 0;
-  useEffect(() => { onDirtyChange?.(cardDirty); }, [cardDirty, onDirtyChange]);
+  // Latest-callback ref：父级每次渲染都传新的 onDirtyChange 闭包，若把它放进
+  // 报告 effect 的依赖，每次重跑的 cleanup 会先报 false（把本卡从父级脏集合
+  // 删掉→父级重渲染→新闭包→再重跑……）再报 true，形成无限渲染循环。
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  useEffect(() => { onDirtyChangeRef.current = onDirtyChange; });
+  useEffect(() => { onDirtyChangeRef.current?.(cardDirty); }, [cardDirty]);
+  // 删除供应商、启停换分组等路径会不经确认直接卸载卡片：若不在卸载时把
+  // 脏标记清回 false（与确认收起的弃稿语义一致），页面级 beforeunload
+  // 与搜索变更确认会一直误报，直到整页重载。mount-only，不随闭包换址重跑。
+  useEffect(() => () => { onDirtyChangeRef.current?.(false); }, []);
 
   function handleConnectionDirty(connectionId: string, dirty: boolean) {
     setDirtyConnectionIds((current) => {

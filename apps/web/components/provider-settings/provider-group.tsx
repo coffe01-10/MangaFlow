@@ -2,7 +2,7 @@
 
 import type { ModelCapability, ProviderProfile } from "@/lib/api";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ProviderCard } from "./provider-card";
 import type { CapabilityFilter, ModelTypeFilter } from "./provider-filters";
@@ -45,7 +45,14 @@ export function ProviderGroup({
   // 脏标记上抛，收起前确认；分组级脏态再上抛给 ProviderManagement。
   const [dirtyProviderIds, setDirtyProviderIds] = useState<Set<string>>(new Set());
   const groupDirty = dirtyProviderIds.size > 0;
-  useEffect(() => { onDirtyChange?.(groupDirty); }, [groupDirty, onDirtyChange]);
+  // 同 ProviderCard：报告 effect 不依赖闭包身份（否则 cleanup 先报 false/
+  // body 再报 true 的往返会让父级无限重渲染），卸载报告走 mount-only effect。
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  useEffect(() => { onDirtyChangeRef.current = onDirtyChange; });
+  useEffect(() => { onDirtyChangeRef.current?.(groupDirty); }, [groupDirty]);
+  // 分组卸载（如筛选变化导致跨组搬移）时同样必须把脏标记清回 false，
+  // 否则页面级脏态残留 true，beforeunload 持续误报。
+  useEffect(() => () => { onDirtyChangeRef.current?.(false); }, []);
   const shown = forceExpanded || expanded;
   const panelId = `provider-group-${id}`;
   if (!providers.length) return null;
