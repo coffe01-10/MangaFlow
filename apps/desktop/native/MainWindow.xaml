@@ -6,7 +6,7 @@
  xmlns:c="clr-namespace:MangaFlow.Native.Controls"
  Title="MangaFlow · 原生工作台" Icon="Assets/App.ico" Width="1320" Height="860" MinWidth="960" MinHeight="640"
  WindowStartupLocation="CenterScreen" Loaded="OnLoaded" Closing="OnClosing" PreviewKeyDown="OnKeyDown" SizeChanged="OnWindowSizeChanged">
- <Grid>
+ <Grid Background="{StaticResource Paper}">
   <Grid.RowDefinitions>
    <RowDefinition x:Name="TopbarRow" Height="74"/>
    <RowDefinition Height="*"/>
@@ -18,18 +18,18 @@
   <Border Grid.Row="0" Background="{StaticResource Paper}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="20,0">
    <Grid>
     <Grid.ColumnDefinitions>
-     <ColumnDefinition Width="Auto"/>
      <ColumnDefinition Width="*"/>
      <ColumnDefinition Width="Auto"/>
+     <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
-    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-     <Button x:Name="SidebarToggle" Content="☰" BorderThickness="0" MinWidth="36" ToolTip="折叠侧栏 · Ctrl+B" Click="ToggleSidebar" AutomationProperties.Name="折叠侧栏"/>
-     <Button x:Name="BackToProjects" Content="← 项目" Style="{StaticResource Nav}" Click="ShowHome" Margin="0,0,16,0"/>
+    <DockPanel VerticalAlignment="Center" Margin="0,0,16,0">
+     <Button DockPanel.Dock="Left" x:Name="SidebarToggle" Content="☰" BorderThickness="0" MinWidth="36" ToolTip="折叠侧栏 · Ctrl+B" Click="ToggleSidebar" AutomationProperties.Name="折叠侧栏"/>
+     <Button DockPanel.Dock="Left" x:Name="BackToProjects" Content="← 项目" Style="{StaticResource Nav}" Click="ShowHome" Margin="0,0,16,0"/>
      <StackPanel VerticalAlignment="Center">
-      <TextBlock x:Name="BrandKicker" Text="MANGAFLOW / PRODUCTION DESK" Style="{StaticResource Kicker}" Margin="0,0,0,4"/>
-      <TextBlock x:Name="TopTitle" Text="漫画生产台" FontFamily="{StaticResource Serif}" FontSize="17" FontWeight="Bold"/>
+      <TextBlock x:Name="BrandKicker" Text="MANGAFLOW / PRODUCTION DESK" Style="{StaticResource Kicker}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="0,0,0,4"/>
+      <TextBlock x:Name="TopTitle" Text="漫画生产台" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource Serif}" FontSize="17" FontWeight="Bold"/>
      </StackPanel>
-    </StackPanel>
+    </DockPanel>
     <TextBlock Grid.Column="1" x:Name="Breadcrumb" Text="{Binding Breadcrumb}" Style="{StaticResource Caption}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
     <StackPanel x:Name="GlobalActions" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
      <Button x:Name="HomeNav" Content="项目" Style="{StaticResource Nav}" Click="ShowHome"/>
@@ -71,7 +71,7 @@
     <ColumnDefinition Width="*"/>
    </Grid.ColumnDefinitions>
    <Border x:Name="SidebarPanel" Background="{StaticResource PaperDeep}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0" ClipToBounds="True">
-    <Grid Margin="14,22,14,12">
+    <Grid x:Name="SidebarContent" Margin="14,22,14,12">
      <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
@@ -81,7 +81,7 @@
      </Grid.RowDefinitions>
      <StackPanel x:Name="ProjectSummary" Margin="6,0,6,22">
       <TextBlock Text="PROJECT / 01" Style="{StaticResource Kicker}"/>
-      <TextBlock Text="{Binding CurrentProject.Name}" FontFamily="{StaticResource Serif}" FontSize="18" Margin="0,12,0,8"/>
+      <TextBlock Text="{Binding CurrentProject.Name}" ToolTip="{Binding CurrentProject.Name}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource Serif}" FontSize="18" Margin="0,12,0,8"/>
       <TextBlock Text="{Binding CurrentProject.Summary}" Style="{StaticResource Caption}"/>
      </StackPanel>
      <ComboBox Grid.Row="1" x:Name="ProjectList" ItemsSource="{Binding Projects}" DisplayMemberPath="Name"
@@ -98,7 +98,7 @@
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
          <Grid>
           <Border x:Name="Shadow" Background="#33D34A2F" Margin="4,4,-4,-4" Visibility="Collapsed"/>
-          <Border x:Name="Surface" Background="Transparent" Padding="8"><ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Stretch"/></Border>
+          <Border x:Name="Surface" Background="Transparent" Padding="{TemplateBinding Padding}"><ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Stretch"/></Border>
           <Border x:Name="Mark" Width="2" HorizontalAlignment="Left" Margin="0,9" Background="{StaticResource Accent}" Visibility="Collapsed"/>
          </Grid>
          <ControlTemplate.Triggers>
@@ -107,21 +107,33 @@
           <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Accent}"/><Setter TargetName="Surface" Property="BorderThickness" Value="1"/></Trigger>
          </ControlTemplate.Triggers>
         </ControlTemplate></Setter.Value></Setter>
+        <Setter Property="Padding" Value="8"/>
+        <Style.Triggers>
+         <DataTrigger Binding="{Binding DataContext.SidebarCollapsed, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+          <Setter Property="Margin" Value="0,0,0,5"/>
+          <Setter Property="Padding" Value="6"/>
+         </DataTrigger>
+        </Style.Triggers>
        </Style>
       </ListBox.ItemContainerStyle>
       <ListBox.ItemTemplate>
        <DataTemplate>
         <Grid>
-         <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="22"/></Grid.ColumnDefinitions>
-         <Viewbox Width="17" Height="17" HorizontalAlignment="Left"><Path Data="{Binding IconData}" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/></Viewbox>
-         <TextBlock Grid.Column="2" Text="{Binding Index}" FontWeight="Normal" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center"/>
-         <StackPanel Grid.Column="1">
-          <StackPanel.Style><Style TargetType="StackPanel"><Style.Triggers>
-           <DataTrigger Binding="{Binding DataContext.SidebarCollapsed, RelativeSource={RelativeSource AncestorType=Window}}" Value="True"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
-          </Style.Triggers></Style></StackPanel.Style>
-          <TextBlock Text="{Binding Title}" VerticalAlignment="Center"/>
-         </StackPanel>
+         <Grid.ColumnDefinitions><ColumnDefinition x:Name="IconColumn" Width="28"/><ColumnDefinition x:Name="LabelColumn" Width="*"/><ColumnDefinition x:Name="IndexColumn" Width="22"/></Grid.ColumnDefinitions>
+         <Viewbox x:Name="SectionIcon" Width="17" Height="17" HorizontalAlignment="Left"><Path Data="{Binding IconData}" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/></Viewbox>
+         <TextBlock x:Name="SectionIndex" Grid.Column="2" Text="{Binding Index}" FontWeight="Normal" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+         <TextBlock x:Name="SectionTitle" Grid.Column="1" Text="{Binding Title}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
         </Grid>
+        <DataTemplate.Triggers>
+         <DataTrigger Binding="{Binding DataContext.SidebarCollapsed, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+          <Setter TargetName="IconColumn" Property="Width" Value="*"/>
+          <Setter TargetName="LabelColumn" Property="Width" Value="0"/>
+          <Setter TargetName="IndexColumn" Property="Width" Value="0"/>
+          <Setter TargetName="SectionIcon" Property="HorizontalAlignment" Value="Center"/>
+          <Setter TargetName="SectionTitle" Property="Visibility" Value="Collapsed"/>
+          <Setter TargetName="SectionIndex" Property="Visibility" Value="Collapsed"/>
+         </DataTrigger>
+        </DataTemplate.Triggers>
        </DataTemplate>
       </ListBox.ItemTemplate>
      </ListBox>

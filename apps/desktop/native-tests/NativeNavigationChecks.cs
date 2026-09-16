@@ -55,7 +55,7 @@ internal static class NativeNavigationChecks
         sidebarToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Drain();
         var sidebar = (ColumnDefinition)window.FindName("SidebarColumn")!;
-        Require(sidebar.Width.Value == 52, "sidebar collapses to a usable icon rail");
+        Require(sidebar.Width.Value == 64, "sidebar collapses to a usable icon rail");
         sidebarToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Drain();
         Require(sidebar.Width.Value > 0, "sidebar restores");
@@ -82,6 +82,7 @@ internal static class NativeNavigationChecks
             using var file = File.Create(Path.Combine(output, $"native-workspace-{width}.png"));
             encoder.Save(file);
         }
+        NativeSidebarChecks.Verify(output);
         Console.WriteLine("PASS: view registry, offline navigation, cached instances, sidebar collapse, workspace layouts");
     }
 

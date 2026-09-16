@@ -639,7 +639,13 @@ public partial class MainWindow : Window
     {
         if (preferences == null) return;
         var workspace = page is not ("home" or "settings-global" or "usage" or "help");
-        SidebarColumn.Width = new GridLength(workspace ? (preferences.SidebarCollapsed ? 52 : 214) : 0);
+        var collapsed = preferences.SidebarCollapsed;
+        // Match the web icon rail; reserve room for the vertical scrollbar at short heights.
+        SidebarColumn.Width = new GridLength(workspace ? (collapsed ? 64 : 214) : 0);
+        SidebarContent.Margin = collapsed ? new Thickness(4, 22, 4, 12) : new Thickness(14, 22, 14, 12);
+        ProjectSections.Margin = collapsed ? new Thickness(0) : new Thickness(0, 0, 0, 12);
+        SidebarToggle.ToolTip = collapsed ? "展开侧栏 · Ctrl+B" : "折叠侧栏 · Ctrl+B";
+        System.Windows.Automation.AutomationProperties.SetName(SidebarToggle, collapsed ? "展开侧栏" : "折叠侧栏");
         SidebarPanel.Visibility = workspace ? Visibility.Visible : Visibility.Collapsed;
         SidebarToggle.Visibility = workspace ? Visibility.Visible : Visibility.Collapsed;
         GlobalActions.Visibility = workspace || page == "settings-global" ? Visibility.Collapsed : Visibility.Visible;
@@ -654,7 +660,7 @@ public partial class MainWindow : Window
         SidebarFooter.Visibility = preferences.SidebarCollapsed ? Visibility.Collapsed : Visibility.Visible;
         state.IsWorkspace = workspace;
         state.SidebarCollapsed = preferences.SidebarCollapsed;
-        ContentHost.Margin = page is "source" or "assets" ? new Thickness(30, 28, 30, 0) : workspace ? new Thickness(24, 24, 0, 0) : new Thickness(0);
+        ContentHost.Margin = page is "source" or "assets" ? new Thickness(16, 16, 16, 0) : workspace ? new Thickness(24, 24, 0, 0) : new Thickness(0);
     }
 
     private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e) { }

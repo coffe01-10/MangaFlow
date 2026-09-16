@@ -209,6 +209,9 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
 - 不要用“删除输出目录里的旧宿主来触发 debug 回退”的方式保证新鲜度——始终通过脚本或
   等价的 cargo build → dotnet build → copy + 校验链。
 - 原生回归（含 UI 检查）：`dotnet run --project apps/desktop/native-tests -- --render`。
+- 侧栏专项：`dotnet run --project apps/desktop/native-tests -- --sidebar output/native-local/sidebar-review`。
+  使用真实 WPF 模板离屏渲染，检查折叠图标的祖先裁切、九个导航入口、短窗口滚动、展开恢复、
+  已保存状态、按钮提示，以及长项目名下顶部操作的可见性；不启动后端。此检查也包含在 `--render` 中。
 
 ## 4. 验收矩阵 D1–D9（ADR §6）
 
