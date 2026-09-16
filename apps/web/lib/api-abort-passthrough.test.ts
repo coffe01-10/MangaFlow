@@ -33,4 +33,38 @@ describe("request cancellation passthrough", () => {
     expect(rejection).toBeInstanceOf(Error);
     expect((rejection as Error).message).toContain("请求超时");
   });
+
+  // 读取错误响应体期间（!response.ok 分支的 response.json()）取消/超时同样
+  // 以 AbortError/TimeoutError 拒绝：不能被兜底 catch 吞成「请求失败」。
+  it("rethrows an AbortError raised while reading an error response body", async () => {
+    const abortError = new DOMException("The user aborted a request.", "AbortError");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: () => Promise.reject(abortError),
+      }),
+    );
+
+    const rejection = await api.projects().catch((error: unknown) => error);
+
+    expect(rejection).toBe(abortError);
+  });
+
+  it("maps a timeout raised while reading an error response body to the timeout ApiError", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 502,
+        json: () => Promise.reject(new DOMException("The operation timed out.", "TimeoutError")),
+      }),
+    );
+
+    const rejection = await api.projects().catch((error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error).message).toContain("请求超时");
+  });
 });

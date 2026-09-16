@@ -372,6 +372,7 @@ export function useGenerationWorkspace({
     mutationFn: ({ candidateId, resolution }: { candidateId: string; resolution: "2K" | "4K" }) =>
       api.upscaleCandidate(candidateId, requireDrawModel(), resolution),
     onSuccess: () => {
+      setActionNotice(null);
       // Upscale closes the current batch server-side and puts the upscaled
       // candidate into a new one; without the workbench invalidation the stale
       // open batch shadows the new candidate until an unrelated refetch.
@@ -385,6 +386,9 @@ export function useGenerationWorkspace({
       queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
+    // 升清是会真实调用图片模型的付费操作；其余候选动作都把失败写进
+    // actionNotice，检查面板未打开时这里若静默，用户会以为任务已入队。
+    onError: (error) => setActionNotice(error),
   });
 
   const selectCandidate = useMutation({

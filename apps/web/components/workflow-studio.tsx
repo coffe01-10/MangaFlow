@@ -433,21 +433,33 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     ? textModels.filter((model) => model.operations.includes("multimodal_analysis"))
     : textModels;
   const record = useCallback(() => {
-    setPast((items) => [...items.slice(-39), { nodes: nodesRef.current, edges: edgesRef.current }]);
+    setPast((items) => {
+      // deleteKeyCode 删除会先后触发 onNodesChange/onEdgesChange 的 remove，
+      // 两次回调之间 refs 尚未随渲染更新，快照引用相同：跳过重复项，避免
+      // 撤销栈出现需要按两次才生效的空步。
+      const last = items[items.length - 1];
+      if (last && last.nodes === nodesRef.current && last.edges === edgesRef.current) return items;
+      return [...items.slice(-39), { nodes: nodesRef.current, edges: edgesRef.current }];
+    });
     setFuture([]);
   }, []);
 
   const onNodesChange = useCallback((changes: NodeChange<StudioNode>[]) => {
     const moving = changes.some((change) => change.type === "position" && change.dragging);
     dragging.current = moving;
+    // Backspace/Delete 删除走 deleteKeyCode 而非 deleteSelected：先记录删除前
+    // 快照（refs 此刻仍是旧状态），否则键盘删除不可撤销，且残留的 future 会在
+    // 重做时用删除前的整图覆盖当前 nodes/edges。
+    if (changes.some((change) => change.type === "remove")) record();
     setNodes((items) => applyNodeChanges(changes, items));
     if (!moving && changes.some((change) => change.type === "position" || change.type === "remove")) scheduleSave();
-  }, [scheduleSave]);
+  }, [record, scheduleSave]);
 
   const onEdgesChange = useCallback((changes: EdgeChange<StudioEdge>[]) => {
+    if (changes.some((change) => change.type === "remove")) record();
     setEdges((items) => applyEdgeChanges(changes, items));
     if (changes.some((change) => change.type === "remove")) scheduleSave();
-  }, [scheduleSave]);
+  }, [record, scheduleSave]);
 
   const validConnection = useCallback((connection: Edge | Connection) => {
     const source = nodesRef.current.find((node) => node.id === connection.source)?.data.graphNode.outputs.find((port) => port.id === connection.sourceHandle);
@@ -866,7 +878,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             <label>节点名称<input value={selected.data.graphNode.name} onChange={(event) => updateSelected({ name: event.target.value })} /></label>
             <label>节点类型<input value={selected.data.graphNode.type} disabled /></label>
             {selected.data.graphNode.type === "generator.page" ? <><label>模型由每次生成选择<input value="必须显式选择供应商图片模型" disabled /></label><label>建议清晰度<select value={selected.data.graphNode.config.resolution ?? "1K"} onChange={(event) => updateSelected({}, { resolution: event.target.value as Resolution })}><option>1K</option><option>2K</option><option>4K</option></select></label></> : null}
-            {selected.data.graphNode.config.model_alias ? <><label>文本模型<select value={selected.data.graphNode.config.model_alias} onChange={(event) => updateSelected({}, { model_alias: event.target.value })}>{selectedTextModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select></label><label>温度<ClampedNumberInput min={0} max={2} step={0.1} value={selected.data.graphNode.config.temperature} onCommit={(temperature) => updateSelected({}, { temperature })} /></label></> : null}
+            {selected.data.graphNode.config.model_alias ? <><label>文本模型<select value={selected.data.graphNode.config.model_alias} onChange={(event) => updateSelected({}, { model_alias: event.target.value })}><option value="auto">自动路由 · 按节点类型选择已验证模型</option>{selectedTextModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select></label><label>温度<ClampedNumberInput min={0} max={2} step={0.1} value={selected.data.graphNode.config.temperature} onCommit={(temperature) => updateSelected({}, { temperature })} /></label></> : null}
             <label>超时（秒）<ClampedNumberInput min={30} max={3600} value={selected.data.graphNode.config.timeout_seconds} onCommit={(timeout_seconds) => updateSelected({}, { timeout_seconds })} /></label>
             <label>重试次数<ClampedNumberInput min={1} max={10} value={selected.data.graphNode.config.max_attempts} onCommit={(max_attempts) => updateSelected({}, { max_attempts })} /></label>
             <label>提示词<textarea value={selected.data.graphNode.config.prompt_template} onChange={(event) => updateSelected({}, { prompt_template: event.target.value })} placeholder="留空时使用内置业务提示词" /></label>

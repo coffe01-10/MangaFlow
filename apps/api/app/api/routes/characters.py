@@ -360,5 +360,15 @@ def unbind_reference(
         # CANONICAL. version always advances: the binding set changed.
         if not _live_reference_exists(db, character.id):
             character.status = AssetStatus.NEEDS_CONFIRMATION
-        character.version += 1
+        # Atomic version bump (same shape as the steal victim in bind_reference):
+        # an ORM `+= 1` from this transaction's read loses to a concurrent
+        # character PATCH and lets a client holding the pre-unbind token pass a
+        # later optimistic-concurrency check.
+        db.execute(
+            update(Character)
+            .where(Character.id == character.id)
+            .values(version=Character.version + 1)
+            .execution_options(synchronize_session=False)
+        )
+        db.expire(character, ["version"])
     db.commit()
