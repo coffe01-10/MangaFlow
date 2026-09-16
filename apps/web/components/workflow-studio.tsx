@@ -176,12 +176,13 @@ function downloadJson(name: string, value: unknown) {
 // 后端按 JSON 类型比较（布尔/数字与字符串永不相等），发布校验也允许布尔值
 // 条件：true/false/数字必须解析为类型字面量提交，否则 $.ready eq "true"
 // 恒为假分支。仅显式比较符做字面量化；"exists" 不读比较值。
-function parseConditionValue(raw: string, operator: string): string | number | boolean {
+function parseConditionValue(raw: string, operator: string): string | number | boolean | null {
   const trimmed = raw.trim();
   const numeric = Number(trimmed);
   if (["gt", "gte", "lt", "lte", "eq", "ne", "contains"].includes(operator)) {
     if (trimmed === "true") return true;
     if (trimmed === "false") return false;
+    if (trimmed === "null") return null;
     if (trimmed !== "" && Number.isFinite(numeric)) return numeric;
   }
   return raw;

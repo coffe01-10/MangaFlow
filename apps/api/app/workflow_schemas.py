@@ -28,6 +28,10 @@ class WorkflowNodeConfig(BaseModel):
     locked: bool = False
     notes: str = Field(default="", max_length=20_000)
     condition: dict[str, Any] = Field(default_factory=dict)
+    # Template/UI hint only. Runtime pause uses NodeTypeSpec.barrier
+    # (generator.page=GENERATE, control.approval=APPROVE). Clearing this flag
+    # must not skip those type barriers, and setting it on other types must
+    # not skip their paid/work execution (#798).
     requires_approval: bool = False
 
     @field_validator("condition")

@@ -254,11 +254,16 @@ describe("WorkflowStudio 草稿保存与发布", () => {
     await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(2));
     expect(updateSpy.mock.calls[1][2].draft_graph?.nodes[0].config.condition?.value).toBe(3);
 
+    fireEvent.change(value, { target: { value: "null" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(3));
+    expect(updateSpy.mock.calls[2][2].draft_graph?.nodes[0].config.condition?.value).toBeNull();
+
     fireEvent.change(operator, { target: { value: "exists" } });
     fireEvent.change(value, { target: { value: "true" } });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(3));
-    expect(updateSpy.mock.calls[2][2].draft_graph?.nodes[0].config.condition?.value).toBe("true");
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(4));
+    expect(updateSpy.mock.calls[3][2].draft_graph?.nodes[0].config.condition?.value).toBe("true");
   });
 
   it("保存中继续改图会补交最新草稿，已保存与持久化内容一致", async () => {

@@ -198,8 +198,12 @@ internal static class NativeWorkflowRunChecks
                 edited = merged;
             Require((string?)edited.GetValueOrDefault("path") == "$.page.turn"
                 && (string?)edited.GetValueOrDefault("operator") == "gt"
-                && (string?)edited.GetValueOrDefault("value") == "3",
-                "condition 三件套未写回对应子键");
+                && edited.GetValueOrDefault("value") is 3,
+                "condition 三件套未写回对应子键（比较值须按 JSON 字面量提交）");
+            Box(view, "比较值")!.Text = "null";
+            if (Config(condition).TryGetValue("condition", out raw) && raw is Dictionary<string, object?> withNull)
+                edited = withNull;
+            Require(edited.GetValueOrDefault("value") is null, "eq/gt 比较值 null 必须写成 JSON null 而不是字符串");
             Require((string?)edited.GetValueOrDefault("keep") == "me", "condition 写回丢弃了已有键");
 
             // 锁定/需要审批写回。

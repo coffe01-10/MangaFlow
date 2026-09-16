@@ -20,6 +20,26 @@ from app.services.workflow_engine.scope import _graph_for_run, _latest_script, _
 from app.workflow_schemas import WorkflowGraph
 
 
+class _MissingType:
+    """Sentinel for a JSON path that is not present.
+
+    #798: `_condition_value` used to return None for both a missing key and
+    JSON null, so `exists` and `eq null` could not tell them apart. Missing
+    must stay distinct from None (JSON null).
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<missing>"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+MISSING = _MissingType()
+
+
 class WorkflowNodeExecutionError(RuntimeError):
     """Deterministic, non-retryable workflow-node failure.
 
@@ -42,14 +62,15 @@ def _condition_value(payload: dict[str, Any], path: str) -> Any:
         return value
     for part in normalized.split("."):
         if not isinstance(value, dict) or part not in value:
-            return None
+            return MISSING
         value = value[part]
     return value
 
 
 def _condition_matches(value: Any, operator: str, expected: Any) -> bool:
     if operator == "exists":
-        return value is not None
+        # Present including JSON null. A missing path is not "exists".
+        return value is not MISSING
     if operator == "eq":
         return value == expected
     if operator == "ne":
@@ -156,7 +177,8 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
             "node_type": node_run.node_type,
             "matched": matched,
             "selected_port": "true" if matched else "false",
-            "value": actual,
+            "value": None if actual is MISSING else actual,
+            "present": actual is not MISSING,
             "input": payload,
         }
     elif node_run.node_type == "control.merge":

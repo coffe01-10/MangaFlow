@@ -2225,13 +2225,23 @@ public sealed partial class WorkflowView : WorkspaceView
             operators.SelectedItem = operators.Items.OfType<ComboBoxItem>()
                 .FirstOrDefault(item => (string?)item.Tag == currentOperator)
                 ?? operators.Items.OfType<ComboBoxItem>().First(item => (string?)item.Tag == "exists");
-            operators.SelectionChanged += (_, _) =>
-            {
-                if (operators.SelectedItem is ComboBoxItem { Tag: string value }) { SetConditionValue(node, "operator", value); ScheduleSave(); }
-            };
             var conditionValue = new TextBox { Text = ConditionText(node, "value", "") };
             System.Windows.Automation.AutomationProperties.SetName(conditionValue, "比较值");
-            conditionValue.TextChanged += (_, _) => { SetConditionValue(node, "value", conditionValue.Text); ScheduleSave(); };
+            operators.SelectionChanged += (_, _) =>
+            {
+                if (operators.SelectedItem is ComboBoxItem { Tag: string value })
+                {
+                    SetConditionValue(node, "operator", value);
+                    SetConditionValue(node, "value", ParseConditionValue(conditionValue.Text, value));
+                    ScheduleSave();
+                }
+            };
+            conditionValue.TextChanged += (_, _) =>
+            {
+                var op = (operators.SelectedItem as ComboBoxItem)?.Tag as string ?? "exists";
+                SetConditionValue(node, "value", ParseConditionValue(conditionValue.Text, op));
+                ScheduleSave();
+            };
             inspector.Children.Add(DarkLabel("JSON 路径"));
             inspector.Children.Add(path);
             inspector.Children.Add(DarkLabel("比较符"));
@@ -2299,6 +2309,27 @@ public sealed partial class WorkflowView : WorkspaceView
     {
         var condition = node.ConfigElement.Element("condition");
         return condition.ValueKind == JsonValueKind.Object ? condition.Text(key, fallback) : fallback;
+    }
+
+    // Align with web parseConditionValue: comparison operators submit JSON
+    // literals so $.ready eq true is not the string "true" (#798).
+    internal static object? ParseConditionValue(string raw, string op)
+    {
+        if (op is "exists") return raw;
+        var trimmed = raw.Trim();
+        if (trimmed == "true") return true;
+        if (trimmed == "false") return false;
+        if (trimmed == "null") return null;
+        if (trimmed.Length > 0
+            && double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out var numeric)
+            && !double.IsNaN(numeric) && !double.IsInfinity(numeric))
+        {
+            var rounded = Math.Round(numeric);
+            if (Math.Abs(numeric - rounded) < double.Epsilon && rounded is >= int.MinValue and <= int.MaxValue)
+                return (int)rounded;
+            return numeric;
+        }
+        return raw;
     }
 
     // condition 写回走「合并已有键再覆盖单键」（网页 { ...condition, path } 展开
