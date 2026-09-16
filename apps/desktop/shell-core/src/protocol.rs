@@ -2088,4 +2088,57 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// The within-grace boundary: a terminal journal still INSIDE the
+    /// production 24h grace window must be kept (fresh sessions must not
+    /// be swept by a restarted shell), while one aged past the window is
+    /// removed. Pin both sides of the boundary explicitly — a regression
+    /// to grace=0 (sweep everything) or an inverted comparison sweeps
+    /// fresh sessions and goes red here.
+    #[test]
+    fn sweep_respects_the_production_grace_window_on_both_sides() {
+        use std::time::Duration;
+
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-grace-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+
+        // A terminal journal aged 2h: inside the 24h production grace.
+        let fresh = runtime_fixture(
+            &user_data,
+            &"1".repeat(32),
+            &serde_json::json!({"version":1,"token":"1".repeat(32),"state":"stopped"}).to_string(),
+        );
+        let aged_stamp = std::time::SystemTime::now() - Duration::from_secs(2 * 3600);
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(fresh.join(JOURNAL_NAME))
+            .unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(aged_stamp)).unwrap();
+        drop(f);
+
+        // A terminal journal aged 48h: outside the 24h production grace.
+        let stale = runtime_fixture(
+            &user_data,
+            &"2".repeat(32),
+            &serde_json::json!({"version":1,"token":"2".repeat(32),"state":"stopped"}).to_string(),
+        );
+        let stale_stamp = std::time::SystemTime::now() - Duration::from_secs(48 * 3600);
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(stale.join(JOURNAL_NAME))
+            .unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(stale_stamp)).unwrap();
+        drop(f);
+
+        sweep_runtime_dirs_with(&user_data, RUNTIME_SWEEP_GRACE_SECONDS).unwrap();
+
+        assert!(fresh.exists(), "a journal inside the grace window must be kept");
+        assert!(!stale.exists(), "a journal past the grace window must be swept");
+
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
 }
