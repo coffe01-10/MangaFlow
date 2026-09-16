@@ -82,6 +82,11 @@ if (args.Contains("--issue441"))
     NativeIssue441Checks.Run();
     return 0;
 }
+if (args.Contains("--issue426"))
+{
+    NativeIssue426Checks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-issue426"));
+    return 0;
+}
 if (args.Contains("--interaction"))
 {
     // --render 的 parity 前奏在 master 上有一个独立的既有失败（generate/940

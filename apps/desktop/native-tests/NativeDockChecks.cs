@@ -71,6 +71,12 @@ internal static class NativeDockChecks
             "empty dock keeps a stale headline or counters");
         state.CurrentSection = "source";
         Require(state.DockStatusText == "查看生成、解析与检查进度", "idle hint does not follow the section");
+        state.CurrentProject = new ProjectItem("dock-project", "底栏项目", "", 0, 0) { Concurrency = 4 };
+        state.CurrentSection = "generate";
+        Require(state.DockConcurrencyShown && state.DockConcurrencyText == "并发上限 4",
+            "jobs/generate 底栏必须展示项目并发上限");
+        state.CurrentSection = "source";
+        Require(!state.DockConcurrencyShown, "非任务页不应展示并发上限");
     }
 
     private static async Task LateResponseIsolation()

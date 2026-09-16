@@ -16,7 +16,7 @@ public sealed partial class UsageView
     private void OpenAttempt(JsonElement attempt)
     {
         if (AttemptDetailOverride is { } open) open(attempt);
-        else new AttemptDrawer(Host, attempt).ShowDialog();
+        else ShowAttemptDrawer(attempt);
     }
 
     private void BuildUsageShell()

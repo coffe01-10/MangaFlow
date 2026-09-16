@@ -71,13 +71,28 @@ public sealed partial class WorkflowView
         zoom.Children.Add(zoomLabel);
         zoom.Children.Add(FlowAction("+", (_, _) => ZoomCanvas(1.1)));
         zoom.Children.Add(FlowAction("100%", (_, _) => { scale = 1; ApplyView(); }));
-        var help = new TextBlock { Text = "Ctrl + 滚轮缩放 · 拖动端口连线", FontSize = 11, Foreground = FlowBrush("#a4ada7"),
+        var help = new TextBlock { Text = "Ctrl+滚轮缩放 · 空格/中键拖动画布 · 拖空框选", FontSize = 11, Foreground = FlowBrush("#a4ada7"),
             VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextWrapping = TextWrapping.Wrap };
-        zoom.Children.Add(help); DockPanel.SetDock(zoom, Dock.Bottom); center.Children.Add(zoom);
+        zoom.Children.Add(help);
+        zoom.Children.Add(FlowAction("全屏工作区", (_, _) => ToggleStudioFullscreen()));
+        DockPanel.SetDock(zoom, Dock.Bottom); center.Children.Add(zoom);
         canvas.Background = CanvasDots();
         canvasScroll.Content = canvas; canvasScroll.Background = FlowBrush("#1a1d1b");
         canvasScroll.VerticalScrollBarVisibility = canvasScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
-        center.Children.Add(canvasScroll); Grid.SetColumn(center, 1); studioBody.Children.Add(center);
+        var canvasHost = new Grid();
+        canvasHost.Children.Add(canvasScroll);
+        minimap.Background = FlowBrush("#1a1d1b");
+        minimap.ClipToBounds = true;
+        System.Windows.Automation.AutomationProperties.SetName(minimap, "工作流小地图");
+        minimap.MouseLeftButtonDown += OnMinimapNavigate;
+        var minimapHost = new Border
+        {
+            Width = 176, Height = 118, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 12, 12), BorderBrush = FlowBrush("#383d39"), BorderThickness = new Thickness(1),
+            Background = FlowBrush("#171a18"), Child = minimap, Padding = new Thickness(4),
+        };
+        canvasHost.Children.Add(minimapHost);
+        center.Children.Add(canvasHost); Grid.SetColumn(center, 1); studioBody.Children.Add(center);
         var runner = BuildRunner(); Grid.SetRow(runner, 3); root.Children.Add(runner);
         Content = root;
         SizeChanged += (_, e) =>
@@ -169,7 +184,7 @@ public sealed partial class WorkflowView
     {
         if (undoButton == null) return;
         undoButton.IsEnabled = historyIndex > 1; redoButton.IsEnabled = historyIndex < history.Count;
-        copyButton.IsEnabled = selected != null;
+        copyButton.IsEnabled = selected != null || selectedNodes.Count > 0;
         if (runNodeButton != null) runNodeButton.IsEnabled = selected != null;
         if (runFromButton != null) runFromButton.IsEnabled = selected != null;
     }

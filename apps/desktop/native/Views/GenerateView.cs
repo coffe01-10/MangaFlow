@@ -58,6 +58,8 @@ public sealed partial class GenerateView : WorkspaceView
     private string reviewInspectJobIdSeen = "";
     private bool reviewChecking;
     private string? panelError;
+    private List<JsonElement> scriptScenes = [];
+    private List<JsonElement> sceneAssets = [];
 
     public GenerateView()
     {
@@ -364,6 +366,8 @@ public sealed partial class GenerateView : WorkspaceView
             pageBatches = batches;
             workbench = next;
             if (next.Element("page").ValueKind == JsonValueKind.Object) currentPage = PageItem.From(next.Element("page"));
+            await LoadSceneInheritanceAsync(token);
+            if (token.IsCancellationRequested || request != workbenchRead || currentPage?.Id != requestedPage) return;
             notice.Text = "";
             if (!unchanged || body.Children.Count == 0) Render();
         }
@@ -459,6 +463,7 @@ public sealed partial class GenerateView : WorkspaceView
         }
 
         body.Children.Add(BuildPageContext());
+        body.Children.Add(BuildSceneInheritance());
         body.Children.Add(BuildReadiness(readiness));
 
         // Model picker.
@@ -905,6 +910,84 @@ public sealed partial class GenerateView : WorkspaceView
     }
 
     internal async Task ReloadWorkbench() => await LoadWorkbenchAsync();
+
+    private async Task LoadSceneInheritanceAsync(CancellationToken token)
+    {
+        try
+        {
+            if (chapterId.Length == 0) { scriptScenes = []; sceneAssets = []; return; }
+            var scriptTask = Api.SendAsync($"chapters/{chapterId}/script", cancellation: token);
+            var assetsTask = Api.SendAsync($"projects/{ProjectId}/scene-assets", cancellation: token);
+            await Task.WhenAll(scriptTask, assetsTask);
+            if (token.IsCancellationRequested) return;
+            scriptScenes = (await scriptTask).Array("scenes");
+            var loaded = await assetsTask;
+            sceneAssets = loaded.ValueKind == JsonValueKind.Array ? loaded.EnumerateArray().ToList() : [];
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception)
+        {
+            scriptScenes = [];
+            sceneAssets = [];
+        }
+    }
+
+    private Border BuildSceneInheritance()
+    {
+        var panel = new StackPanel();
+        panel.Children.Add(new TextBlock { Text = "SCENE ASSETS", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        panel.Children.Add(new TextBlock
+        {
+            Text = "本页主场景将进入生成输入", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 4, 0, 8),
+        });
+        var ids = workbench.Element("page").Array("scene_ids").Select(id => id.ToString()).Where(id => id.Length > 0).ToList();
+        if (ids.Count == 0)
+        {
+            panel.Children.Add(Kit.Caption("本页未关联剧本场景。"));
+            return NamedSceneCard(panel);
+        }
+        var primary = ids.Select(id => scriptScenes.FirstOrDefault(s => s.Text("id") == id))
+            .FirstOrDefault(s => s.ValueKind == JsonValueKind.Object);
+        if (primary.ValueKind != JsonValueKind.Object)
+        {
+            panel.Children.Add(Kit.Caption("页面记录了场景 id，但当前剧本中找不到对应场景，不能视为已就绪。"));
+            return NamedSceneCard(panel);
+        }
+        var assetId = primary.Text("scene_asset_id");
+        var extra = Math.Max(0, ids.Count - 1);
+        if (assetId.Length == 0)
+            panel.Children.Add(Kit.Caption($"第 {primary.Number("ordinal")} 场 · 未绑定场景资产。将使用地点文本兜底：{primary.Text("location", "（空）")}"));
+        else
+        {
+            var asset = sceneAssets.FirstOrDefault(a => a.Text("id") == assetId);
+            if (asset.ValueKind != JsonValueKind.Object)
+                panel.Children.Add(Kit.Caption($"第 {primary.Number("ordinal")} 场引用的场景资产不可用，不能视为已就绪。"));
+            else if (asset.FlagDate("deleted_at"))
+                panel.Children.Add(Kit.Caption($"第 {primary.Number("ordinal")} 场 · {asset.Text("name")} 已归档，不会作为已就绪参考。"));
+            else
+            {
+                panel.Children.Add(new TextBlock
+                {
+                    Text = $"第 {primary.Number("ordinal")} 场 · {asset.Text("name")}",
+                    FontWeight = FontWeights.Bold, TextWrapping = TextWrapping.Wrap,
+                });
+                var variantId = primary.Text("scene_asset_variant_id");
+                var variant = asset.Array("variants").FirstOrDefault(v => v.Text("id") == variantId);
+                panel.Children.Add(Kit.Caption(variant.ValueKind == JsonValueKind.Object && !variant.FlagDate("deleted_at")
+                    ? $"变体 {variant.Text("name")}" : "使用资产默认变体"));
+            }
+        }
+        if (extra > 0)
+            panel.Children.Add(Kit.Caption($"本页另外关联了 {extra} 个场景，它们不进入本次生成输入。"));
+        return NamedSceneCard(panel);
+    }
+
+    private static Border NamedSceneCard(StackPanel panel)
+    {
+        var host = Wrap(null, panel);
+        System.Windows.Automation.AutomationProperties.SetName(host, "本页场景资产");
+        return host;
+    }
 
     private static bool TerminalJobStatus(string status) =>
         status is "COMPLETED" or "FAILED" or "CANCELLED" or "NEEDS_REVIEW";
@@ -1501,6 +1584,15 @@ internal sealed class DirectorPane : Border
         this.view = view;
         Style = (Style)Application.Current.FindResource("Card");
         Padding = new Thickness(18);
+        Focusable = true;
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.K && (Keyboard.Modifiers & ModifierKeys.Control) != 0)
+            {
+                commandInput.Focus();
+                e.Handled = true;
+            }
+        };
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock { Text = "DIRECTOR / 导演台 · 规则解析，非模型", Style = (Style)Application.Current.FindResource("SectionIndex") });
         panel.Children.Add(new TextBlock
@@ -1517,6 +1609,14 @@ internal sealed class DirectorPane : Border
         commandRow.Children.Add(propose);
         System.Windows.Automation.AutomationProperties.SetName(commandInput, "导演指令");
         commandInput.Margin = new Thickness(0, 0, 10, 0);
+        commandInput.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                plan = null; previewGroup = default; preview.Children.Clear();
+                e.Handled = true;
+            }
+        };
         commandRow.Children.Add(commandInput);
         panel.Children.Add(commandRow);
         panel.Children.Add(preview);
@@ -1696,6 +1796,24 @@ internal sealed class DirectorPane : Border
         finally { busy = false; }
     }
 
+    private async Task JournalCommandAsync(string commandId, string action)
+    {
+        if (busy || commandId.Length == 0) return;
+        busy = true;
+        try
+        {
+            await view.Api2().SendAsync(
+                $"projects/{view.ProjectId2}/director/commands/{commandId}/{action}", HttpMethod.Post);
+            await view.ReloadWorkbench();
+            await LoadHistoryAsync();
+        }
+        catch (Exception error)
+        {
+            history.Children.Insert(0, Kit.Caption($"{action} 失败：" + error.Message));
+        }
+        finally { busy = false; }
+    }
+
     private async Task LoadHistoryAsync()
     {
         try
@@ -1742,6 +1860,27 @@ internal sealed class DirectorPane : Border
                     retry.Margin = new Thickness(0, 6, 0, 0);
                     item.Children.Add(retry);
                 }
+                if (status is "EXECUTED" or "ACCEPTED")
+                {
+                    var undo = Kit.Act("撤销", async (_, _) => await JournalCommandAsync(command.Text("command_id"), "undo"), "Outline");
+                    undo.Margin = new Thickness(0, 6, 8, 0);
+                    item.Children.Add(undo);
+                }
+                if (status is "SUPERSEDED")
+                {
+                    var redo = Kit.Act("重做", async (_, _) => await JournalCommandAsync(command.Text("command_id"), "redo"), "Outline");
+                    redo.Margin = new Thickness(0, 6, 0, 0);
+                    item.Children.Add(redo);
+                }
+                var discard = Kit.Act("丢弃", async (_, _) =>
+                {
+                    await view.Api2().SendAsync(
+                        $"projects/{view.ProjectId2}/director/command-groups/{group.Text("command_group_id")}/discard",
+                        HttpMethod.Post);
+                    await LoadHistoryAsync();
+                }, "Ghost");
+                discard.Margin = new Thickness(0, 6, 0, 0);
+                if (status is "PROPOSED" or "PREVIEWED") item.Children.Add(discard);
                 history.Children.Add(item);
             }
         }

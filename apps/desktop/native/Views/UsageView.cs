@@ -46,6 +46,7 @@ public sealed partial class UsageView : WorkspaceView
     private string projectDimensionError = "", facetDimensionError = "";
     private UsageFilter? currentFilter;
     private StackPanel? attemptsFooterError;
+    private readonly DrawerOverlay attemptDrawer = new() { DrawerWidth = 560 };
 
     public UsageView()
     {
@@ -134,6 +135,12 @@ public sealed partial class UsageView : WorkspaceView
         });
         scroller.Content = panel;
         BuildUsageShell();
+        var shell = Content;
+        Content = null;
+        var overlay = new Grid();
+        if (shell is UIElement host) overlay.Children.Add(host);
+        overlay.Children.Add(attemptDrawer);
+        Content = overlay;
     }
 
     public override async void Activate(WorkspaceContext context)
@@ -845,20 +852,14 @@ public sealed partial class UsageView : WorkspaceView
         return Task.CompletedTask;
     }
 
-    private sealed class AttemptDrawer : Window
+    private void ShowAttemptDrawer(JsonElement attempt)
     {
-        public AttemptDrawer(Window owner, JsonElement attempt)
-        {
-            Owner = owner;
-            Title = "调用尝试详情";
-            Width = 560;
-            SizeToContent = SizeToContent.Height;
-            MaxHeight = 700;
-            WindowStartupLocation = WindowStartupLocation.CenterOwner;
-            ShowInTaskbar = false;
-            Background = (Brush)Application.Current.FindResource("Paper");
-            var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-            var panel = new StackPanel { Margin = new Thickness(24) };
+        var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var panel = new StackPanel { Margin = new Thickness(24) };
+        var close = Kit.Act("关闭", (_, _) => attemptDrawer.Open = false, "Ghost");
+        close.HorizontalAlignment = HorizontalAlignment.Right;
+        System.Windows.Automation.AutomationProperties.SetName(close, "关闭");
+        panel.Children.Add(close);
             panel.Children.Add(new TextBlock
             {
                 Text = "调用尝试详情", FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
@@ -877,7 +878,7 @@ public sealed partial class UsageView : WorkspaceView
             Field("通道", attempt.Text("channel"));
             Field("上游 Request ID", attempt.Text("request_id", "未返回"));
             Field("尝试序号", $"调度尝试 {attempt.Number("job_attempt")} · 第 {attempt.Number("dispatch_no")} 次派发" + (attempt.Flag("route_switched") ? " · 换路" : ""));
-            Field("输入 / 输出 Token", $"{NumberOrNull(attempt, "input_tokens")} / {NumberOrNull(attempt, "output_tokens")}");
+            Field("输入 / 输出 Token", $"{AttemptNumberOrNull(attempt, "input_tokens")} / {AttemptNumberOrNull(attempt, "output_tokens")}");
             Field("输出图片", attempt.Element("output_images").ValueKind == JsonValueKind.Number ? $"{attempt.Number("output_images")} 张" : "未知");
             Field("耗时", $"{attempt.Number("duration_ms")} ms");
             Field("结果", $"{Labels.Map(Labels.AttemptOutcome, attempt.Text("outcome"))}{(attempt.Text("error_code").Length > 0 ? $" · {attempt.Text("error_code")}" : "")}");
@@ -888,23 +889,11 @@ public sealed partial class UsageView : WorkspaceView
                 Text = "数据来自模型调用账本（已脱敏）· 未知 \u2260 0，CLI 通道费用未知 \u2260 免费",
                 Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 14, 0, 0), TextWrapping = TextWrapping.Wrap,
             });
-            scroll.Content = panel;
-            Content = scroll;
-            PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
-        }
-
-        private static string NumberOrNull(JsonElement element, string name) =>
-            element.Element(name).ValueKind == JsonValueKind.Number ? element.Number(name).ToString() : "未知";
-
-        private static string CostModeOf(JsonElement attempt)
-        {
-            if (attempt.Text("usage_source") == "OPERATOR_BILLED") return "BILLED";
-            if (attempt.Element("input_tokens").ValueKind == JsonValueKind.Number
-                || attempt.Element("output_tokens").ValueKind == JsonValueKind.Number
-                || attempt.Element("output_images").ValueKind == JsonValueKind.Number) return "USAGE_ONLY";
-            if (attempt.Element("usage").ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
-                && attempt.Text("outcome") == "SUCCEEDED") return "UNAVAILABLE";
-            return "UNKNOWN";
-        }
+        scroll.Content = panel;
+        attemptDrawer.Content = scroll;
+        attemptDrawer.Open = true;
     }
+
+    private static string AttemptNumberOrNull(JsonElement element, string name) =>
+        element.Element(name).ValueKind == JsonValueKind.Number ? element.Number(name).ToString() : "未知";
 }

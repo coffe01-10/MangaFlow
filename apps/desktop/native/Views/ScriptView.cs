@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Threading;
 using MangaFlow.Native.Controls;
 using MangaFlow.Native.Services;
 
@@ -362,7 +363,8 @@ public sealed class ScriptView : WorkspaceView
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            MessageBox.Show(Host, error.Message, "服装指定未保存", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (Host == null) notice.Text = "服装指定未保存：" + error.Message;
+            else MessageBox.Show(Host, error.Message, "服装指定未保存", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -664,17 +666,13 @@ internal sealed class SceneSection : Border
             if (variantSelector.SelectedIndex == -1) variantSelector.SelectedIndex = 0;
             variantSelector.IsEnabled = asset != null;
         }
-        RefreshVariants();
-        assetSelector.SelectionChanged += (_, _) => { currentVariantId = ""; RefreshVariants(); };
-        panel.Children.Add(ScriptPageUi.Field("所属场景资产", assetSelector));
-        panel.Children.Add(ScriptPageUi.Field("环境变体", variantSelector));
-        if (currentAssetId.Length > 0 && !sceneAssets.Any(a => a.Id == currentAssetId && !a.Deleted))
-            panel.Children.Add(Kit.Caption("绑定的场景资产当前不可用或已归档，请改绑或到场景资产页确认。"));
+        var suppressBind = true;
         var bindingBusy = false;
-        var bind = Kit.Act("保存绑定", async (sender, _) =>
+        var bindScheduled = false;
+        async Task PersistBind()
         {
-            if (bindingBusy || !view.OwnsScene(this)) return;
-            bindingBusy = true; var button = (Button)sender!; button.IsEnabled = false;
+            if (suppressBind || bindingBusy || !view.OwnsScene(this)) return;
+            bindingBusy = true;
             assetSelector.IsEnabled = false; variantSelector.IsEnabled = false;
             try
             {
@@ -682,14 +680,26 @@ internal sealed class SceneSection : Border
                 var variantId = assetId.Length > 0 ? (variantSelector.SelectedItem as ComboBoxItem)?.Tag as string : null;
                 await view.BindSceneAsset(scene, assetId.Length > 0 ? assetId : null, string.IsNullOrEmpty(variantId) ? null : variantId);
             }
-            finally { bindingBusy = false; button.IsEnabled = true; assetSelector.IsEnabled = true; variantSelector.IsEnabled = assetSelector.SelectedIndex > 0; }
-        }, "Compact");
-        bind.Margin = new Thickness(0, 10, 0, 0);
-        bind.HorizontalAlignment = HorizontalAlignment.Right;
-        bind.Visibility = Visibility.Collapsed;
-        assetSelector.SelectionChanged += (_, _) => bind.Visibility = Visibility.Visible;
-        variantSelector.SelectionChanged += (_, _) => bind.Visibility = Visibility.Visible;
-        panel.Children.Add(bind);
+            finally { bindingBusy = false; assetSelector.IsEnabled = true; variantSelector.IsEnabled = assetSelector.SelectedIndex > 0; }
+        }
+        void ScheduleBind()
+        {
+            if (suppressBind || bindScheduled) return;
+            bindScheduled = true;
+            _ = Dispatcher.BeginInvoke(async () =>
+            {
+                bindScheduled = false;
+                await PersistBind();
+            }, DispatcherPriority.Background);
+        }
+        RefreshVariants();
+        assetSelector.SelectionChanged += (_, _) => { currentVariantId = ""; RefreshVariants(); ScheduleBind(); };
+        variantSelector.SelectionChanged += (_, _) => ScheduleBind();
+        suppressBind = false;
+        panel.Children.Add(ScriptPageUi.Field("所属场景资产", assetSelector));
+        panel.Children.Add(ScriptPageUi.Field("环境变体", variantSelector));
+        if (currentAssetId.Length > 0 && !sceneAssets.Any(a => a.Id == currentAssetId && !a.Deleted))
+            panel.Children.Add(Kit.Caption("绑定的场景资产当前不可用或已归档，请改绑或到场景资产页确认。"));
         if (currentAssetId.Length == 0 && scene.Text("location").Trim().Length > 0)
         {
             var creating = false;
@@ -697,9 +707,9 @@ internal sealed class SceneSection : Border
             {
                 if (creating || bindingBusy || !view.OwnsScene(this)) return;
                 creating = true; bindingBusy = true; var button = (Button)sender!; button.IsEnabled = false;
-                bind.IsEnabled = false; assetSelector.IsEnabled = false; variantSelector.IsEnabled = false;
+                assetSelector.IsEnabled = false; variantSelector.IsEnabled = false;
                 try { await view.CreateSceneAsset(scene); }
-                finally { creating = false; bindingBusy = false; button.IsEnabled = true; bind.IsEnabled = true; assetSelector.IsEnabled = true; variantSelector.IsEnabled = assetSelector.SelectedIndex > 0; }
+                finally { creating = false; bindingBusy = false; button.IsEnabled = true; assetSelector.IsEnabled = true; variantSelector.IsEnabled = assetSelector.SelectedIndex > 0; }
             }, "Outline");
             create.Margin = new Thickness(0, 10, 0, 0); panel.Children.Add(create);
         }
@@ -737,36 +747,61 @@ internal sealed class SceneSection : Border
         // 在途标志挡住双击（PATCH 现在携带 version，重复提交的后果从悄悄覆盖升级
         // 成真 409，必须像场景/情节拍保存一样挡住第二次进入）。
         var saveBusy = false;
-        var save = Kit.Act("保存服装指定", async (sender, _) =>
+        var outfitScheduled = false;
+        var suppressOutfit = true;
+        Button save = null!;
+        async Task PersistOutfits()
         {
-            if (saveBusy) return;
+            if (suppressOutfit || saveBusy) return;
+            // StringMap 返回可变字典。final 必须复制，否则合并选择器时会改掉
+            // current，随后的脏检查永远为假，PATCH 发不出去，保存按钮也会立刻
+            // 重新启用（#426/#448 在途禁用因此失效）。
             var current = scene.StringMap("outfit_assignments");
+            var final = new Dictionary<string, string>(current);
+            foreach (var (characterId, selector) in selectors)
+            {
+                var outfitId = (selector.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+                if (outfitId.Length == 0) final.Remove(characterId);
+                else final[characterId] = outfitId;
+            }
             var dirty = selectors.Any(s =>
                 ((s.Selector.SelectedItem as ComboBoxItem)?.Tag as string ?? "")
                 != (current.TryGetValue(s.CharacterId, out var value) ? value : ""));
             if (!dirty) return;
             saveBusy = true;
+            save.IsEnabled = false;
+            try { await view.SaveOutfitAssignments(scene, final); }
+            finally { saveBusy = false; save.IsEnabled = true; }
+        }
+        void ScheduleOutfitSave()
+        {
+            if (suppressOutfit || outfitScheduled) return;
+            outfitScheduled = true;
+            _ = Dispatcher.BeginInvoke(async () =>
+            {
+                outfitScheduled = false;
+                await PersistOutfits();
+            }, DispatcherPriority.Background);
+        }
+        save = Kit.Act("保存服装指定", async (sender, _) =>
+        {
             var button = (Button)sender!;
             button.IsEnabled = false;
-            try
-            {
-                // 未在本衣橱区渲染的角色（无服装档案）保留服务端现状，只覆盖表单内
-                // 可编辑的角色；选择「未指定」= 从终版映射里删除该角色。
-                var final = current;
-                foreach (var (characterId, selector) in selectors)
-                {
-                    var outfitId = (selector.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
-                    if (outfitId.Length == 0) final.Remove(characterId);
-                    else final[characterId] = outfitId;
-                }
-                await view.SaveOutfitAssignments(scene, final);
-            }
-            finally { saveBusy = false; button.IsEnabled = true; }
+            if (saveBusy) return;
+            outfitScheduled = false;
+            try { await PersistOutfits(); }
+            finally { if (!saveBusy) button.IsEnabled = true; }
         }, "Compact");
         save.Margin = new Thickness(0, 8, 0, 0);
         save.HorizontalAlignment = HorizontalAlignment.Right;
         save.Visibility = Visibility.Collapsed;
-        foreach (var (_, selector) in selectors) selector.SelectionChanged += (_, _) => save.Visibility = Visibility.Visible;
+        foreach (var (_, selector) in selectors)
+            selector.SelectionChanged += (_, _) =>
+            {
+                save.Visibility = Visibility.Visible;
+                ScheduleOutfitSave();
+            };
+        suppressOutfit = false;
         panel.Children.Add(save);
         return panel;
     }

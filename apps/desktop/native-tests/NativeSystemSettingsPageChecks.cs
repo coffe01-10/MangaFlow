@@ -80,7 +80,15 @@ internal static class NativeSystemSettingsPageChecks
             Require(Desc(view).OfType<TextBlock>().Any(t => t.Text.Contains("没有符合当前")), "search empty state");
             search.Text = "Codex"; Layout(view, 1240, 1000);
             Require(Field<StackPanel>(view, "providerList").Children.OfType<ProviderCard>().Count() == 1, "provider search filters cards");
+            search.Text = "ImageGen"; Layout(view, 1240, 1000);
+            Require(Field<StackPanel>(view, "providerList").Children.OfType<ProviderCard>().Count() == 1, "catalog model search filters providers by owned models");
             search.Text = "";
+            Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "＋ 添加供应商"))); Layout(view, 1240, 1000);
+            Require(Desc(view).OfType<TextBox>().Any(box => System.Windows.Automation.AutomationProperties.GetName(box) == "供应商名称"),
+                "add-provider opens the in-page form");
+            Require(!Application.Current.Windows.OfType<Window>().Any(window => window.Title == "添加供应商"),
+                "add-provider must not open a dialog");
+            Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "＋ 添加供应商")));
             Layout(view, 1240, 1000);
             Require(Desc(view).OfType<ModelRow>().Count() == 2, "populated model rows are rendered");
             var imageFilter = Desc(view).OfType<ToggleButton>().Single(b => Equals(b.Content, "图片"));
@@ -287,9 +295,13 @@ internal static class NativeSystemSettingsPageChecks
             {
                 ModelReads++;
                 return Response(JsonSerializer.Serialize(new[] {
-                    new { id = "text-1", display_name = "Codex 文字与视觉理解模型", provider_model_id = "codex-text-model", model_type = "TEXT",
+                    new { id = "text-1", catalog_id = "text-1", connection_id = "p1-connection", provider = "OpenAI · Codex CLI",
+                        display_name = "Codex 文字与视觉理解模型", provider_model_id = "codex-text-model", model_id = "codex-text-model",
+                        logical_alias = "codex-text", model_type = "TEXT",
                         enabled = true, display_enabled = true, confidence = "VERIFIED", source = "discovery", operations = new[] { "structured_text", "multimodal_analysis" } },
-                    new { id = "image-1", display_name = "Codex ImageGen", provider_model_id = "codex-imagegen", model_type = "IMAGE",
+                    new { id = "image-1", catalog_id = "image-1", connection_id = "p1-connection", provider = "OpenAI · Codex CLI",
+                        display_name = "Codex ImageGen", provider_model_id = "codex-imagegen", model_id = "codex-imagegen",
+                        logical_alias = "codex-image", model_type = "IMAGE",
                         enabled = true, display_enabled = true, confidence = "MANUAL", source = "manual", operations = new[] { "image_generate", "image_edit" } }
                 }));
             }

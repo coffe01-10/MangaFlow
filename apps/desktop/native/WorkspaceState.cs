@@ -102,8 +102,12 @@ public sealed class WorkspaceState : Observable
     public string CurrentSection
     {
         get => currentSection;
-        set => Set(ref currentSection, value, nameof(CurrentSection), nameof(DockIdleLabel), nameof(DockStatusText));
+        set => Set(ref currentSection, value, nameof(CurrentSection), nameof(DockIdleLabel), nameof(DockStatusText),
+            nameof(DockConcurrencyShown));
     }
+    public int DockConcurrency => currentProject?.Concurrency ?? 0;
+    public bool DockConcurrencyShown => CurrentSection is "jobs" or "generate" && DockConcurrency > 0;
+    public string DockConcurrencyText => $"并发上限 {DockConcurrency}";
     private bool isWorkspace, sidebarCollapsed;
     public bool IsWorkspace { get => isWorkspace; set => Set(ref isWorkspace, value, nameof(IsWorkspace), nameof(DockShown), nameof(DockRestoreShown)); }
     public bool SidebarCollapsed { get => sidebarCollapsed; set => Set(ref sidebarCollapsed, value); }
@@ -143,6 +147,8 @@ public sealed class WorkspaceState : Observable
         {
             Set(ref currentProject, value);
             Changed(nameof(ProjectId));
+            Changed(nameof(DockConcurrencyText));
+            Changed(nameof(DockConcurrencyShown));
         }
     }
     public string ProjectId => currentProject?.Id ?? "";

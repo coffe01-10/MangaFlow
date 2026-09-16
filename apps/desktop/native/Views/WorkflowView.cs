@@ -65,7 +65,15 @@ public sealed partial class WorkflowView : WorkspaceView
     private int workflowLoadVersion;
     private int version;
     private WorkflowNode? selected;
+    private readonly HashSet<WorkflowNode> selectedNodes = [];
     private string? selectedEdgeKey;
+    private System.Windows.Shapes.Rectangle? boxSelect;
+    private Point boxOrigin;
+    private bool panning;
+    private Point panOrigin;
+    private double panOffsetX, panOffsetY;
+    private readonly Canvas minimap = new() { Width = 168, Height = 110, IsHitTestVisible = true };
+    private bool studioFullscreen;
     private Button? removeButton;                    // P2-2: 状态栏删除按钮，按选中状态禁用
     private readonly Dictionary<string, (double X, double Y)> draftPositions = new();
     private System.Timers.Timer? autosave;
@@ -113,11 +121,10 @@ public sealed partial class WorkflowView : WorkspaceView
         canvas.PreviewKeyDown += OnCanvasKeyDown;
         // 点空白画布 = 清空节点/连线选中并聚焦（节点、端口、连线处理器都会吞掉
         // 自己的点击，这里只剩空白区域的事件）
-        canvas.MouseLeftButtonDown += (_, _) =>
-        {
-            ClearSelection();
-            FocusCanvas();
-        };
+        canvas.MouseLeftButtonDown += OnCanvasPointerDown;
+        canvasScroll.PreviewMouseDown += OnCanvasPanStart;
+        canvasScroll.PreviewMouseMove += OnCanvasPanMove;
+        canvasScroll.PreviewMouseUp += OnCanvasPanEnd;
     }
 
     private void OnCanvasKeyDown(object sender, KeyEventArgs e)
@@ -136,11 +143,100 @@ public sealed partial class WorkflowView : WorkspaceView
             DeleteSelectedEdge();
             e.Handled = true;
         }
-        else if (selected != null)
+        else if (selected != null || selectedNodes.Count > 0)
         {
-            DeleteSelected();   // web 的 deleteKeyCode 同样作用于选中的节点
+            DeleteSelected();
             e.Handled = true;
         }
+    }
+
+    private void OnCanvasPointerDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not Canvas) { FocusCanvas(); return; }
+        if (Keyboard.Modifiers == ModifierKeys.Control) return;
+        FocusCanvas();
+        boxOrigin = e.GetPosition(canvas);
+        boxSelect = new System.Windows.Shapes.Rectangle
+        {
+            Stroke = new SolidColorBrush(Color.FromRgb(0xE7, 0xE2, 0xD7)),
+            StrokeThickness = 1,
+            Fill = new SolidColorBrush(Color.FromArgb(40, 0xE7, 0xE2, 0xD7)),
+        };
+        Canvas.SetLeft(boxSelect, boxOrigin.X);
+        Canvas.SetTop(boxSelect, boxOrigin.Y);
+        canvas.Children.Add(boxSelect);
+        canvas.CaptureMouse();
+        canvas.MouseMove += OnBoxSelectMove;
+        canvas.MouseLeftButtonUp += OnBoxSelectEnd;
+        e.Handled = true;
+    }
+
+    private void OnBoxSelectMove(object sender, MouseEventArgs e)
+    {
+        if (boxSelect == null) return;
+        var now = e.GetPosition(canvas);
+        var x = Math.Min(boxOrigin.X, now.X);
+        var y = Math.Min(boxOrigin.Y, now.Y);
+        boxSelect.Width = Math.Abs(now.X - boxOrigin.X);
+        boxSelect.Height = Math.Abs(now.Y - boxOrigin.Y);
+        Canvas.SetLeft(boxSelect, x);
+        Canvas.SetTop(boxSelect, y);
+    }
+
+    private void OnBoxSelectEnd(object sender, MouseButtonEventArgs e)
+    {
+        canvas.MouseMove -= OnBoxSelectMove;
+        canvas.MouseLeftButtonUp -= OnBoxSelectEnd;
+        canvas.ReleaseMouseCapture();
+        var width = boxSelect?.Width ?? 0;
+        var height = boxSelect?.Height ?? 0;
+        if (boxSelect != null) canvas.Children.Remove(boxSelect);
+        boxSelect = null;
+        var now = e.GetPosition(canvas);
+        if (width < 6 && height < 6)
+        {
+            ClearSelection();
+            return;
+        }
+        var area = new Rect(Math.Min(boxOrigin.X, now.X), Math.Min(boxOrigin.Y, now.Y), width, height);
+        selectedNodes.Clear();
+        foreach (var node in nodes)
+        {
+            var box = new Rect(node.Position.X, node.Position.Y, NodeWidth, 140);
+            if (area.IntersectsWith(box)) selectedNodes.Add(node);
+        }
+        selected = selectedNodes.LastOrDefault();
+        foreach (var node in nodes) node.SetSelected(selectedNodes.Contains(node));
+        ClearEdgeSelection();
+        RenderInspector();
+        RefreshCanvasButtons();
+    }
+
+    private void OnCanvasPanStart(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Middle && Keyboard.Modifiers != ModifierKeys.Alt && e.ChangedButton != MouseButton.Left) return;
+        if (e.ChangedButton == MouseButton.Left && Keyboard.Modifiers != ModifierKeys.Alt && Keyboard.IsKeyDown(Key.Space) == false) return;
+        panning = true;
+        panOrigin = e.GetPosition(canvasScroll);
+        panOffsetX = canvasScroll.HorizontalOffset;
+        panOffsetY = canvasScroll.VerticalOffset;
+        canvasScroll.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void OnCanvasPanMove(object sender, MouseEventArgs e)
+    {
+        if (!panning) return;
+        var now = e.GetPosition(canvasScroll);
+        canvasScroll.ScrollToHorizontalOffset(panOffsetX - (now.X - panOrigin.X));
+        canvasScroll.ScrollToVerticalOffset(panOffsetY - (now.Y - panOrigin.Y));
+    }
+
+    private void OnCanvasPanEnd(object sender, MouseButtonEventArgs e)
+    {
+        if (!panning) return;
+        panning = false;
+        canvasScroll.ReleaseMouseCapture();
     }
 
     // 画布可能尚未挂进视觉树（如无头回归检查），此时 Focus 无效，跳过即可
@@ -838,8 +934,71 @@ public sealed partial class WorkflowView : WorkspaceView
             canvas.Children.Add(hint);
         }
         ApplyView();
+        RenderMinimap();
         RefreshDeleteButton();   // 重建会收敛悬空的 selectedEdgeKey，按钮态随之刷新
         RefreshCanvasButtons();
+    }
+
+    private void RenderMinimap()
+    {
+        minimap.Children.Clear();
+        if (nodes.Count == 0) return;
+        var minX = nodes.Min(n => n.Position.X);
+        var maxX = nodes.Max(n => n.Position.X + NodeWidth);
+        var minY = nodes.Min(n => n.Position.Y);
+        var maxY = nodes.Max(n => n.Position.Y + 140);
+        var spanX = Math.Max(200, maxX - minX);
+        var spanY = Math.Max(200, maxY - minY);
+        var sx = (minimap.Width - 8) / spanX;
+        var sy = (minimap.Height - 8) / spanY;
+        var s = Math.Min(sx, sy);
+        foreach (var node in nodes)
+        {
+            var tone = node.Type.StartsWith("source.") ? Color.FromRgb(0x39, 0x7B, 0x68)
+                : node.Type.StartsWith("control.") ? Color.FromRgb(0xB7, 0x7C, 0x26)
+                : node.Type.StartsWith("generator.") || node.Type.StartsWith("output.") ? Color.FromRgb(0xB9, 0x47, 0x35)
+                : node.Type.StartsWith("quality.") ? Color.FromRgb(0x78, 0x62, 0xA4)
+                : Color.FromRgb(0x32, 0x6B, 0x91);
+            var dot = new System.Windows.Shapes.Rectangle
+            {
+                Width = Math.Max(4, NodeWidth * s * 0.4),
+                Height = Math.Max(3, 18 * s),
+                Fill = new SolidColorBrush(tone),
+            };
+            Canvas.SetLeft(dot, 4 + (node.Position.X - minX) * s);
+            Canvas.SetTop(dot, 4 + (node.Position.Y - minY) * s);
+            minimap.Children.Add(dot);
+        }
+        miniOriginX = minX;
+        miniOriginY = minY;
+        miniScale = s;
+    }
+
+    private double miniOriginX, miniOriginY, miniScale;
+
+    private void OnMinimapNavigate(object sender, MouseButtonEventArgs e)
+    {
+        if (miniScale <= 0) return;
+        var point = e.GetPosition(minimap);
+        var x = miniOriginX + (point.X - 4) / miniScale;
+        var y = miniOriginY + (point.Y - 4) / miniScale;
+        canvasScroll.ScrollToHorizontalOffset(Math.Max(0, x * scale - canvasScroll.ViewportWidth / 2));
+        canvasScroll.ScrollToVerticalOffset(Math.Max(0, y * scale - canvasScroll.ViewportHeight / 2));
+    }
+
+    private void ToggleStudioFullscreen()
+    {
+        studioFullscreen = !studioFullscreen;
+        if (studioFullscreen)
+        {
+            libraryOpen = false;
+            inspectorOpen = false;
+        }
+        else
+        {
+            libraryOpen = inspectorOpen = true;
+        }
+        UpdateSidePanes();
     }
 
     private void ApplyView()
@@ -881,10 +1040,15 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private void Select(WorkflowNode node)
     {
-        foreach (var other in nodes) other.SetSelected(other == node);
-        selected = node;
+        var additive = Keyboard.Modifiers == ModifierKeys.Control;
+        if (!additive) selectedNodes.Clear();
+        if (additive && selectedNodes.Contains(node)) selectedNodes.Remove(node);
+        else selectedNodes.Add(node);
+        selected = selectedNodes.Contains(node) ? node : selectedNodes.LastOrDefault();
+        foreach (var other in nodes) other.SetSelected(selectedNodes.Contains(other));
         ClearEdgeSelection();
         RenderInspector();
+        RefreshCanvasButtons();
     }
 
     // 连线与节点互斥选中（web 端同一时刻只有一个选中对象驱动 deleteKeyCode）
@@ -910,10 +1074,12 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private void ClearSelection()
     {
+        selectedNodes.Clear();
         foreach (var other in nodes) other.SetSelected(false);
         selected = null;
         ClearEdgeSelection();
         RenderInspector();
+        RefreshCanvasButtons();
     }
 
     private void ClearEdgeSelection()
@@ -1126,7 +1292,7 @@ public sealed partial class WorkflowView : WorkspaceView
     // 无任何选中对象时删除按钮禁用（对齐 web 工具栏 disabled 语义）
     private void RefreshDeleteButton()
     {
-        if (removeButton != null) removeButton.IsEnabled = selectedEdgeKey != null || selected != null;
+        if (removeButton != null) removeButton.IsEnabled = selectedEdgeKey != null || selected != null || selectedNodes.Count > 0;
         RefreshCanvasButtons();
     }
 
@@ -1178,10 +1344,13 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private void DeleteSelected()
     {
-        if (selected == null) return;
-        edges.RemoveAll(e => e.Source == selected.Id || e.Target == selected.Id);
-        selectedEdgeKey = null;   // 挂在被删节点上的连线一并移除，选中键随之失效
-        nodes.Remove(selected);
+        var targets = selectedNodes.Count > 0 ? selectedNodes.ToList() : selected is { } one ? [one] : [];
+        if (targets.Count == 0) return;
+        var ids = targets.Select(n => n.Id).ToHashSet();
+        edges.RemoveAll(e => ids.Contains(e.Source) || ids.Contains(e.Target));
+        selectedEdgeKey = null;
+        nodes.RemoveAll(n => ids.Contains(n.Id));
+        selectedNodes.Clear();
         selected = null;
         PushHistory(Snapshot("删除节点"));
         ScheduleSave();
@@ -1191,19 +1360,27 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private void DuplicateSelected()
     {
-        if (selected == null) return;
-        var clone = WorkflowNode.Create(
-            $"{selected.Type.Replace('.', '-')}-{Guid.NewGuid().ToString()[..8]}",
-            selected.Type, selected.Name + " 副本", (selected.Position.X + 44, selected.Position.Y + 44), nodeTypes.FirstOrDefault(t => t.Text("type") == selected.Type));
-        // #340: 深拷 config。引用赋值会让克隆上的检查器编辑（SetConfig 就地写
-        // Config[key]）静默改写原节点，并被自动保存把两个节点 PATCH 成同一份配置。
-        clone.Config = DeepCopyConfig(selected.Config);
-        nodes.Add(clone);
-        AttachNodeHandlers(clone);
+        var targets = selectedNodes.Count > 0 ? selectedNodes.ToList() : selected is { } one ? [one] : [];
+        if (targets.Count == 0) return;
+        WorkflowNode? last = null;
+        selectedNodes.Clear();
+        foreach (var source in targets)
+        {
+            var clone = WorkflowNode.Create(
+                $"{source.Type.Replace('.', '-')}-{Guid.NewGuid().ToString()[..8]}",
+                source.Type, source.Name + " 副本", (source.Position.X + 44, source.Position.Y + 44), nodeTypes.FirstOrDefault(t => t.Text("type") == source.Type));
+            clone.Config = DeepCopyConfig(source.Config);
+            nodes.Add(clone);
+            AttachNodeHandlers(clone);
+            selectedNodes.Add(clone);
+            last = clone;
+        }
         PushHistory(Snapshot("复制节点"));
-        Select(clone);
+        selected = last;
+        foreach (var node in nodes) node.SetSelected(selectedNodes.Contains(node));
         ScheduleSave();
         RenderCanvas();
+        RenderInspector();
     }
 
     // #340/#344: 复制节点时的 config 深拷。字典级浅拷不够：condition 等嵌套可变值

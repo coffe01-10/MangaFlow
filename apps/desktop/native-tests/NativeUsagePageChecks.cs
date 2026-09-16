@@ -75,6 +75,13 @@ internal static class NativeUsagePageChecks
             var groups=Field<JsonElement>(view,"summary").Array("groups");
             Click(Desc(view).OfType<Button>().Single(b=>Equals(b.Content,"详情")));
             Require(opened.SequenceEqual(new[]{"a1"}),"detail button routes the selected attempt exactly once");
+            view.AttemptDetailOverride=null;
+            Click(Desc(view).OfType<Button>().Single(b=>Equals(b.Content,"详情")));
+            Require(Field<DrawerOverlay>(view,"attemptDrawer").Open,"attempt details open the in-page drawer");
+            Layout(view,1440,1400);
+            Require(Desc(view).OfType<TextBlock>().Any(t=>t.Text=="调用尝试详情"),"attempt drawer renders the detail title");
+            Click(Desc(view).OfType<Button>().First(b=>System.Windows.Automation.AutomationProperties.GetName(b)=="关闭"));
+            Require(!Field<DrawerOverlay>(view,"attemptDrawer").Open,"closing the drawer returns to the usage page");
             var (days,series)=UsageView.BuildTrend(groups,"amount");
             Require(series.SequenceEqual(new[]{"CNY","USD"}),"currencies remain separate series");
             Require(days.Single(d=>d.Day=="2026-09-10").Calls==0 && days.Single(d=>d.Day=="2026-09-10").Values.Values.All(v=>v==0),"calendar gap is factual zero");
@@ -201,7 +208,7 @@ internal static class NativeUsagePageChecks
             }
             finally{System.Threading.Thread.CurrentThread.CurrentCulture=culture;}
             Console.WriteLine("PASS: usage layouts, 4 KPIs, three trend metrics, currency isolation, calendar gaps, unknown values, budget edit, paginated inline retry, channel parity for summary+attempts (A10), facets dimensions with provider linkage (A12), project retry (A13), partitioned summary/attempts errors (A14), csv contract incl. billed block/escaping/invariant amounts (A11), invalid dates, empty/reload and navigation.");
-            Console.WriteLine("HTTP fixtures/offscreen WPF only. Real backend, CSV file dialog/write, detail modal, native high-DPI and frame timing NOT RUN.");
+            Console.WriteLine("HTTP fixtures/offscreen WPF only. Real backend, CSV file dialog/write, native high-DPI and frame timing NOT RUN.");
         }
         finally{view.Deactivate();}
     }

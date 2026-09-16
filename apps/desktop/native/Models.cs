@@ -70,6 +70,7 @@ public record ProjectItem(string Id, string Name, string Summary, int Pending, i
     public int SelectedPages { get; init; }
     public string ModeLabel { get; init; } = "";
     public string Resolution { get; init; } = "";
+    public int Concurrency { get; init; }
     public string NextSection { get; init; } = "source";
     public string NextLabel { get; init; } = "";
     public string ModeAndResolution => $"{ModeLabel} · {Resolution}";
@@ -104,6 +105,7 @@ public record ProjectItem(string Id, string Name, string Summary, int Pending, i
                 PageCount = row.Number("page_count"),
                 SelectedPages = row.Number("selected_page_count"),
                 Resolution = p.Text("default_resolution"),
+                Concurrency = p.Number("default_concurrency"),
                 NextSection = row.Element("next_action").Text("section", "source"),
                 NextLabel = row.Element("next_action").Text("label"),
                 ModeLabel = p.TextOrNull("workflow_mode") switch
@@ -114,6 +116,7 @@ public record ProjectItem(string Id, string Name, string Summary, int Pending, i
         return new(p.Text("id"), p.Text("name"), "", row.Number("pending_job_count"), row.Number("failed_job_count"))
         {
             Resolution = p.Text("default_resolution"),
+            Concurrency = p.Number("default_concurrency"),
             ModeLabel = p.TextOrNull("workflow_mode") switch
             {
                 "SEMI_AUTO" => "半自动", "AUTO" => "自动", "DIRECTOR" => "导演", var mode => mode ?? "",

@@ -1019,8 +1019,7 @@ public sealed partial class StoryboardView : WorkspaceView
     {
         inspector.Children.Clear();
         if (currentPage == null) return;
-        inspector.Children.Add(InspectorHeading($"P.{currentPage.PageNumber:D3}" + (selected == null ? "" : $" / PANEL {selected.ReadingOrder:D2}"), "分镜导演台",
-            selected == null ? null : Kit.Act("编辑本格", async (_, _) => { if (selected is { } target) await EditPanel(target); }, "Compact")));
+        inspector.Children.Add(InspectorHeading($"P.{currentPage.PageNumber:D3}" + (selected == null ? "" : $" / PANEL {selected.ReadingOrder:D2}"), "分镜导演台", null));
         if (selected == null && selectedBubble == null)
         {
             inspector.Children.Add(Kit.Caption("点击画布中的格子或气泡查看属性。Tab 切换格子，方向键微调，Delete 删除气泡。"));
@@ -1049,11 +1048,62 @@ public sealed partial class StoryboardView : WorkspaceView
         });
         card.Children.Add(Kit.Caption($"阅读序 {panel.ReadingOrder} · 绘制层 Z{panel.ZOrder}" + (panel.Bleed ? " · 出血格" : "") + (panel.Borderless ? " · 无边框" : "")));
         var source = storyboard.Array("panels").FirstOrDefault(p => p.Text("id") == panel.Id);
-        card.Children.Add(InspectorDetail("景别", Labels.ShotType.GetValueOrDefault(panel.ShotType, panel.ShotType)));
-        card.Children.Add(InspectorDetail("角度", Labels.CameraAngle.GetValueOrDefault(panel.CameraAngle, panel.CameraAngle)));
-        card.Children.Add(InspectorDetail("动作", panel.ScriptAction));
-        card.Children.Add(InspectorDetail("背景", source.Text("background")));
-        card.Children.Add(InspectorDetail("道具", string.Join("、", source.Array("props").Select(p => p.ToString())), "无"));
+        ComboBox Combo(IReadOnlyDictionary<string, string> labels, string current)
+        {
+            var box = new ComboBox { Margin = new Thickness(0, 0, 0, 8) };
+            foreach (var (key, label) in labels) box.Items.Add(new ComboBoxItem { Tag = key, Content = label });
+            SelectCombo(box, current);
+            return box;
+        }
+        var shot = Combo(Labels.ShotType, panel.ShotType);
+        System.Windows.Automation.AutomationProperties.SetName(shot, "景别");
+        var angle = Combo(Labels.CameraAngle, panel.CameraAngle);
+        System.Windows.Automation.AutomationProperties.SetName(angle, "镜头角度");
+        var scriptAction = new TextBox { Text = panel.ScriptAction, AcceptsReturn = true, MinHeight = 48, Margin = new Thickness(0, 0, 0, 8) };
+        System.Windows.Automation.AutomationProperties.SetName(scriptAction, "动作与表演");
+        var background = new TextBox { Text = source.Text("background"), AcceptsReturn = true, MinHeight = 40, Margin = new Thickness(0, 0, 0, 8) };
+        System.Windows.Automation.AutomationProperties.SetName(background, "背景");
+        var props = new TextBox { Text = string.Join("、", source.Array("props").Select(p => p.ToString())), Margin = new Thickness(0, 0, 0, 8) };
+        System.Windows.Automation.AutomationProperties.SetName(props, "场景道具");
+        var bleed = new CheckBox { Content = "出血格", IsChecked = panel.Bleed, Margin = new Thickness(0, 4, 0, 0) };
+        var borderless = new CheckBox { Content = "无边框", IsChecked = panel.Borderless, Margin = new Thickness(0, 0, 0, 8) };
+        card.Children.Add(Kit.FieldLabel("景别"));
+        card.Children.Add(shot);
+        card.Children.Add(Kit.FieldLabel("镜头角度"));
+        card.Children.Add(angle);
+        card.Children.Add(Kit.FieldLabel("动作与表演"));
+        card.Children.Add(scriptAction);
+        card.Children.Add(Kit.FieldLabel("背景"));
+        card.Children.Add(background);
+        card.Children.Add(Kit.FieldLabel("场景道具（用逗号分隔）"));
+        card.Children.Add(props);
+        card.Children.Add(bleed);
+        card.Children.Add(borderless);
+        var savePanel = Kit.Act("保存本格", async (_, _) =>
+        {
+            var payload = new Dictionary<string, object?>
+            {
+                ["version"] = source.Number("version"),
+                ["shot_type"] = (shot.SelectedItem as ComboBoxItem)?.Tag as string ?? panel.ShotType,
+                ["camera_angle"] = (angle.SelectedItem as ComboBoxItem)?.Tag as string ?? panel.CameraAngle,
+                ["script_action"] = scriptAction.Text,
+                ["background"] = background.Text,
+                ["props"] = props.Text.Split('、', ',', '，').Select(p => p.Trim()).Where(p => p.Length > 0).ToList(),
+                ["bleed"] = bleed.IsChecked == true,
+                ["borderless"] = borderless.IsChecked == true,
+            };
+            try
+            {
+                await Api.SendAsync($"panels/{panel.Id}", HttpMethod.Patch, payload, cancellation: lifetime.Token);
+                if (currentPage != null) await SelectPageAsync(currentPage, preserveDrafts: true);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                MessageBox.Show(Host, error.Message, "保存本格未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }, "InkButton");
+        savePanel.Margin = new Thickness(0, 4, 0, 8);
+        card.Children.Add(savePanel);
         var presence = source.Element("character_presence");
         var cast = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
         var members = presence.ValueKind == JsonValueKind.Object

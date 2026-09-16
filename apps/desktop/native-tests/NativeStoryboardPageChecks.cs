@@ -53,7 +53,11 @@ internal static class NativeStoryboardPageChecks
             var badges = canvas.Children.OfType<FrameworkElement>().Where(e => Equals(e.Tag, "order-badge")).ToArray();
             Require(badges.Length == 3 && badges.Select(Canvas.GetTop).Distinct().Count() == 2 && badges.All(b => b.ActualWidth > 100), "reading-order labels track each panel after first-fit zoom");
             var texts = NativeParityChecks.Descendants(view).OfType<TextBlock>().Select(t => t.Text).ToArray();
-            Require(texts.Contains("爸爸的灵牌") && texts.Contains("京都，爸爸的灵牌前") && texts.Contains("我 · 实际出镜"), "director readout uses props/background/cast data");
+            Require(texts.Contains("我 · 实际出镜"), "director readout keeps cast data");
+            Require(NativeParityChecks.Descendants(view).OfType<TextBox>().Any(box => box.Text.Contains("京都，爸爸的灵牌前")),
+                "panel inspector shows background inline");
+            Require(NativeParityChecks.Descendants(view).OfType<Button>().Any(button => Equals(button.Content, "保存本格")),
+                "panel inspector has inline save");
             var reads = fixture.Reads; var active = strip.Children.OfType<ToggleButton>().First(); active.IsChecked = false; Click(active);
             Require(active.IsChecked == true && fixture.Reads == reads, "active page click preserves selection without reloading");
             Field<ToggleButton>(view, "focusButton").IsChecked = true; Click(Field<ToggleButton>(view, "focusButton")); Layout(view, 1320, 900);

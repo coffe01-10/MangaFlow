@@ -46,6 +46,24 @@ internal static class NativeIssue426Checks
         }
     }
 
+    // --interaction 已在外层 DispatcherFrame 上。再套一层 PushFrame 会让
+    // MessageBox / 在途 PATCH 把外层 60s 计时器停住。调用方应 await 本方法。
+    internal static async Task RunAsync(string output)
+    {
+        var previous = (string)typeof(KeyValueStore).GetField("path", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        Directory.CreateDirectory(output);
+        var prefs = Path.Combine(output, "issue426-test-prefs.json");
+        File.WriteAllText(prefs, "{}");
+        KeyValueStore.UseLocation(prefs);
+        try { await CheckAsync(); }
+        finally
+        {
+            KeyValueStore.UseLocation(previous);
+            File.Delete(prefs);
+            File.Delete(prefs + ".tmp");
+        }
+    }
+
     // 独立运行（进程里还没有 Application）：自建 STA 线程 + Application/Theme
     //（NativeSceneChecks 的模式）。Application 是 AppDomain 级单例，本方法每
     // 进程至多走一次；已有 Application 时走 RunFrame 的调用方线程。

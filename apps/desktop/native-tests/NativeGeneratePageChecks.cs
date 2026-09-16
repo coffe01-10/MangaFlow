@@ -42,6 +42,8 @@ internal static class NativeGeneratePageChecks
         {
             view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = new ProjectItem("layout", "我最讨厌妹妹了", "", 0, 0), NavigateSection = (s, q) => { destination = s + "?" + q; return Task.CompletedTask; }, OpenDashboard = () => Task.CompletedTask });
             await Until(() => Field<JsonElement>(view, "workbench").ValueKind == JsonValueKind.Object); Layout(view, 1240, 1800);
+            Require(Texts(view).Contains("本页主场景将进入生成输入") && Texts(view).Any(text => text.Contains("京都老宅")),
+                "scene inheritance card shows the bound page scene asset");
             Require(Texts(view).Contains("第 1 页候选") && Texts(view).Contains("130 字") && Texts(view).Contains(fixture.Source), "header and source strip use current workbench data");
             Require(Field<WrapPanel>(view, "pageBar").Children.Count == 11 && Field<WrapPanel>(view, "pageBar").Children.OfType<ToggleButton>().All(b => b.MinWidth == 42), "page picker uses compact numbered squares");
             var diagnostics = Desc(view).OfType<Expander>().Single(e => Equals(e.Header, "查看原文覆盖、供应商目录与执行器诊断"));
@@ -115,7 +117,7 @@ internal static class NativeGeneratePageChecks
         internal bool Ready = true, FailBatch, ShowCandidates;
         internal TaskCompletionSource<bool>? HoldBatch;
         internal JsonElement GenerationBody;
-        private object Page(int n) => new { id = $"pg-{n}", chapter_id = "ch", page_number = n, panel_count = 3, storyboard_version = 7, estimated_text_chars = 130, estimated_bubbles = 3, continuity_status = "NEEDS_REVIEW", source_coverage = new { ranges = new[] { new { text = Source } } } };
+        private object Page(int n) => new { id = $"pg-{n}", chapter_id = "ch", page_number = n, panel_count = 3, storyboard_version = 7, estimated_text_chars = 130, estimated_bubbles = 3, continuity_status = "NEEDS_REVIEW", scene_ids = new[] { "sc-1" }, source_coverage = new { ranges = new[] { new { text = Source } } } };
         private static object Batch(int n) => new { id = $"batch-{n}", ordinal = n, status = "COMPLETED" };
         private static HttpResponseMessage Json(object data) => new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(data)) };
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -126,6 +128,8 @@ internal static class NativeGeneratePageChecks
                 if (path.EndsWith("/chapters")) return Json(new[] { new { id = "ch", title = "第一章", ordinal = 1, page_count = 11 } });
                 if (path.EndsWith("/models")) return Json(new[] { new { logical_alias = "model-a", model_type = "IMAGE", enabled = true, display_enabled = true, display_name = "Codex CLI ImageGen", provider = "Codex CLI", model_id = "codex-imagegen", operations = new[] { "image_edit" } }, new { logical_alias = "model-b", model_type = "IMAGE", enabled = true, display_enabled = true, display_name = "Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)", provider = "OpenRouter", model_id = "google/gemini-3.1-flash-image-preview", operations = new[] { "image_edit" } } });
                 if (path.EndsWith("/pages")) return Json(Enumerable.Range(1, 11).Select(Page).ToArray());
+                if (path.EndsWith("/script")) return Json(new { scenes = new[] { new { id = "sc-1", ordinal = 1, location = "京都，爸爸的灵牌前", scene_asset_id = "asset1", scene_asset_variant_id = "rain" } } });
+                if (path.EndsWith("/scene-assets")) return Json(new[] { new { id = "asset1", name = "京都老宅", deleted_at = (string?)null, variants = new[] { new { id = "rain", name = "小雨", deleted_at = (string?)null } } } });
                 if (path.EndsWith("/batches")) return Json(Enumerable.Range(1, Latest).Select(Batch).ToArray());
                 if (path.EndsWith("/generation-workbench"))
                 {

@@ -37,6 +37,9 @@ public sealed partial class SettingsView : WorkspaceView
     private List<JsonElement> providers = [];
     private List<JsonElement> catalog = [];
     private readonly Dictionary<string, bool> expanded = new();
+    private readonly HashSet<string> collapsedGroups = [];
+    private bool createFormOpen;
+    private readonly StackPanel createFormHost = new();
     private string search = "";
 
     /// <summary>
@@ -156,7 +159,7 @@ public sealed partial class SettingsView : WorkspaceView
             value => sort = value);
         sortFilter.Margin = new Thickness(0, 0, 10, 6);
         filters.Children.Add(sortFilter);
-        var add = Kit.Act("＋ 添加供应商", (_, _) => new ProviderCreateDialog(this).ShowDialog(), "CompactInk");
+        var add = Kit.Act("＋ 添加供应商", (_, _) => ToggleCreateForm(), "CompactInk");
         add.Margin = new Thickness(0, 0, 6, 6);
         filters.Children.Add(add);
         var jump = Kit.Act("跳到结果", (_, _) =>
@@ -169,6 +172,7 @@ public sealed partial class SettingsView : WorkspaceView
         jump.Margin = new Thickness(0, 0, 6, 6);
         filters.Children.Add(jump);
         panel.Children.Add(filters);
+        panel.Children.Add(createFormHost);
         panel.Children.Add(new TextBlock
         {
             Text = "可添加兼容连接；账号型凭据由服务端环境管理，CLI 登录由外部工具管理，Key 型连接在各自连接卡内录入。",
@@ -312,13 +316,114 @@ public sealed partial class SettingsView : WorkspaceView
                 _ => visible.Where(p => !p.Flag("enabled")).ToList(),
             };
             if (members.Count == 0) continue;
-            providerList.Children.Add(new TextBlock
+            var collapsed = collapsedGroups.Contains(key);
+            var header = new Button
             {
-                Text = $"{label} · {members.Count}", Style = (Style)Application.Current.FindResource("SectionIndex"),
+                Content = $"{(collapsed ? "▸" : "▾")} {label} · {members.Count}",
+                Style = (Style)Application.Current.FindResource("Ghost"),
+                HorizontalAlignment = HorizontalAlignment.Left,
                 Margin = new Thickness(0, 14, 0, 8),
-            });
+                Padding = new Thickness(0, 2, 8, 2),
+            };
+            System.Windows.Automation.AutomationProperties.SetName(header, label);
+            var groupKey = key;
+            header.Click += async (_, _) =>
+            {
+                if (!collapsed && !await ConfirmDiscardConnectionDrafts("收起该分组")) return;
+                if (collapsedGroups.Contains(groupKey)) collapsedGroups.Remove(groupKey);
+                else collapsedGroups.Add(groupKey);
+                RenderProviders();
+            };
+            providerList.Children.Add(header);
+            if (collapsed) continue;
             foreach (var provider in members) providerList.Children.Add(new ProviderCard(this, provider, catalog, expanded, hidden, verified, modelType, capability));
         }
+    }
+
+    private void ToggleCreateForm()
+    {
+        createFormOpen = !createFormOpen;
+        RenderCreateForm();
+    }
+
+    private void RenderCreateForm()
+    {
+        createFormHost.Children.Clear();
+        if (!createFormOpen) return;
+        createFormHost.Children.Add(BuildInlineCreateForm());
+    }
+
+    private FrameworkElement BuildInlineCreateForm()
+    {
+        var name = new TextBox();
+        System.Windows.Automation.AutomationProperties.SetName(name, "供应商名称");
+        var protocol = new ComboBox();
+        protocol.Items.Add(new ComboBoxItem { Tag = "OPENAI", Content = "OpenAI 协议" });
+        protocol.Items.Add(new ComboBoxItem { Tag = "ANTHROPIC", Content = "Anthropic 协议" });
+        protocol.SelectedIndex = 0;
+        var baseUrl = new TextBox();
+        System.Windows.Automation.AutomationProperties.SetName(baseUrl, "Base URL");
+        var responses = new CheckBox { Content = "文本优先使用 Responses API", Margin = new Thickness(0, 4, 0, 0) };
+        var error = new TextBlock { Foreground = (Brush)Application.Current.FindResource("Danger"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0) };
+        var submit = new Button { Content = "创建", Style = (Style)Application.Current.FindResource("InkButton"), MinWidth = 110 };
+        var cancel = new Button { Content = "取消", MinWidth = 96, Margin = new Thickness(0, 0, 10, 0) };
+        cancel.Click += (_, _) => { createFormOpen = false; RenderCreateForm(); };
+        bool ValidUrl(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+            if (uri.Scheme is not ("http" or "https")) return false;
+            if (uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0) return false;
+            if (uri.Scheme == "https") return uri.Host.Length > 0;
+            return uri.Host is "localhost" or "127.0.0.1";
+        }
+        submit.Click += async (_, _) =>
+        {
+            var providerName = name.Text.Trim();
+            var url = baseUrl.Text.Trim();
+            if (providerName.Length == 0) { error.Text = "请填写供应商名称。"; return; }
+            if (url.Length == 0 || !ValidUrl(url)) { error.Text = "供应商 Base URL 必须是 HTTP(S) 地址"; return; }
+            submit.IsEnabled = false;
+            try
+            {
+                await Api.SendAsync("providers", HttpMethod.Post, new
+                {
+                    name = providerName,
+                    protocol = (protocol.SelectedItem as ComboBoxItem)?.Tag as string ?? "OPENAI",
+                    base_url = url,
+                    use_responses_api = responses.IsChecked == true,
+                }, cancellation: lifetime.Token);
+                createFormOpen = false;
+                RenderCreateForm();
+                OnProvidersChanged();
+            }
+            catch (Exception reason)
+            {
+                error.Text = reason.Message;
+                submit.IsEnabled = true;
+            }
+        };
+        var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 16) };
+        panel.Children.Add(new TextBlock { Text = "添加供应商", FontWeight = FontWeights.SemiBold, FontSize = 16 });
+        panel.Children.Add(new TextBlock { Text = "可添加 OpenAI / Anthropic 兼容连接。", Style = (Style)Application.Current.FindResource("Caption"), Margin = new Thickness(0, 4, 0, 10) });
+        panel.Children.Add(new TextBlock { Text = "供应商名称", Style = (Style)Application.Current.FindResource("FieldLabel") });
+        panel.Children.Add(name);
+        panel.Children.Add(new TextBlock { Text = "协议", Style = (Style)Application.Current.FindResource("FieldLabel"), Margin = new Thickness(0, 10, 0, 4) });
+        panel.Children.Add(protocol);
+        panel.Children.Add(new TextBlock { Text = "Base URL", Style = (Style)Application.Current.FindResource("FieldLabel"), Margin = new Thickness(0, 10, 0, 4) });
+        panel.Children.Add(baseUrl);
+        panel.Children.Add(responses);
+        panel.Children.Add(error);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
+        actions.Children.Add(cancel);
+        actions.Children.Add(submit);
+        panel.Children.Add(actions);
+        return new Border
+        {
+            BorderBrush = (Brush)Application.Current.FindResource("Line"),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(16),
+            Child = panel,
+        };
     }
 
     internal bool MatchesSearch(JsonElement provider)
@@ -326,9 +431,31 @@ public sealed partial class SettingsView : WorkspaceView
         if (search.Length == 0) return true;
         if (provider.Text("name").ToLowerInvariant().Contains(search)) return true;
         if (provider.Text("preset_key").ToLowerInvariant().Contains(search)) return true;
-        foreach (var connection in provider.Array("connections"))
+        var connections = provider.Array("connections");
+        foreach (var connection in connections)
         {
             if (connection.Text("protocol").ToLowerInvariant().Contains(search)) return true;
+            if (connection.Text("name").ToLowerInvariant().Contains(search)) return true;
+        }
+        var connectionIds = new HashSet<string>(
+            connections.Select(connection => connection.Text("id")).Where(id => id.Length > 0));
+        var providerName = provider.Text("name");
+        var preset = provider.Text("preset_key");
+        foreach (var model in catalog)
+        {
+            var ownerConnection = model.Text("connection_id");
+            var owner = model.Text("provider");
+            // 网页 providerMatchesQuery 用 connection_id 归属；没有 connection_id
+            // 的目录才回落到 provider/preset。空归属不得匹配全部供应商。
+            var belongs = ownerConnection.Length > 0
+                ? connectionIds.Contains(ownerConnection)
+                : owner.Length > 0 && (owner == providerName || owner == preset);
+            if (!belongs) continue;
+            if (model.Text("display_name").ToLowerInvariant().Contains(search)) return true;
+            if (model.Text("logical_alias").ToLowerInvariant().Contains(search)) return true;
+            if (model.Text("model_id").ToLowerInvariant().Contains(search)) return true;
+            if (model.Text("catalog_id").ToLowerInvariant().Contains(search)) return true;
+            if (model.Text("provider_model_id").ToLowerInvariant().Contains(search)) return true;
         }
         return false;
     }
@@ -1375,85 +1502,4 @@ internal sealed class ModelRow : Border
     }
 }
 
-internal sealed class ProviderCreateDialog : Window
-{
-    public ProviderCreateDialog(SettingsView owner)
-    {
-        var parent = owner;
-        Owner = parent.Host;
-        Title = "添加供应商";
-        Width = 470;
-        SizeToContent = SizeToContent.Height;
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        ShowInTaskbar = false;
-        Background = (Brush)Application.Current.FindResource("Paper");
-        var name = new TextBox();
-        System.Windows.Automation.AutomationProperties.SetName(name, "供应商名称");
-        var protocol = new ComboBox();
-        protocol.Items.Add(new ComboBoxItem { Tag = "OPENAI", Content = "OpenAI 协议" });
-        protocol.Items.Add(new ComboBoxItem { Tag = "ANTHROPIC", Content = "Anthropic 协议" });
-        protocol.SelectedIndex = 0;
-        var baseUrl = new TextBox();
-        System.Windows.Automation.AutomationProperties.SetName(baseUrl, "Base URL");
-        var responses = new CheckBox { Content = "文本优先使用 Responses API", Margin = new Thickness(0, 4, 0, 0) };
-        var error = new TextBlock { Foreground = (Brush)Application.Current.FindResource("Danger"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0) };
-        var submit = new Button { Content = "创建", Style = (Style)Application.Current.FindResource("InkButton"), MinWidth = 110 };
-        var cancel = new Button { Content = "取消", MinWidth = 96, Margin = new Thickness(0, 0, 10, 0) };
-        cancel.Click += (_, _) => Close();
-        bool ValidUrl(string url)
-        {
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
-            if (uri.Scheme is not ("http" or "https")) return false;
-            if (uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0) return false;
-            if (uri.Scheme == "https") return uri.Host.Length > 0;
-            return uri.Host is "localhost" or "127.0.0.1";
-        }
-        submit.Click += async (_, _) =>
-        {
-            var providerName = name.Text.Trim();
-            var url = baseUrl.Text.Trim();
-            if (providerName.Length == 0) { error.Text = "请填写供应商名称。"; return; }
-            if (url.Length == 0 || !ValidUrl(url)) { error.Text = "供应商 Base URL 必须是 HTTP(S) 地址"; return; }
-            submit.IsEnabled = false;
-            try
-            {
-                await parent.Api.SendAsync("providers", HttpMethod.Post, new
-                {
-                    name = providerName,
-                    protocol = (protocol.SelectedItem as ComboBoxItem)?.Tag as string ?? "OPENAI",
-                    base_url = url,
-                    use_responses_api = responses.IsChecked == true,
-                });
-                parent.OnProvidersChanged();
-                Close();
-            }
-            catch (Exception reason)
-            {
-                error.Text = reason.Message;
-                submit.IsEnabled = true;
-            }
-        };
-        var panel = new StackPanel { Margin = new Thickness(26) };
-        panel.Children.Add(new TextBlock
-        {
-            Text = "添加供应商", FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 21, FontWeight = FontWeights.SemiBold,
-        });
-        panel.Children.Add(new TextBlock { Text = "可添加 OpenAI / Anthropic 兼容连接。", Style = (Style)Application.Current.FindResource("Caption"), Margin = new Thickness(0, 6, 0, 16) });
-        panel.Children.Add(new TextBlock { Text = "供应商名称", Style = (Style)Application.Current.FindResource("FieldLabel") });
-        panel.Children.Add(name);
-        panel.Children.Add(new TextBlock { Text = "协议", Style = (Style)Application.Current.FindResource("FieldLabel"), Margin = new Thickness(0, 12, 0, 6) });
-        panel.Children.Add(protocol);
-        panel.Children.Add(new TextBlock { Text = "Base URL", Style = (Style)Application.Current.FindResource("FieldLabel"), Margin = new Thickness(0, 12, 0, 6) });
-        panel.Children.Add(baseUrl);
-        panel.Children.Add(responses);
-        panel.Children.Add(error);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0) };
-        actions.Children.Add(cancel);
-        actions.Children.Add(submit);
-        panel.Children.Add(actions);
-        Content = panel;
-        Loaded += (_, _) => name.Focus();
-        PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
-    }
-}
+

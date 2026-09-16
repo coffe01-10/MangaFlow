@@ -47,10 +47,11 @@ internal static class NativeScriptPageChecks
             assets.SelectedItem = assets.Items.OfType<ComboBoxItem>().Single(i => Equals(i.Tag, "asset1"));
             Require(variants.Items.OfType<ComboBoxItem>().Any(i => Equals(i.Tag, "rain")), "asset selection refreshes its variants");
             Require(!variants.Items.OfType<ComboBoxItem>().Any(i => Equals(i.Tag, "archived")), "archived variants remain unavailable");
+            fixture.HoldBind = new TaskCompletionSource<bool>();
             variants.SelectedItem = variants.Items.OfType<ComboBoxItem>().Single(i => Equals(i.Tag, "rain"));
-            fixture.HoldBind = new TaskCompletionSource<bool>(); var bind = Button(Scene(), "保存绑定"); Click(bind); Click(bind);
-            await Until(() => fixture.Binds == 1); Require(!bind.IsEnabled, "binding double click is guarded");
-            fixture.HoldBind.SetResult(true); await Until(() => bind.IsEnabled); fixture.HoldBind = null;
+            await Until(() => fixture.Binds == 1);
+            fixture.HoldBind.SetResult(true);
+            fixture.HoldBind = null;
             Require(fixture.LastBind.Text("scene_asset_variant_id") == "rain", "selected variant id reaches binding API");
             Render(view, 650, 1450, Path.Combine(output, "native-script-650.png"));
             Require(Desc(Scene()).OfType<ComboBox>().All(c => c.ActualWidth <= 630), "binding selectors fit narrow window");
