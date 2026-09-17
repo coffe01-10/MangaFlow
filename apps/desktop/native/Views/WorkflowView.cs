@@ -710,7 +710,21 @@ public sealed partial class WorkflowView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            statusLine.Text = $"工作流载入失败：{error.Message}";
+            // 载入失败时画布仍是旧工作流的图（canvasWorkflowId 未动）。调用方在
+            // await 之前已把 workflowId/选择器拨到新工作流：不回滚的话防抖回调的
+            // 身份检查（armed == workflowId == canvasWorkflowId）从此恒假，画布上
+            // 的后续编辑被静默丢弃；发布/校验/运行也会打到画布之外的错误目标。
+            // 与切换 flush 失败路径（BuildToolbar 的回滚）对称。仅在失败的是最新
+            // 请求时回滚——A→B→C 快速切换里 B 的失败不该打扰在途的 C。
+            if (requestVersion == workflowLoadVersion && canvasWorkflowId.Length > 0 && workflowId != canvasWorkflowId)
+            {
+                workflowId = canvasWorkflowId;
+                SelectWorkflowItem(canvasWorkflowId);
+                statusLine.Text = $"工作流载入失败：{error.Message.Split('\n')[0]}；已停留在当前画布对应的工作流";
+                _ = LoadVersionsAsync(canvasWorkflowId, workflowLoadVersion);
+            }
+            else
+                statusLine.Text = $"工作流载入失败：{error.Message.Split('\n')[0]}";
         }
     }
 
@@ -726,6 +740,8 @@ public sealed partial class WorkflowView : WorkspaceView
         draftPositions.Clear();
         selected = null;
         selectedEdgeKey = null;
+        // 旧工作流的选中集合不可跨工作流存活：新图重建后同样只剩"不可见选中"。
+        selectedNodes.Clear();
         var graph = current.Element("draft_graph");
         foreach (var row in graph.Array("nodes"))
         {
@@ -840,12 +856,14 @@ public sealed partial class WorkflowView : WorkspaceView
         var restoreToken = workflowLoadVersion;
         var pending = autosave is { Enabled: true };
         autosave?.Stop();
+        var succeeded = false;
         try
         {
             var restored = await Api.SendAsync($"workflow-versions/{versionId}/restore", HttpMethod.Post,
                 new { version }, cancellation: lifetime.Token);
             if (restoreToken != workflowLoadVersion || restoreFor != canvasWorkflowId) return;
             CommitLoadedWorkflow(restored, restoreFor);
+            succeeded = true;
             statusLine.Text = $"已恢复发布版本到草稿（V{version}）";
             _ = LoadRunsAsync();
             _ = LoadVersionsAsync(restoreFor, restoreToken);
@@ -868,8 +886,11 @@ public sealed partial class WorkflowView : WorkspaceView
         finally
         {
             restoring = false;
-            if (pending && restoreToken == workflowLoadVersion && restoreFor == canvasWorkflowId
-                && statusLine.Text.Contains("失败", StringComparison.Ordinal))
+            // 恢复失败（含 409）时画布仍是用户编辑中的图：必须重臂防抖，否则待存
+            // 编辑从此无人落盘。成败只认 succeeded 标志——409 分支的状态行首行是
+            // ApiClient 统一前缀"数据已变化或操作条件不满足…"，按文本嗅探"失败"
+            // 永远为假，曾经导致防抖被永久解除武装后静默丢编辑。
+            if (pending && !succeeded && restoreToken == workflowLoadVersion && restoreFor == canvasWorkflowId)
                 ScheduleSave();
             RenderVersionList();
         }
@@ -1481,6 +1502,9 @@ public sealed partial class WorkflowView : WorkspaceView
                 edges.Add(new WorkflowEdge(row.Text("source_node"), row.Text("source_port"), row.Text("target_node"), row.Text("target_port")));
             selected = null;
             selectedEdgeKey = null;   // 快照回放后原选中连线多半已不存在，避免悬空引用
+            // 重建后的节点全是新对象：残留的旧 selectedNodes 会造成"不可见选中"——
+            // 删除键/删除按钮仍按 id 删掉用户看不见选中态的节点，复制则克隆旧配置。
+            selectedNodes.Clear();
             RenderCanvas();
             RenderInspector();
         }
@@ -1640,9 +1664,16 @@ public sealed partial class WorkflowView : WorkspaceView
             statusLine.Text = "校验已取消：草稿保存未完成";
             return;
         }
+        // 动作目标一律取画布归属（与保存核同源）：切换/载入在途窗口里 workflowId
+        // 已指向新工作流而画布还是旧图，按 workflowId 发请求会把旧图提交到新工作流。
+        if (canvasWorkflowId.Length == 0)
+        {
+            statusLine.Text = "校验已取消：画布未载入工作流";
+            return;
+        }
         try
         {
-            var report = await Api.SendAsync($"workflows/{workflowId}/validate", HttpMethod.Post, cancellation: lifetime.Token);
+            var report = await Api.SendAsync($"workflows/{canvasWorkflowId}/validate", HttpMethod.Post, cancellation: lifetime.Token);
             var issues = report.Array("issues");
             var errors = issues.Count(i => i.Text("severity") == "ERROR");
             var warnings = issues.Count - errors;
@@ -1668,12 +1699,19 @@ public sealed partial class WorkflowView : WorkspaceView
             State.Status = "工作流发布已阻止：草稿保存未完成";
             return;
         }
+        // 目标取画布归属（同校验/运行）：切换在途窗口里按 workflowId 发布会把
+        // 另一个工作流的旧服务端草稿固化为不可变版本。
+        if (canvasWorkflowId.Length == 0)
+        {
+            statusLine.Text = "发布已取消：画布未载入工作流";
+            return;
+        }
         try
         {
-            await Api.SendAsync($"workflows/{workflowId}/publish", HttpMethod.Post, cancellation: lifetime.Token);
+            await Api.SendAsync($"workflows/{canvasWorkflowId}/publish", HttpMethod.Post, cancellation: lifetime.Token);
             statusLine.Text = "已发布不可变版本";
             State.Status = "工作流版本已发布";
-            await LoadVersionsAsync(workflowId, workflowLoadVersion);
+            await LoadVersionsAsync(canvasWorkflowId, workflowLoadVersion);
         }
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -1761,7 +1799,14 @@ public sealed partial class WorkflowView : WorkspaceView
         try
         {
             var scope = (scopeType.SelectedItem as ComboBoxItem)?.Tag as string ?? "CHAPTER";
-            await Api.SendAsync($"workflows/{workflowId}/runs", HttpMethod.Post, new
+            // 目标取画布归属（同发布/校验）：start/stop 节点 id 来自当前画布，
+            // 提交给另一个工作流只会得到 422 或错误的运行图。
+            if (canvasWorkflowId.Length == 0)
+            {
+                statusLine.Text = "运行未启动：画布未载入工作流";
+                return;
+            }
+            await Api.SendAsync($"workflows/{canvasWorkflowId}/runs", HttpMethod.Post, new
             {
                 scope_type = scope, scope_id = scopeId,
                 start_node_ids = startNodes.Where(s => s.Length > 0).ToList(),

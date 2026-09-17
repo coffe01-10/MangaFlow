@@ -59,6 +59,9 @@ internal static class NativeWorkflowRunChecks
             await VersionRestoreChecks();
             await VersionListFailureChecks();
             await VersionStaleResponseChecks();
+            await RestoreConflictReArmChecks();
+            await LoadFailureRollbackChecks();
+            await ActionTargetsCanvasChecks();
         }
         catch (Exception error)
         {
@@ -1135,6 +1138,232 @@ internal static class NativeWorkflowRunChecks
         finally
         {
             gate.TrySetResult(Response("[]"));
+            StopAutosave(view);
+        }
+    }
+
+    // ── R1 回归（恢复失败重臂）：恢复版本 409 后防抖必须重臂。旧实现按状态行
+    // 文本嗅探"失败"——ApiClient 给 409 统一前置"数据已变化或操作条件不满足…"
+    // 前缀，Split('\n')[0] 永远不含"失败"，pending 编辑从此无人落盘直到进程退出。 ──
+    private static async Task RestoreConflictReArmChecks()
+    {
+        var workflowJson = """
+            {"id":"wf-rc","name":"流程","version":5,"draft_version":2,
+             "draft_graph":{"schema_version":2,"nodes":[{"id":"draft-node","type":"agent.parse","name":"草稿节点","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{"model_alias":"auto","temperature":0.2,"notes":""}}],"edges":[]}}
+            """;
+        var restores = 0;
+        var patches = 0;
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-rc"))
+            {
+                patches++;
+                return Task.FromResult(Response("""{"id":"wf-rc","name":"流程","version":10,"draft_version":5,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            }
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-rc","name":"流程"}]"""));
+            if (path.EndsWith("/projects/p1/chapters") || path.EndsWith("/models") || path.EndsWith("/runs"))
+                return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-rc/versions"))
+                return Task.FromResult(Response("""[{"id":"ver-r1","workflow_id":"wf-rc","revision":3,"published_at":"2026-08-27T00:00:00Z"}]"""));
+            if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-rc"))
+                return Task.FromResult(Response(workflowJson));
+            if (path.EndsWith("/workflow-versions/ver-r1/restore") && request.Method == HttpMethod.Post)
+            {
+                restores++;
+                return Task.FromResult(Response(
+                    """{"detail":"数据已变化或操作条件不满足。请刷新后重试。\n工作流已被其他页面修改"}""",
+                    HttpStatusCode.Conflict));
+            }
+            throw new Exception("Unexpected rearm-check request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.RestoreConfirmOverride = _ => Task.FromResult(true);
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "重臂检查", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => NodeNames(view).Contains("草稿节点")
+                && Field<StackPanel>(view, "versionList").Children.OfType<Button>().Any(button => Name(button) == "V3"));
+            // 武装防抖（等价一次编辑），确认框立即通过，恢复 409（首行是固定前缀）。
+            Select(view, NodeById(view, "draft-node"));
+            Box(view, "温度")!.Text = "0.9";
+            Require(typeof(WorkflowView).GetField("autosave", All)!.GetValue(view) as System.Timers.Timer is { Enabled: true },
+                "编辑后防抖计时器应已武装");
+            workflowJson = workflowJson.Replace("\"version\":5", "\"version\":9");   // RefreshWorkflowVersionAsync 重取到的服务端新版本
+            Field<StackPanel>(view, "versionList").Children.OfType<Button>().Single(button => Name(button) == "V3")
+                .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Until(() => restores == 1);
+            // 版本同步（9）与重臂后的防抖保存（PATCH 推进到 10）存在先后竞态，只要求
+            // 二者之一已生效：>= 9 足以证明 409 分支的版本刷新路径执行过。
+            await Until(() => Field<int>(view, "version") >= 9);
+            Require(typeof(WorkflowView).GetField("autosave", All)!.GetValue(view) as System.Timers.Timer is { Enabled: true },
+                "409 恢复失败后防抖未重臂：待存编辑从此无人落盘（旧实现按状态行文本嗅探\"失败\"恒假）");
+            await Until(() => patches >= 1);   // 重臂后的防抖必须真的把 wf-rc 的编辑落盘
+            view.Deactivate();
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+    }
+
+    // ── R1 回归（载入失败回滚 + 切换清选中）：切到乙流程但 GET 乙 500 时，必须把
+    // workflowId/选择器回滚到画布归属甲——旧实现只写状态行，防抖身份检查从此恒假，
+    // 画布上的编辑被静默丢弃、发布/校验/运行打到画布之外的目标。伴生：成功切换后
+    // selectedNodes 必须清空（残留旧对象＝"不可见选中"的删除/复制）。 ──
+    private static async Task LoadFailureRollbackChecks()
+    {
+        var wf1Json = """
+            {"id":"wf-lf1","name":"甲流程","version":5,"draft_version":2,"draft_graph":{"schema_version":2,"nodes":[{"id":"a-node","type":"agent.parse","name":"甲","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{"model_alias":"auto","temperature":0.2,"notes":""}}],"edges":[]}}
+            """;
+        var wf2Json = """
+            {"id":"wf-lf2","name":"乙流程","version":3,"draft_version":1,"draft_graph":{"schema_version":2,"nodes":[{"id":"b-node","type":"agent.parse","name":"乙","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{"model_alias":"auto","temperature":0.5,"notes":""}}],"edges":[]}}
+            """;
+        var failWf2Load = true;
+        var wf1Patches = 0;
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-lf1"))
+            {
+                wf1Patches++;
+                return Task.FromResult(Response("""{"id":"wf-lf1","name":"甲流程","version":6,"draft_version":3,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            }
+            if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-lf2"))
+                return Task.FromResult(Response("""{"id":"wf-lf2","name":"乙流程","version":4,"draft_version":2,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-lf1","name":"甲流程"},{"id":"wf-lf2","name":"乙流程"}]"""));
+            if (path.EndsWith("/projects/p1/chapters") || path.EndsWith("/models") || path.EndsWith("/runs"))
+                return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-lf1/versions") || path.EndsWith("/workflows/wf-lf2/versions"))
+                return Task.FromResult(Response("[]"));
+            if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-lf2"))
+            {
+                if (failWf2Load)
+                    return Task.FromResult(Response("""{"detail":"乙流程载入 500"}""", HttpStatusCode.InternalServerError));
+                return Task.FromResult(Response(wf2Json));
+            }
+            if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-lf1"))
+                return Task.FromResult(Response(wf1Json));
+            throw new Exception("Unexpected rollback-check request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "载入失败回滚", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => Field<string>(view, "workflowId") == "wf-lf1" && NodeNames(view).Contains("甲"));
+            var selector = Field<ComboBox>(view, "workflowSelector");
+            // 乙流程载入 500：切换 flush 甲成功后回滚到甲。
+            selector.SelectedItem = selector.Items.OfType<ComboBoxItem>().Single(item => (string?)item.Tag == "wf-lf2");
+            await Until(() => Field<string>(view, "workflowId") == "wf-lf1"
+                && (selector.SelectedItem as ComboBoxItem)?.Tag as string == "wf-lf1");
+            Require(NodeNames(view).Contains("甲") && !NodeNames(view).Contains("乙"),
+                "载入失败不得动当前画布（仍是甲的图）");
+            Require(Field<TextBlock>(view, "statusLine").Text.Contains("已停留在当前画布对应的工作流"),
+                "载入失败回滚后应提示已停留在画布对应的工作流");
+            Require(Field<string>(view, "canvasWorkflowId") == "wf-lf1", "画布归属不应被失败载入改写");
+            // 回滚后画布上的新编辑必须还能落盘（旧实现：身份恒假→静默丢弃）。
+            Select(view, NodeById(view, "a-node"));
+            Box(view, "温度")!.Text = "0.9";
+            await Until(() => wf1Patches >= 2);   // 切换 flush 一次 + 回滚后的编辑一次
+            // 成功切换必须清空 selectedNodes（DN-04：残留＝不可见选中）。
+            failWf2Load = false;
+            selector.SelectedItem = selector.Items.OfType<ComboBoxItem>().Single(item => (string?)item.Tag == "wf-lf2");
+            await Until(() => Field<string>(view, "workflowId") == "wf-lf2" && NodeNames(view).Contains("乙"));
+            Require(((System.Collections.IEnumerable)typeof(WorkflowView).GetField("selectedNodes", All)!.GetValue(view)!).Cast<object>().Count() == 0,
+                "切换工作流后 selectedNodes 残留旧节点对象（不可见选中的删除/复制）");
+            view.Deactivate();
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+    }
+
+    // ── R1 回归（动作目标取画布归属）：切换在途窗口（workflowId 已是乙、画布仍是
+    // 甲的图）内点发布，POST 必须打到甲——旧实现读 workflowId，会把乙的旧服务端
+    // 草稿固化为不可变发布版本。 ──
+    private static async Task ActionTargetsCanvasChecks()
+    {
+        var aGraph = """
+            {"schema_version":2,"nodes":[{"id":"a-node","type":"agent.parse","name":"甲","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{"model_alias":"auto","temperature":0.2,"notes":""}}],"edges":[]}
+            """;
+        var bGraph = """
+            {"schema_version":2,"nodes":[{"id":"b-node","type":"agent.parse","name":"乙","position":{"x":10,"y":20},"inputs":[],"outputs":[],"config":{"model_alias":"auto","temperature":0.5,"notes":""}}],"edges":[]}
+            """;
+        var getB = 0;
+        var publishPath = "";
+        var bLoadGate = new TaskCompletionSource<HttpResponseMessage>();
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(async request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-ac1"))
+                return Response("""{"id":"wf-ac1","name":"甲","version":6,"draft_version":2,"draft_graph":{"nodes":[],"edges":[]}}""");
+            if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-ac2"))
+                return Response("""{"id":"wf-ac2","name":"乙","version":4,"draft_version":2,"draft_graph":{"nodes":[],"edges":[]}}""");
+            if (request.Method == HttpMethod.Post && path.EndsWith("/publish"))
+            {
+                publishPath = path;
+                return Response("""{"id":"ver-x","revision":1}""");
+            }
+            if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-ac1"))
+                return Response($"{{\"id\":\"wf-ac1\",\"name\":\"甲\",\"version\":5,\"draft_version\":1,\"draft_graph\":{aGraph}}}");
+            if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-ac2"))
+            {
+                getB++;
+                if (getB == 1) return await bLoadGate.Task;   // 制造"已切换、未载入"窗口
+                return Response($"{{\"id\":\"wf-ac2\",\"name\":\"乙\",\"version\":3,\"draft_version\":1,\"draft_graph\":{bGraph}}}");
+            }
+            if (path.EndsWith("/workflow-node-types")) return Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]""");
+            if (path.EndsWith("/projects/p1/workflows")) return Response(
+                """[{"id":"wf-ac1","name":"甲","version":5,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}},{"id":"wf-ac2","name":"乙","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]""");
+            if (path.EndsWith("/projects/p1/chapters")) return Response("[]");
+            if (path.EndsWith("/models")) return Response("[]");
+            if (path.EndsWith("/runs")) return Response("[]");
+            if (path.EndsWith("/versions")) return Response("[]");
+            throw new Exception("Unexpected action-target request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "动作目标检查", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => NodeNames(view).Contains("甲"));
+            var selector = Field<ComboBox>(view, "workflowSelector");
+            selector.SelectedItem = selector.Items.OfType<ComboBoxItem>().Single(item => (string?)item.Tag == "wf-ac2");
+            await Until(() => Field<string>(view, "workflowId") == "wf-ac2"
+                && Field<string>(view, "canvasWorkflowId") == "wf-ac1" && getB == 1);
+            // 窗口内发布：目标必须是画布归属 wf-ac1（旧实现 POST 到 wf-ac2）。
+            await (Task)typeof(WorkflowView).GetMethod("PublishAsync", All)!.Invoke(view, null)!;
+            Require(publishPath.EndsWith("/workflows/wf-ac1/publish"),
+                $"切换在途窗口内发布必须打到画布归属（wf-ac1），实际打到 {publishPath}");
+            bLoadGate.TrySetResult(Response($"{{\"id\":\"wf-ac2\",\"name\":\"乙\",\"version\":3,\"draft_version\":1,\"draft_graph\":{bGraph}}}"));
+            await Until(() => Field<string>(view, "canvasWorkflowId") == "wf-ac2" && NodeNames(view).Contains("乙"));
+            view.Deactivate();
+        }
+        finally
+        {
+            bLoadGate.TrySetResult(Response("{}"));
             StopAutosave(view);
         }
     }
