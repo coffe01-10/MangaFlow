@@ -890,3 +890,22 @@ def test_refusal_leaves_user_data_untouched_and_exits_cleanly(tmp_path, monkeypa
     assert not (hostile / "data").exists(), (
         "a refused user-data must not gain a data/ directory"
     )
+
+
+def test_node_child_env_strips_the_embedded_flag(monkeypatch):
+    """#800: MANGAFLOW_DESKTOP_EMBEDDED is set by _apply_app_environment for
+    the API process (same process as the helper), but the node child is
+    spawned LATER — the flag would ride into the web child's env unless the
+    strip list knows it. Seeded here because the ambient env never carries
+    the key (which is also why the #583 composition pin stays vacuous for
+    it)."""
+
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_EMBEDDED", "1")
+    monkeypatch.setenv("mangaflow_desktop_embedded", "0")
+
+    env = helper._node_child_env()
+
+    assert "MANGAFLOW_DESKTOP_EMBEDDED" not in env, env.get("MANGAFLOW_DESKTOP_EMBEDDED")
+    assert "mangaflow_desktop_embedded" not in env, (
+        "a lowercase variant must be stripped with the same force"
+    )
