@@ -464,7 +464,19 @@ pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Resul
 fn wait_for_health(origin: &str, timeout: Duration) -> std::io::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if let Ok((200, _)) = get_status(origin, HEALTH_PATH, Duration::from_secs(2)) {
+        // Each attempt draws from the REMAINING budget, never a fresh
+        // fixed 2s: the deadline was otherwise only checked AFTER an
+        // attempt, so a hung peer (full 2s connect/read each try)
+        // stretched the fail-closed stop past health_timeout by up to
+        // one attempt + sleep.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "loopback health check did not become ready",
+            ));
+        }
+        if let Ok((200, _)) = get_status(origin, HEALTH_PATH, remaining.min(Duration::from_secs(2))) {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
@@ -480,6 +492,31 @@ fn wait_for_health(origin: &str, timeout: Duration) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each wait_for_health attempt must draw from the REMAINING budget,
+    /// never a fresh fixed 2s: the old shape checked the deadline only
+    /// AFTER an attempt, so a hung peer stretched the fail-closed stop
+    /// past health_timeout by up to one full attempt (+sleep). The peer
+    /// binds but never accepts — the kernel backlog completes the TCP
+    /// handshake, so get_status's connect succeeds and its read waits
+    /// out whatever budget it was handed. With the remaining-budget
+    /// form the whole wait lands near the 300ms timeout; the fixed-2s
+    /// regression overshoots to ~2s and fails the wall-clock bound.
+    #[test]
+    fn wait_for_health_bounds_each_attempt_by_the_remaining_budget() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+
+        let started = std::time::Instant::now();
+        let result = wait_for_health(&origin, Duration::from_millis(300));
+
+        assert!(result.is_err(), "a never-accepting peer must time out");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "the timeout must bound the ATTEMPTS, not trail them: {elapsed:?}"
+        );
+    }
 
     /// Red team 2026-09-08: the health response read is byte-capped. Only
     /// the status line is parsed, so a peer streaming a huge body must yield
