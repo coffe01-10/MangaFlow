@@ -172,6 +172,25 @@ def test_failed_venv_creation_propagates_before_the_stamp(tmp_path):
     assert "ENSURE_RC=3" in out, out
 
 
+def test_ensure_e2e_venv_refuses_zero_requirement_files(tmp_path):
+    # The misuse guard: with no requirement files the stamp computation's
+    # `cat "$@"` would read STDIN and hang the harness/CI forever. The
+    # guard must return a DISTINCT rc=2 with a named diagnosis instead.
+    done = subprocess.run(
+        ["bash", "-c",
+         f"source {_SCRIPT} && "
+         "if ensure_e2e_venv venv; then echo ENSURE_RC=0; "
+         "else echo ENSURE_RC=$?; fi"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert "ENSURE_RC=2" in done.stdout, done.stdout + done.stderr
+    assert "no requirement files given" in done.stderr, done.stderr
+
+
 def test_sourcing_the_runner_runs_nothing(tmp_path):
     # The source-guard: sourcing (as these tests do) must not run the main
     # body — a guard regression would exec pytest (this harness never
