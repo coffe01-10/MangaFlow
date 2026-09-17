@@ -477,7 +477,13 @@ const isApiRequest = (url) => {
         parsed.pathname.startsWith("/api/");
     } catch { return false; }
   }
-  return url.startsWith(ready.api_origin);
+  // Origin EQUALITY, not a string prefix: `http://127.0.0.1:8000@evil.example/…`
+  // string-starts with the verified origin, so a prefix match let a
+  // cross-origin call satisfy the "direct API request observed" gate
+  // while the relay carried nothing. Mirrors the plan-B branch above.
+  try {
+    return new URL(url).origin === new URL(ready.api_origin).origin;
+  } catch { return false; }
 };
 page.on("request", (request) => {
   if (isApiRequest(request.url())) api_requests.push(request.url());
