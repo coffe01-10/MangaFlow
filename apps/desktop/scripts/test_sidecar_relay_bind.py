@@ -135,3 +135,46 @@ def test_bind_relay_sets_the_platform_option(monkeypatch):
     relay.close()
     if sys.platform != "win32":
         assert observed.get("SO_REUSEADDR") == 1
+
+
+@pytest.mark.parametrize("failing", ["bind", "listen"])
+def test_bind_web_port_failure_returns_none_closes_and_logs(monkeypatch, capsys, failing):
+    """The announced web port's failure arm (#818's sibling): when the
+    bind or the listen itself raises OSError, the helper must downgrade
+    to the static-export form — return None (never a half-bound socket),
+    CLOSE the socket it created, and say so on the log stream. A socket
+    leaked here would hold the ephemeral port for the whole session."""
+
+    import mangaflow_desktop_helper as helper
+
+    real_bind = socket.socket.bind
+    real_listen = socket.socket.listen
+    real_close = socket.socket.close
+    closed = []
+
+    def raising(self, *args, **kwargs):
+        if (failing == "bind" and self is not None) or True:
+            if failing == "bind":
+                raise OSError("simulated: bind refused")
+            return real_bind(self, *args, **kwargs)
+
+    def raising_listen(self, backlog):
+        if failing == "listen":
+            raise OSError("simulated: listen refused")
+        return real_listen(self, backlog)
+
+    def spy_close(self):
+        closed.append(self)
+        return real_close(self)
+
+    monkeypatch.setattr(socket.socket, "bind", raising if failing == "bind" else real_bind)
+    monkeypatch.setattr(socket.socket, "listen", raising_listen)
+    monkeypatch.setattr(socket.socket, "close", spy_close)
+
+    web_sock = helper._bind_web_port()
+
+    assert web_sock is None, "a failed bind must downgrade, never half-serve"
+    assert len(closed) == 1, "the created socket must be closed exactly once"
+    captured = capsys.readouterr()
+    assert "web port bind failed" in captured.err, captured.err
+    assert "without the web server" in captured.err, captured.err
