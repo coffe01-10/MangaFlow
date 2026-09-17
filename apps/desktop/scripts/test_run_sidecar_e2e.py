@@ -323,3 +323,51 @@ def test_runner_tees_the_last_run_log():
     assert "\nexec " not in script, (
         "the exec form would bypass the tee and lose the log on failure"
     )
+
+
+def test_venv_creation_falls_back_to_python_when_python3_is_absent(tmp_path):
+    # Windows python.org installs ship python.exe without a python3 alias:
+    # with python3 genuinely ABSENT from PATH (not merely failing), the
+    # creator must be `python` — a restricted-PATH harness plus a marker
+    # shim proves the fallback ran and the flow continued past creation.
+    rc, out = _run_harness_in(
+        tmp_path,
+        'mkdir -p shim bin && '
+        # The shim emulates `python -m venv <dir>` (argv: -m venv dir): it
+        # must actually create the directory, or the post-create stamp
+        # write fails for an unrelated reason. The printf format is shell-
+        # single-quoted so $3/$PWD reach the shim literally — the harness
+        # itself runs set -u and would expand (or reject) them first.
+        "printf '#!/bin/sh\\nmkdir -p \"$3\"\\n: > \"$PWD/python.used\"\\nexit 0\\n' > shim/python && "
+        'chmod +x shim/python && '
+        'for t in cat md5sum cut mkdir rm mv; do '
+        'ln -s "$(command -v $t)" "bin/$t"; done && '
+        'PATH="$PWD/shim:$PWD/bin"',
+        fake_pip_rc=0,
+    )
+    assert rc == 0, out
+    assert "ENSURE_RC=0" in out, out
+    assert (tmp_path / "python.used").exists(), (
+        f"the python fallback must have been the creator: {out}"
+    )
+    assert "PIP_CALLS=1" in out, (
+        f"the bootstrap must continue into the install after the fallback: {out}"
+    )
+
+
+def test_venv_creation_reports_127_when_neither_creator_exists(tmp_path):
+    # No python3 AND no python on a restricted PATH: the documented loud
+    # failure — a distinct 127, the remedy on stderr, and no stamp write
+    # (the next run must retry, not accept a half state).
+    rc, out = _run_harness_in(
+        tmp_path,
+        'mkdir -p bin && '
+        'for t in cat md5sum cut mkdir rm mv; do '
+        'ln -s "$(command -v $t)" "bin/$t"; done && '
+        'PATH="$PWD/bin"',
+        fake_pip_rc=0,
+    )
+    assert "ENSURE_RC=127" in out, out
+    assert "no python3/python on PATH" in out, out
+    assert "STAMP=MISSING" in out, out
+    assert rc == 0  # the harness itself reports via ENSURE_RC, exits 0
