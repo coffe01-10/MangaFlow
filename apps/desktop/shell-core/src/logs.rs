@@ -1143,7 +1143,23 @@ fn export_logs_with(
     let (dos_date, dos_time) = dos_date_time(unix_now());
     let mut zip = ZipWriter::new();
 
+    // (kept adjacent to the guard that uses it)
+    const EXPORT_MANIFEST_NAME: &str = "manifest.json";
+    const EXPORT_MANIFEST_SKIP_REASON: &str = "reserved_manifest_name";
     for (member, path, size) in &members {
+        // The exporter appends its own manifest.json after the loop: a
+        // log-tree member of that name would produce TWO central-directory
+        // entries with one name (readers resolve to the last, and the
+        // manifest would advertise a member the archive cannot deliver
+        // under it). Skip the colliding name up front — it is the
+        // exporter's own artifact, not a forensics member.
+        if member == EXPORT_MANIFEST_NAME {
+            skipped.push(SkippedEntry {
+                name: member.clone(),
+                reason: EXPORT_MANIFEST_SKIP_REASON.into(),
+            });
+            continue;
+        }
         // Archive-shape caps first (metadata only, before any read): the
         // member count must stay inside the EOCD's u16 entry field and the
         // running total inside the u32 offset field's safe range — beyond
@@ -3248,6 +3264,84 @@ mod tests {
             "the refusal must name the link: {error}"
         );
         let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// A log-tree member named manifest.json must be SKIPPED (reported as
+    /// reserved_manifest_name), never archived: the exporter appends its
+    /// own manifest.json, so archiving the planted one yields two
+    /// central-directory entries under one name — readers resolve to the
+    /// last and the manifest advertises a member the archive cannot
+    /// deliver under it. Byte-level duplicate detection counts the name
+    /// inside the CENTRAL DIRECTORY only (located via the EOCD): the
+    /// exported manifest's own skipped list also mentions the name, so a
+    /// whole-file count would count content, not members.
+    #[test]
+    fn export_skips_a_planted_manifest_json_instead_of_duplicating_the_member() {
+        let user_data = temp_user_data("manifest-dup");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("real.log"), "0123456789").unwrap();
+        fs::write(logs.join("manifest.json"), "{\"planted\": true}").unwrap();
+
+        let destination =
+            std::env::temp_dir().join(format!("mfd-manifest-dup-{}.zip", crate::protocol::new_token()));
+        let report = export_logs_with(
+            &user_data,
+            &destination,
+            false,
+            ExportLimits {
+                max_members: EXPORT_MAX_MEMBERS,
+                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.files, vec!["real.log"], "{report:?}");
+        assert!(
+            report.skipped.iter().any(|entry| {
+                entry.name == "manifest.json" && entry.reason == "reserved_manifest_name"
+            }),
+            "the reserved name must be reported as skipped: {report:?}"
+        );
+
+        let archive = fs::read(&destination).unwrap();
+        let eocd = archive
+            .windows(4)
+            .rposition(|w| w == [0x50, 0x4b, 0x05, 0x06])
+            .expect("EOCD must exist");
+        let cd_size = u32::from_le_bytes([
+            archive[eocd + 12],
+            archive[eocd + 13],
+            archive[eocd + 14],
+            archive[eocd + 15],
+        ]) as usize;
+        let cd_offset = u32::from_le_bytes([
+            archive[eocd + 16],
+            archive[eocd + 17],
+            archive[eocd + 18],
+            archive[eocd + 19],
+        ]) as usize;
+        let central = &archive[cd_offset..cd_offset + cd_size];
+        assert_eq!(
+            central
+                .windows("manifest.json".len())
+                .filter(|w| w == b"manifest.json")
+                .count(),
+            1,
+            "exactly ONE central-directory entry may carry the manifest.json name"
+        );
+        // The exporter's own manifest must describe only the real member.
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&zip_member_bytes(&archive, "manifest.json")).unwrap();
+        let included: Vec<&str> = manifest["included"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(included, vec!["real.log"], "{manifest}");
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&destination);
     }
 
 }
