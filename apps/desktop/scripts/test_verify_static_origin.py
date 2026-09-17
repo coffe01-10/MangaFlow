@@ -233,3 +233,21 @@ def test_kill_failure_outcomes_are_distinguished_from_already_gone():
         assert "${child.pid}" in line, (
             f"failure diagnostic must name the pid: {line.strip()}"
         )
+
+
+def test_static_api_evidence_requires_origin_equality_not_prefix():
+    """The static-mode API-evidence gate must compare ORIGINS, not string
+    prefixes (night red-team 20260917): `url.startsWith(ready.api_origin)`
+    made `http://127.0.0.1:8000@evil.example/api/v1/health` string-start
+    with the verified origin, so a cross-origin call satisfied the
+    "direct API request observed" gate while the relay carried nothing.
+    The plan-B branch already required origin equality; the static
+    fallback now matches it."""
+    code = _code_text(_source())
+    assert "url.startsWith(ready.api_origin)" not in code, (
+        "the prefix form must not come back: userinfo (@) or sibling-host "
+        "prefixes falsify the direct-API-evidence gate"
+    )
+    assert "new URL(url).origin === new URL(ready.api_origin).origin" in code, (
+        "static API evidence must require exact origin equality"
+    )
