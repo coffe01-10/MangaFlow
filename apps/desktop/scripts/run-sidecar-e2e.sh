@@ -166,6 +166,18 @@ fi
 # is gitignored build output, so the log is disposable by construction.
 # pipefail preserves pytest's exit code through the tee.
 E2E_LOG_PATH="$DESKTOP_ROOT/dist/e2e-last-run.log"
+# Selection flags are refused, not passed through: `-k relay` would run a
+# SUBSET of the pinned files, pipefail+tee would preserve pytest's 0, and
+# the last-run log would record a green full-contract run that never
+# happened — the same falsification an unlisted file would cause.
+for arg in "$@"; do
+  case "$arg" in
+    '-k'|'-m'|'--deselect'|'--ignore'|'-p'|'--co'|'--collect-only'|'-x'|'--maxfail'|'--lf'|'--ff')
+      echo "run-sidecar-e2e: selection flag '$arg' would silently shrink the contract run" >&2
+      exit 2
+      ;;
+  esac
+done
 pytest_exit=0
 "$VENV_PYTHON" -m pytest \
   "$DESKTOP_ROOT/scripts/test_sidecar_e2e.py" \
