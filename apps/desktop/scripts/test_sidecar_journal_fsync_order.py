@@ -114,8 +114,13 @@ def test_write_journal_keeps_the_prior_journal_when_fsync_fails(
 
     try:
         helper._write_journal(journal, _record("stopped"))
-    except OSError:
-        pass
+    except OSError as error:
+        # Not a bare pass: an unrelated OSError raised BEFORE the fsync
+        # (e.g. from pending.open) would otherwise make this pin pass
+        # vacuously while the order contract regressed silently.
+        assert "simulated: disk gone" in str(error), (
+            f"the failure must be the planted fsync one: {error}"
+        )
     else:
         raise AssertionError("the fsync failure must propagate to the caller")
 
