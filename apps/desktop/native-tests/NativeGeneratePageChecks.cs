@@ -111,6 +111,46 @@ internal static class NativeGeneratePageChecks
             }
             var region = JsonSerializer.Deserialize<JsonElement>("""[{"command_id":"region","status":"EXECUTED","operation":"regenerate_region"}]""").EnumerateArray().ToList();
             Require(DirectorPane.HistoryActionIds(region) == (null, null), "image regeneration is not exposed as reversible");
+
+            // ── R2D-01（#429-1 家族漏网）：导演台有草稿时，用户触发的完成路径
+            //（生成/收藏/升清的 LoadWorkbenchAsync+Render）不得整建重渲染——
+            // 旧实现只守 PollTick/RefreshAsync/保真激活，会 new DirectorPane 把
+            // 输入中的指令静默清空。 ──
+            fixture.Ready = true; fixture.ShowCandidates = true;
+            await view.RefreshAsync();   // 先用 ready=true 的工作台数据重载（此时尚无草稿，可整建渲染）
+            Set(view, "director", true);
+            var draftPane = new DirectorPane(view);
+            Set(view, "directorPane", draftPane);
+            var commandInput = Field<TextBox>(draftPane, "commandInput");
+            commandInput.Text = "把格 1 的台词改为「保留我_R2D01_」";
+            Require(draftPane.HasDraft, "指令文本应让导演台判定为有草稿");
+            var generatesBefore = fixture.Generates;
+            await Invoke(view, "GenerateAsync");
+            await Until(() => fixture.Generates == generatesBefore + 1);
+            await Task.Delay(60);   // 给完成路径的 LoadWorkbenchAsync/finally Render 留出执行窗口
+            Require(fixture.Generates == generatesBefore + 1, "生成请求应正常入队（守卫只拦渲染，不拦动作）");
+            Require(ReferenceEquals(Field<DirectorPane?>(view, "directorPane"), draftPane),
+                "有草稿时生成完成路径不得重建导演台（R2D-01）");
+            Require(commandInput.Text.Contains("保留我_R2D01_"),
+                "生成完成路径不得清空已输入的导演指令（R2D-01）");
+
+            // ── R2D-03：切到无章节项目必须清空上一项目的页/工作台/追踪集，
+            // 否则一个轮询周期后上一项目的候选网格被整页画进新项目。
+            //（先把导演草稿/导演态清掉：旧实现的 PollTick 也会被 keep-drafts
+            // 守卫挡住，清掉后新旧行为才有区分度。） ──
+            commandInput.Text = "";
+            Set(view, "director", false);
+            fixture.EmptyChapters = true;
+            view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = new ProjectItem("empty-proj", "无章节项目", "", 0, 0), NavigateSection = (s, q) => { destination = s + "?" + q; return Task.CompletedTask; }, OpenDashboard = () => Task.CompletedTask });
+            await Until(() => Texts(view).Contains("没有可抽卡页面。先完成动态分页。"));
+            Require(Field<PageItem?>(view, "currentPage") is null && Field<List<PageItem>>(view, "pages").Count == 0,
+                "无章节项目必须清空上一项目的当前页与页列表（R2D-03）");
+            Require(Field<WrapPanel>(view, "pageBar").Children.Count == 0, "无章节项目必须清空页签（R2D-03）");
+            var readsBefore = fixture.Reads;
+            view.PollTick();
+            await Task.Delay(120);
+            Require(fixture.Reads == readsBefore, "无章节项目不得轮询拉取上一项目的工作台（R2D-03）");
+
             Console.WriteLine("PASS: generation layout, full scene pagination/archive state, inverse-chain undo/redo, payloads, dedup/error recovery and readiness navigation.");
             Console.WriteLine("Offscreen WPF + HTTP fixtures; live backend/provider, high-DPI window and frame timing NOT RUN.");
         }
@@ -122,6 +162,7 @@ internal static class NativeGeneratePageChecks
     private static void Click(ButtonBase b) => b.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
     private static Task Invoke(object o, string name) => (Task)o.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(o, null)!;
     private static T Field<T>(object o, string name) => (T)o.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(o)!;
+    private static void Set(object o, string name, object? value) => o.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(o, value);
     private static void Require(bool ok, string text) { if (!ok) throw new Exception(text); }
     private static async Task Until(Func<bool> predicate) { using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8)); while (!predicate()) await Task.Delay(10, timeout.Token); }
     private static void Layout(FrameworkElement e, int w, int h)
@@ -139,7 +180,7 @@ internal static class NativeGeneratePageChecks
     {
         internal string Source = "四月初，京都下起了小雨。空气湿润，温度适宜。我来到了爸爸的灵牌前，失声痛哭。几天前，我的爸爸去世了。";
         internal int Latest = 3, Reads, Generates, Starts;
-        internal bool Ready = true, FailBatch, ShowCandidates;
+        internal bool Ready = true, FailBatch, ShowCandidates, EmptyChapters;
         internal TaskCompletionSource<bool>? HoldBatch;
         internal JsonElement GenerationBody;
         internal readonly List<int> SceneOffsets = [];
@@ -159,7 +200,7 @@ internal static class NativeGeneratePageChecks
             string path = request.RequestUri!.AbsolutePath;
             if (request.Method == HttpMethod.Get)
             {
-                if (path.EndsWith("/chapters")) return Json(new[] { new { id = "ch", title = "第一章", ordinal = 1, page_count = 11 } });
+                if (path.EndsWith("/chapters")) return Json(EmptyChapters ? Array.Empty<object>() : new object[] { new { id = "ch", title = "第一章", ordinal = 1, page_count = 11 } });
                 if (path.EndsWith("/models")) return Json(new[] { new { logical_alias = "model-a", model_type = "IMAGE", enabled = true, display_enabled = true, display_name = "Codex CLI ImageGen", provider = "Codex CLI", model_id = "codex-imagegen", operations = new[] { "image_edit" } }, new { logical_alias = "model-b", model_type = "IMAGE", enabled = true, display_enabled = true, display_name = "Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)", provider = "OpenRouter", model_id = "google/gemini-3.1-flash-image-preview", operations = new[] { "image_edit" } } });
                 if (path.EndsWith("/pages")) return Json(Enumerable.Range(1, 11).Select(Page).ToArray());
                 if (path.EndsWith("/script")) return Json(new { scenes = new[] { new { id = "sc-1", ordinal = 1, location = "京都，爸爸的灵牌前", scene_asset_id = "asset1", scene_asset_variant_id = "rain" } } });

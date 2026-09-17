@@ -121,6 +121,18 @@ public sealed partial class GenerateView : WorkspaceView
                 chapterSelector.Items.Add(new ComboBoxItem { Tag = chapter.Id, Content = $"第 {chapter.Ordinal} 章 · {chapter.Title}" });
             if (chapters.Count == 0)
             {
+                // R2D-03：无章节项目必须连同上一项目的页/工作台/追踪集一起清空，
+                // 否则 PollTick 在一个周期后把上一项目的候选网格整页画进新项目，
+                // 页签也仍指向上一项目的页面（收藏/删除/升清全部作用于旧项目）。
+                chapterId = "";
+                pages = [];
+                currentPage = null;
+                workbench = default;
+                pageBatches = [];
+                viewedBatchId = null;
+                historicalCandidates = null;
+                trackedInspectJobs.Clear();
+                RenderPageBar();
                 body.Children.Clear();
                 body.Children.Add(Kit.Caption("没有可抽卡页面。先完成动态分页。"));
                 return;
@@ -373,7 +385,12 @@ public sealed partial class GenerateView : WorkspaceView
             unchanged &= previousScenes == string.Join("", scriptScenes.Select(s => s.GetRawText()))
                 && previousAssets == string.Join("", sceneAssets.Select(a => a.GetRawText()));
             notice.Text = "";
-            if (!unchanged || body.Children.Count == 0) Render();
+            // R2D-01（#429-1 家族）：导演台有草稿时不得整建重渲染——此前的守卫只
+            // 覆盖 PollTick/RefreshAsync/保真激活，用户触发的完成路径（生成/收藏/
+            // 升清/修复/沿用）经这里 Render() 会 new DirectorPane，输入中的指令
+            // 与预览选择被静默清空。数据照常更新（workbench 已就位），渲染等草稿
+            // 提交或离开后再做。
+            if ((!unchanged || body.Children.Count == 0) && !DirectorDraftActive) Render();
         }
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -691,7 +708,7 @@ public sealed partial class GenerateView : WorkspaceView
         var modelAlias = selectedModel;
         var project = ProjectId;
         var token = lifetime.Token;
-        Render();
+        if (!DirectorDraftActive) Render();   // R2D-01：入口/完成路径同样不得拆有草稿的导演台
         try
         {
             JsonElement batch = workbench.Element("current_batch");
@@ -721,12 +738,12 @@ public sealed partial class GenerateView : WorkspaceView
             if (token.IsCancellationRequested || currentPage?.Id != targetPage.Id) return;
             notice.Text = error.Message;
             pendingRows.Remove("generate");
-            Render();
+            if (!DirectorDraftActive) Render();
         }
         finally
         {
             pendingRows.Remove("generate");
-            if (!token.IsCancellationRequested && currentPage?.Id == targetPage.Id) Render();
+            if (!token.IsCancellationRequested && currentPage?.Id == targetPage.Id && !DirectorDraftActive) Render();
         }
     }
 
@@ -796,7 +813,7 @@ public sealed partial class GenerateView : WorkspaceView
             if (closePanel) { reviewCandidateId = null; panelError = null; }
             if (token.IsCancellationRequested || currentPage?.Id != targetPage || ProjectId != project) return;
             await LoadWorkbenchAsync();
-            if (closePanel) Render();
+            if (closePanel && !DirectorDraftActive) Render();
         }
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -809,7 +826,7 @@ public sealed partial class GenerateView : WorkspaceView
                 if (reviewCandidateId == candidate.Id && action is "inspect" or "upscale2k" or "upscale4k")
                 {
                     panelError = error.Message;
-                    Render();
+                    if (!DirectorDraftActive) Render();
                 }
             }
         }
@@ -870,7 +887,7 @@ public sealed partial class GenerateView : WorkspaceView
             if (!token.IsCancellationRequested && currentPage?.Id == targetPage.Id && ProjectId == project)
             {
                 notice.Text = error.Message;
-                if (reviewCandidateId == candidate.Text("id")) { panelError = error.Message; Render(); }
+                if (reviewCandidateId == candidate.Text("id")) { panelError = error.Message; if (!DirectorDraftActive) Render(); }
             }
         }
         finally
@@ -1327,7 +1344,7 @@ public sealed partial class GenerateView : WorkspaceView
         finally
         {
             pendingRows.Remove("repair");
-            if (!token.IsCancellationRequested && currentPage?.Id == targetPage.Id) Render();
+            if (!token.IsCancellationRequested && currentPage?.Id == targetPage.Id && !DirectorDraftActive) Render();
         }
     }
 

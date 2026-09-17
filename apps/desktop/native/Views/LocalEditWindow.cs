@@ -348,7 +348,17 @@ public sealed class LocalEditWindow : Window
             return;
         }
         args.Cancel = true; await Discard();
-        if (groupId.Length == 0) { closed = true; Close(); }
+        if (groupId.Length == 0) { closed = true; Close(); return; }
+        // R2D-05：Discard 失败（如本地服务不可用）时不能把模态窗口锁死——主窗口
+        // 还被 ShowDialog 挂着，用户只能杀进程。给出强制关闭出口：PREVIEWED
+        // 命令组留在服务端，稍后可在导演命令历史中丢弃或重发。
+        if (MessageBox.Show(this,
+                "丢弃命令组失败（本地服务可能不可用）。仍要关闭窗口吗？已创建的预览命令组会保留，稍后可在导演命令历史中处理。",
+                "关闭局部修改", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+        {
+            closed = true;
+            Close();
+        }
     }
 
     private bool HasUnsavedDraft =>
