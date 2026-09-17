@@ -51,4 +51,10 @@ $env:QUEUE_ENABLED = "true"
 
 Write-Output "Starting MangaFlow: Web http://127.0.0.1:3000, API http://127.0.0.1:8000/api/docs"
 Write-Output "Without Redis, the concurrency-limited local worker is used. Press Ctrl+C to stop."
-npm run dev
+# `concurrently` without --kill-others leaves the surviving leg running when
+# the other dies (e.g. uvicorn failing on an occupied 8000 presents a
+# web-only stack as success), and a non-zero aggregate exit must surface.
+npm run dev -- --kill-others
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "dev stack exited non-zero ($LASTEXITCODE): check for port conflicts (8000 API / 3000 web) above."
+}
