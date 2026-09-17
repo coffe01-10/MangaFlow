@@ -825,6 +825,39 @@ def _lease_reclaim_grace_seconds(settings) -> float:
     return max(2.0 * _heartbeat_interval_seconds(lease_seconds), lease_seconds / 3.0)
 
 
+def cli_cancel_probe_should_stop(
+    job: GenerationJob, lease_owner: str | None, settings
+) -> bool:
+    """Shared CLI cancel-probe predicate, aligned with the #130 grace fence.
+
+    The DB-layer guards (progress/checkpoint/completion CAS) all fence on
+    OWNERSHIP, not expiry: an expired-but-unreclaimed lease still belongs to
+    this executor, and the janitor only reclaims after the expiry has stayed
+    cold beyond the full grace window. A probe that kills the paid CLI child
+    at first observed expiry re-opens the double spend the fence exists to
+    prevent (the killed call's failure CAS cannot match the expired lease, the
+    row gets reclaimed and re-run, and the paid output is discarded). Stop the
+    child only on: an explicit cancel, an owner flip (someone reclaimed), or
+    an expiry cold beyond the reclaim grace (the wall-clock timeout path,
+    where the heartbeat stopped renewing on purpose).
+    """
+
+    from datetime import UTC, datetime, timedelta
+
+    if job.status == JobStatus.CANCELLED or job.cancelled_at is not None:
+        return True
+    if lease_owner and job.lease_owner != lease_owner:
+        return True
+    expires_at = job.lease_expires_at
+    if expires_at is not None:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        grace = timedelta(seconds=_lease_reclaim_grace_seconds(settings))
+        if datetime.now(UTC) >= expires_at + grace:
+            return True
+    return False
+
+
 def recover_pending_jobs(db: Session) -> int:
     """Reclaim expired worker leases and re-enqueue recoverable jobs."""
     # Lazy import: keeps rq off the API import graph and avoids a module-level

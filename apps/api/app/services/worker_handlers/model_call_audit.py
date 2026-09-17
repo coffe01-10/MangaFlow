@@ -79,15 +79,31 @@ def begin_model_call_attempt(meta: ModelCallAttemptMeta) -> str:
 
     with SessionLocal() as db:
         for _ in range(5):
-            if meta.dispatch_request_id:
+            dispatch_request_id = meta.dispatch_request_id
+            if dispatch_request_id:
                 replay = db.scalar(
                     select(ModelCallAttempt).where(
                         ModelCallAttempt.dispatch_request_id
-                        == meta.dispatch_request_id
+                        == dispatch_request_id
                     )
                 )
-                if replay is not None:
+                if replay is not None and replay.outcome is None:
+                    # Replay dedup only applies to the open-row case: the same
+                    # dispatch's begin raced itself (unique-index retry loop
+                    # above) and the surviving row is still unfinalized.
                     return replay.id
+                if replay is not None:
+                    # R2A-02: a FINALIZED row under this key belongs to a
+                    # different execution (a manual retry whose attempt-count
+                    # reset made the tuple collide before the claim factor
+                    # landed in the dispatch hash). Returning it would
+                    # finalize the new paid call against the old outcome —
+                    # discarding a successful retry or double billing with
+                    # zero accounting — while re-inserting the same key would
+                    # violate the unique index. Drop the key and give this
+                    # call its own row; the (job_id, job_attempt, dispatch_no)
+                    # triple keeps monotonicity.
+                    dispatch_request_id = None
             dispatch_no = (
                 db.scalar(
                     select(func.max(ModelCallAttempt.dispatch_no)).where(
@@ -102,7 +118,7 @@ def begin_model_call_attempt(meta: ModelCallAttemptMeta) -> str:
                 project_id=meta.project_id,
                 job_attempt=meta.job_attempt,
                 dispatch_no=dispatch_no,
-                dispatch_request_id=meta.dispatch_request_id,
+                dispatch_request_id=dispatch_request_id,
                 route_switched=meta.route_switched,
                 channel=meta.channel,
                 provider=meta.provider,
@@ -132,7 +148,11 @@ def begin_model_call_attempt(meta: ModelCallAttemptMeta) -> str:
                             == meta.dispatch_request_id
                         )
                     )
-                    if replay is not None:
+                    # R2A-02: only an OPEN row is a safe replay target — a
+                    # row finalized in the meantime belongs to another
+                    # execution; the next loop iteration drops the key and
+                    # inserts a fresh row for this paid call.
+                    if replay is not None and replay.outcome is None:
                         return replay.id
         raise RuntimeError("无法在并发冲突后分配模型调用派发序号")
 

@@ -257,6 +257,86 @@ def test_heartbeat_renews_an_expired_but_unreclaimed_lease(db_session, monkeypat
     assert heartbeat.lost is True
 
 
+def test_transient_heartbeat_error_keeps_renewing(db_session, monkeypatch):
+    """R2A-01: 一次瞬态 DB 异常（锁超时/连接池耗尽）不得永久终止心跳线程——
+    _renew_once 的异常分支曾把「等待 1 秒后继续」回归成「返回 stop.wait(1.0)」
+    （未停止时恒 False，_run 随即退出）。心跳死亡 → 租约过期 → janitor 收回
+    重派 → 第二个执行器重跑付费调用，正是 #130 fence 要防的双花。"""
+
+    job = _seed_leased_job(
+        db_session, "瞬态异常续租", expired_seconds_ago=0, lease_owner="flaky-worker"
+    )
+    real_factory = _session_factory(db_session)
+    broken = {"on": True}
+
+    def flaky_factory():
+        if broken["on"]:
+            broken["on"] = False
+            raise RuntimeError("database is locked")
+        return real_factory()
+
+    monkeypatch.setattr(worker_tasks, "SessionLocal", flaky_factory)
+
+    heartbeat = worker_tasks._LeaseHeartbeat(job.id, "flaky-worker")
+    assert heartbeat._renew_once() is True, "瞬态 DB 异常后心跳必须继续续租"
+    assert heartbeat.lost is False
+
+    monkeypatch.setattr(worker_tasks, "SessionLocal", real_factory)
+    assert heartbeat._renew_once() is True, "数据库恢复后续租照常成功"
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, job.id)
+    assert row.lease_owner == "flaky-worker"
+
+
+def test_cli_cancel_probe_honors_reclaim_grace(db_session):
+    """R2A-03: CLI 取消探针不得在租约刚过期时杀掉付费子进程——#130 fence 的
+    契约是「过期但未被收回的租约仍属本执行器」。只有显式取消、owner 易主
+    （被 janitor 收回）、或过期冷过整个回收宽限窗（墙钟超时路径）才停。"""
+
+    from app.services.job_service import cli_cancel_probe_should_stop
+
+    settings = Settings(environment="dev")   # 派生宽限 = max(2×30s, 120/3) = 60s
+    job = _seed_leased_job(db_session, "CLI 探针宽限", expired_seconds_ago=30)
+
+    assert cli_cancel_probe_should_stop(job, job.lease_owner, settings) is False, (
+        "刚过期且 owner 未变：付费子进程必须继续跑（完成 CAS 会仲裁归属）"
+    )
+    assert cli_cancel_probe_should_stop(job, "successor-owner", settings) is True, (
+        "owner 易主（已被收回）：立即停止"
+    )
+
+    job.status = JobStatus.CANCELLED
+    assert cli_cancel_probe_should_stop(job, job.lease_owner, settings) is True
+
+    cold = _seed_leased_job(db_session, "CLI 冷冻宽限", expired_seconds_ago=600)
+    assert cli_cancel_probe_should_stop(cold, cold.lease_owner, settings) is True, (
+        "过期冷过整个宽限窗（墙钟超时路径）：停止付费子进程"
+    )
+
+
+def test_cli_adapters_delegate_the_cancel_probe_to_the_shared_predicate():
+    """R2A-03（源契约钉）：三个 CLI 适配器的 _cancel_requested 必须委托共享谓词
+    （cli_cancel_probe_should_stop），而不是各自内联「过期即杀」的旧逻辑——
+    旧内联正是被收编掉的 #130 契约违背点。"""
+
+    import pathlib
+
+    adapters_root = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "apps" / "api" / "app" / "model_adapters"
+    )
+    for name in ("antigravity_cli.py", "grok_build_cli.py", "codex_cli.py"):
+        source = (adapters_root / name).read_text(encoding="utf-8")
+        probe = source[source.index("def _cancel_requested"):]
+        probe = probe[: probe.index("\n    def \n") if "\n    def \n" in probe else len(probe)]
+        assert "cli_cancel_probe_should_stop" in probe, (
+            f"{name} 的取消探针必须委托共享谓词（#130 宽限契约）"
+        )
+        assert "expires_at <=" not in probe, (
+            f"{name} 的取消探针不得内联「租约刚过期即杀」的旧判定"
+        )
+
+
 def test_handler_guards_treat_own_expired_lease_as_still_owned(db_session):
     """WE1, handler-side seams: _ensure_job_not_cancelled and the owned
     progress/checkpoint CASes used to treat a merely-expired OWN lease as
