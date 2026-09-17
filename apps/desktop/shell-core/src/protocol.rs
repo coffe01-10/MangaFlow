@@ -2190,4 +2190,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
     }
 
+    /// A link planted at the RUNTIME ROOT itself must short-circuit the
+    /// whole sweep (the #610 arm): the guard refuses the symlinked root
+    /// before any candidate is inspected, so nothing behind the link is
+    /// ever removed. The candidate-level planted-links pin
+    /// (sweep_never_removes_through_planted_links) covers links at
+    /// candidate names; this pins the root-level refusal they both
+    /// predate. POSIX-only (Unix symlink; the Windows junction form is
+    /// exercised by the candidate-level pin).
+    ///
+    /// NOT runtime_fixture: the fixture nests under a `runtime/` layer,
+    /// which would leave the sweep (iterating the link target's top
+    /// level) seeing only a non-candidate directory named "runtime" —
+    /// the pin would pass even with the root guard disabled. The
+    /// candidate sits at the TARGET TOP LEVEL so the only thing keeping
+    /// it alive is the root-link refusal itself.
+    #[test]
+    #[cfg(unix)]
+    fn sweep_skips_entirely_when_the_runtime_root_is_a_link() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-rootlink-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        // The real runtime content lives OUTSIDE user_data, linked in.
+        let outside = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-rootlink-target-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        let stale = {
+            let dir = outside.join(format!("{RUNTIME_DIR_PREFIX}{}", "a".repeat(32)));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(JOURNAL_NAME),
+                serde_json::json!({"version": 1, "token": "a".repeat(32), "state": "stopped"}).to_string(),
+            )
+            .unwrap();
+            dir
+        };
+        std::fs::create_dir_all(user_data.join("runtime").parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, user_data.join("runtime")).unwrap();
+
+        let result = sweep_runtime_dirs_with(&user_data, 0);
+
+        result.expect("the root-link refusal must not error");
+        assert!(
+            std::fs::symlink_metadata(user_data.join("runtime"))
+                .map(|m| m.is_symlink())
+                .unwrap_or(false),
+            "the planted root link must be left in place"
+        );
+        assert!(
+            stale.exists(),
+            "nothing behind the root link may be swept: the link is foreign media"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
 }
