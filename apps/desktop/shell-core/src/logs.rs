@@ -1995,7 +1995,6 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
-    #[test]
     /// The record line's exact shape: ts/event/fields in one JSONL line —
     /// the export manifest and every forensics reader parse THIS shape.
     /// Pins the three keys (no extras that would grow the contract), the
@@ -2024,10 +2023,16 @@ mod tests {
             value["ts"].as_u64().is_some(),
             "ts must be a number (unix seconds): {value}"
         );
+        assert_eq!(
+            value.as_object().expect("the line is a JSON object").len(),
+            3,
+            "exactly ts/event/fields — an extra top-level key grows the contract: {value}"
+        );
         assert!(log.ends_with('\n'), "each record is one newline-terminated line");
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    #[test]
     fn run_log_record_survives_mutex_poisoning() {
         let user_data = temp_user_data("poison");
         let token = "cd".repeat(16);
