@@ -695,9 +695,25 @@ impl RunLog {
                 "mangaflow-desktop: stale runtime-directory sweep failed: {error}"
             );
         }
-        fs::create_dir_all(logs_dir(user_data))?;
+        let logs = logs_dir(user_data);
+        fs::create_dir_all(&logs)?;
+        // #610 family: a planted root link must not redirect the session
+        // log tree — canonicalize would follow it and open_append_regular's
+        // containment check would compare the target against itself, so
+        // every session log lands in the attacker-chosen tree. rotate_logs
+        // and export_logs_with already refuse; the create path now does
+        // too.
+        if logs
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.is_symlink())
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "logs root is a symlink; refusing to redirect the session log tree",
+            ));
+        }
         let base = shell_log_path(user_data, token);
-        let logs_canonical = logs_dir(user_data).canonicalize()?;
+        let logs_canonical = logs.canonicalize()?;
         let file = open_append_regular(&base, &logs_canonical)?;
         Ok(RunLog {
             inner: std::sync::Mutex::new(RunLogFile {
@@ -3197,6 +3213,39 @@ mod tests {
         assert!(
             error.to_string().contains("not a regular file"),
             "the refusal must name the non-regular entry: {error}"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// A link planted at the LOGS ROOT must fail `RunLog::create` instead
+    /// of redirecting the session log tree: canonicalize followed the link
+    /// and `open_append_regular`'s containment check compared the target
+    /// against itself, so `shell-<token>.log` (and the helper stderr log)
+    /// landed in an attacker-chosen directory. rotate_logs and export
+    /// already refuse their walks; this pins the create path to the same
+    /// posture. POSIX-only fixture (Unix symlink).
+    #[test]
+    #[cfg(unix)]
+    fn run_log_create_refuses_a_planted_logs_root_link() {
+        let user_data = temp_user_data("rootlink-create");
+        std::os::unix::fs::symlink(
+            std::env::temp_dir(),
+            logs_dir(&user_data),
+        )
+        .unwrap();
+
+        let result = RunLog::create(&user_data, &"bf".repeat(16));
+
+        // RunLog deliberately carries no Debug impl; match instead of
+        // expect_err.
+        let error = match result {
+            Ok(_) => panic!("a logs-root link must fail the create"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(
+            error.to_string().contains("symlink"),
+            "the refusal must name the link: {error}"
         );
         let _ = fs::remove_dir_all(&user_data);
     }
