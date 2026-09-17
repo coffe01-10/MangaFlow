@@ -731,3 +731,25 @@
 - 生产零变更确认：三钉均为既有行为的覆盖补齐（`assemble-web-resources.py`/`run-sidecar-e2e.sh` 在范围内零 diff）。
 
 **认证**：journal+assemble+runner **42/42**；`open_append_regular` 家族 **2/2**。
+
+## 40. N3 夜班 20260917 窗（基线 1386570，本节持续追加）
+
+开跑：工作树 /workspace/MangaFlow-N3-RedTeam，分支 night/n3-redteam-burn-20260917，
+reset 至 origin/master 1386570（含 ledger-39 谱系）；flock 时代 CI 红不涉本树。
+
+**配额 D 首批（既有非 native Issue 复查，全部有据、逐条 HEAD 验证）：**
+- FIXED：#824（journal fsync 双侧 + #841 顺序钉入 master）、#814（#815 总预算 +
+  connect_timeout + 慢滴证伪器）、#836（#851 的 runlog_create_failure_finalizes_
+  the_ownership_journal 入 startup_protocol.rs:1794）、#827（#832 docstring 校准 +
+  既有次序钉）。
+- PARTIAL：#819（#835 桥接入默认门但 mjs_no_undef/sidecar_e2e 两文件仍出 gal）、
+  #822（announced backlog/option 已钉 #818；relay win32 臂仍无宿主可断言）、
+  #831（三之三已修：#844/#850、#843；setup-codex 版本门仍 copy-only）。
+- NOT_FIXED：#839（flock 门）、#826（journal 写时无 canonical 包含再验证——动态
+  形态敞开）、#825（relay 接受槽无 idle deadline）、#813（导出无空闲空间预检、
+  仍在 UI 线程全 RAM）、#820（phase2_runner_lib.cjs 仍无门）、#821（解析器语义
+  无收敛钉；修复面跨 native）。
+- [native] 票（#847/#830/#829/#817/#812/#811/#810/#808/#807）：按规只评论
+  「本轮不修 WPF」。
+
+**§39 补充（夜班 04:30 段）**：`run_e2e_owned.py`（验收控制器驱动，232 行）全文审——**CLEAN**：端口预检（SO_EXCLUSIVEADDRUSE 拒未知服务）、allowlist 环境构造（仅 9 个 Windows 系统键透传 + 显式 e2e 身份键；SystemRoot/WINDIR 合并与 node 22.17 CSPRNG quirk 有文档）、混合编码子进程输出按字节转发（无损）、`finish` 的"stop 失败绝不落到目录删除"（防删活运行时）、`--port` 双层验证。Windows 活体 NOT RUN 边界维持。至此 Windows 验收栈三文件全读全审。
