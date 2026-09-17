@@ -386,7 +386,17 @@ pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Resul
             "origin must be an http://127.0.0.1:<port> URL",
         ));
     }
-    let mut stream = TcpStream::connect(authority)?;
+    // Red team 2026-09-17 (connect phase): a plain `connect` blocks through
+    // SYN retransmits (~2 minutes) when the peer's backlog is full, which
+    // bypassed every health deadline. Bound the connect with the same
+    // budget as the I/O phase.
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .map_err(|_| std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "origin must be an http://127.0.0.1:<port> URL",
+        ))?;
+    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     write!(
