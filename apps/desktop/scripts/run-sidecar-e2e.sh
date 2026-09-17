@@ -70,7 +70,17 @@ _ensure_e2e_venv_locked() {
     # Explicit propagation, mirroring the install step below: set -e is
     # suppressed inside an if-condition caller, and the function must fail
     # before any stamp write either way.
-    python3 -m venv "$venv" || return $?
+    # Windows python.org installs ship `python.exe`/`py.exe` without a
+    # `python3` alias (start-desktop.cmd's audience): fall back before
+    # failing the documented bootstrap path (#831).
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -m venv "$venv" || return $?
+    elif command -v python >/dev/null 2>&1; then
+      python -m venv "$venv" || return $?
+    else
+      echo "run-sidecar-e2e: no python3/python on PATH to create the venv" >&2
+      return 127
+    fi
   fi
   if [ ! -f "$stamp_file" ] || [ "$(cat "$stamp_file" 2>/dev/null)" != "$expected" ]; then
     # Explicit propagation: a failed install must never reach the stamp
