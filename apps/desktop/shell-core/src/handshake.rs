@@ -386,17 +386,73 @@ pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Resul
             "origin must be an http://127.0.0.1:<port> URL",
         ));
     }
-    let mut stream = TcpStream::connect(authority)?;
+    // Red team 2026-09-17 (connect phase): a plain `connect` blocks through
+    // SYN retransmits (~2 minutes) when the peer's backlog is full, which
+    // bypassed every health deadline. Bound the connect with the same
+    // budget as the I/O phase.
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .map_err(|_| std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "origin must be an http://127.0.0.1:<port> URL",
+        ))?;
+    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     write!(
         stream,
         "GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
     )?;
-    let mut response = String::new();
-    (&mut BufReader::new(stream))
-        .take(MAX_STREAM_MESSAGE_BYTES)
-        .read_to_string(&mut response)?;
+    // Red team 2026-09-17: the read timeout is PER READ, so a peer that
+    // drips one byte per timeout window keeps `read_to_string` making
+    // progress for hours. Enforce a TOTAL deadline across the whole body:
+    // every read gets only the remaining budget and the deadline is
+    // re-checked between reads. Truncation at the byte cap and the
+    // non-UTF8 fail-closed behavior are preserved.
+    let started = std::time::Instant::now();
+    let mut response_bytes = Vec::new();
+    let mut reader = BufReader::new(stream.try_clone()?);
+    {
+        let mut chunk = [0u8; 8192];
+        loop {
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "status read exceeded the total deadline",
+                ));
+            }
+            stream.set_read_timeout(Some(timeout - elapsed))?;
+            // A shrunk socket timeout surfaces as WouldBlock/TimedOut —
+            // both mean the TOTAL deadline expired, not that the peer is
+            // gone; normalize so callers always see TimedOut here.
+            let read = match reader.read(&mut chunk) {
+                Ok(n) => n,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        || error.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "status read exceeded the total deadline",
+                    ))
+                }
+                Err(error) => return Err(error),
+            };
+            if read == 0 {
+                break;
+            }
+            let room = (MAX_STREAM_MESSAGE_BYTES - response_bytes.len() as u64) as usize;
+            let take = std::cmp::min(read, room);
+            response_bytes.extend_from_slice(&chunk[..take]);
+            if response_bytes.len() as u64 >= MAX_STREAM_MESSAGE_BYTES {
+                break;
+            }
+        }
+    }
+    let response = String::from_utf8(response_bytes).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "stream body was not utf-8")
+    })?;
     let status: u16 = response
         .split_whitespace()
         .nth(1)
@@ -490,6 +546,61 @@ mod tests {
             body.len() as u64, MAX_STREAM_MESSAGE_BYTES,
             "response must be truncated at exactly {MAX_STREAM_MESSAGE_BYTES}, got {}",
             body.len()
+        );
+        let _ = server.join();
+    }
+
+    /// Red team 2026-09-17: the per-read timeout cannot bound a peer that
+    /// drips one byte per window — only a TOTAL deadline can. The drip here
+    /// (1 byte / 150ms) would keep a per-read-only reader alive ~30x the
+    /// budget; the call must return TimedOut promptly instead.
+    #[test]
+    fn get_status_enforces_a_total_deadline_against_slow_drip_peers() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            loop {
+                match sock.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        request.extend_from_slice(&buffer[..n]);
+                        if request.windows(4).any(|window| window == b"
+
+") {
+                            break;
+                        }
+                    }
+                }
+            }
+            for _ in 0..64 {
+                if sock.write_all(b"A").is_err() {
+                    break;
+                }
+                let _ = sock.flush();
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            let _ = sock.shutdown(std::net::Shutdown::Write);
+        });
+
+        let started = std::time::Instant::now();
+        let error = get_status(
+            &format!("http://127.0.0.1:{port}"),
+            HEALTH_PATH,
+            Duration::from_millis(500),
+        )
+        .expect_err("slow-drip peer must hit the total deadline");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "total deadline must fire promptly, took {:?}",
+            started.elapsed()
         );
         let _ = server.join();
     }
