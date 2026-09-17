@@ -20,6 +20,7 @@ WORKTREE="$(mktemp -d "$PARENT/mangaflow-desktop-web-XXXXXX")"
 # other writers touch sibling dist/ trees (#350); the lock is released on
 # every exit path through the trap.
 source "$DESKTOP_ROOT/scripts/dist-build-lock.sh"
+source "$DESKTOP_ROOT/scripts/chunk-consistency-gate.sh"
 DIST_LOCK="$DESKTOP_ROOT/dist/.build.lock"
 dist_lock_held=0
 release_dist_lock_if_held() {
@@ -229,14 +230,13 @@ dist_lock_held=0
 # two chunks that were never written — which only a full browser run caught.
 # Every /_next/static/... reference the shipped entry document makes must
 # exist on disk, or the build fails here instead of shipping a data-less
-# shell.
+# shell. Extracted to the sourceable chunk-consistency-gate.sh so the gate
+# itself is contract-tested (the script body cannot be sourced — its
+# top-level worktree/build side effects).
 smoke_missing=0
-for ref in $(grep -oE '/_next/static/[A-Za-z0-9/_.-]+' "$DESKTOP_ROOT/dist/frontend/index.html" | sort -u); do
-  if [ ! -f "$DESKTOP_ROOT/dist/frontend$ref" ]; then
-    echo "smoke gate: index.html references missing chunk: $ref" >&2
-    smoke_missing=1
-  fi
-done
+if ! check_referenced_chunks "$DESKTOP_ROOT/dist/frontend" "$DESKTOP_ROOT/dist/frontend/index.html"; then
+  smoke_missing=1
+fi
 
 for rel_html in \
   index.html \

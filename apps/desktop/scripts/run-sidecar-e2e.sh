@@ -170,6 +170,7 @@ pytest_exit=0
   "$DESKTOP_ROOT/scripts/test_sidecar_journal.py" \
   "$DESKTOP_ROOT/scripts/test_verify_static_origin.py" \
   "$DESKTOP_ROOT/scripts/test_mjs_no_undef.py" \
+  "$DESKTOP_ROOT/scripts/test_build_frontend_static_gate.py" \
   -v "$@" 2>&1 | tee "$E2E_LOG_PATH" || pytest_exit=$?
 exit "$pytest_exit"
 fi
