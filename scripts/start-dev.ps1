@@ -58,3 +58,7 @@ npm run dev -- --kill-others
 if ($LASTEXITCODE -ne 0) {
     Write-Output "dev stack exited non-zero ($LASTEXITCODE): check for port conflicts (8000 API / 3000 web) above."
 }
+# Surface the stack's own exit code: under `powershell -File` the script
+# would otherwise exit 0 even after a failed leg (PS 5.1 does not map
+# native exit codes to the script exit).
+exit $LASTEXITCODE
