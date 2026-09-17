@@ -43,3 +43,24 @@ def test_queue_enabled_promotion_precedes_dev_start():
         "QUEUE_ENABLED must be promoted before `npm run dev` spawns the API, "
         "or the first boot runs with the runtime default instead of dev-local"
     )
+
+
+def test_dev_stack_exit_code_propagates_after_the_notice():
+    source = SCRIPT.read_text(encoding="utf-8")
+    npm_dev = source.index("npm run dev")
+    notice = source.index("dev stack exited non-zero", npm_dev)
+    exit_line = source.index("exit $LASTEXITCODE", notice)
+    assert exit_line > notice, (
+        "the launcher must exit with the dev stack's own code: under "
+        "`powershell -File` a normal completion exits 0 even when the "
+        "stack failed, so the notice alone never fails CI"
+    )
+
+
+def test_kill_others_is_passed_to_the_dev_stack():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert re.search(r"npm run dev -- --kill-others", source), (
+        "the surviving leg must die with its sibling: concurrently without "
+        "--kill-others presents a web-only stack as success when the API "
+        "dies on an occupied port"
+    )
