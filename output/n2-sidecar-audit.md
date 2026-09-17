@@ -922,3 +922,8 @@
 - **PR #780（待 lead）**：plan-B 证据加 **同源约束**（origin === web_origin && /api/
   path）；source pin 扩展防回归；plan-B 活体 **D5 PASS** 复验（合法同源调用仍计数）。
 - **追踪**：#727 的 drop-in 钉与分支既有诊断测试目标重复——已在 #725 留防重说明。
+
+- **§35 补遗二十二（#802 扩展）**：#385 smoke gate（index.html + stub 路由 + 平铺布局）
+  为 build-frontend-static.sh 内第二个内联未测循环——提取至
+  `check_static_entry_files`（与 chunk 门同文件）；契约测试 6 例（完整集通过/缺失列举/
+  缺 index 拒绝/查询串/未引用冗余/缺 index 门）+ chunk 门 5 例。真 runner 165 green。
