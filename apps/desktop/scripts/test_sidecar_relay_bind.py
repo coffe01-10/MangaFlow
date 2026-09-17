@@ -18,6 +18,11 @@ the two sides of that contract:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path as _Path
+
+sys.path.insert(0, str(_Path(__file__).resolve().parent))
+
 import socket
 import sys
 import time
@@ -107,3 +112,26 @@ def test_relay_bind_policy_table(monkeypatch, scenario):
     finally:
         if relay is not None:
             relay.close()
+
+
+def test_bind_relay_sets_the_platform_option(monkeypatch):
+    """The relay bind's platform option: SO_REUSEADDR on POSIX (survive the
+    app's own TIME_WAIT), SO_EXCLUSIVEADDRUSE on win32 (reject co-binders
+    outright — the opposite semantic). Pin via a setsockopt spy on the
+    created socket."""
+
+    import mangaflow_desktop_helper as helper
+
+    observed = {}
+    real_setsockopt = socket.socket.setsockopt
+
+    def spy_setsockopt(self, level, optname, value):
+        if optname in (socket.SO_REUSEADDR,):
+            observed["SO_REUSEADDR"] = value
+        return real_setsockopt(self, level, optname, value)
+
+    monkeypatch.setattr(socket.socket, "setsockopt", spy_setsockopt)
+    relay = helper._bind_relay(1)
+    relay.close()
+    if sys.platform != "win32":
+        assert observed.get("SO_REUSEADDR") == 1
