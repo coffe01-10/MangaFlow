@@ -719,3 +719,15 @@
 - **开放 issue HEAD 复核**：#808/#812/#813/#816/#847 均未修（b638c49..74af953 零 native 提交）；#811 的 gracefulTimeout 在 StopAsync 已消费但 StartAsync 调用点仍传默认。
 
 **§37 补充（夜班 03:00 段）**：**#815 交叉审**（get_status 慢滴/连接加固，夜班代理）：`get_status` 家族 **6/6** + 全量 **174/174**。连接阶段 `connect_timeout` 封 SYN 重传旁路；读阶段**总预算**（每读剩余预算 + 逐读重查 + WouldBlock/TimedOut 归一 + 字节帽精确边界 + 非 UTF8 fail-closed 保持）；`try_clone` 共享描述符正确；滴注测试（64×1B@150ms）为恰当证伪器。另审阅 #846（stuck-candidate 扫描续行钉，RUN 1 passed，生产臂 :595 log-and-continue 相符）。认证：shell-core 174/174 @ 2309213。
+
+---
+
+## 39. 夜窗开跑（20260917 夜，基线 f441297；2309213 后 8 提交）
+
+**E 轮（三钉交叉审，全 RUN）：**
+- **#854**：`open_append_regular` 的 plain-FIFO 拒绝钉（#686/#685 parity 家族延伸至 shell log 路径）——有界等待 harness（挂死表现为测试失败而非卡死套件）+ catch_unwind 保存 panic 身份 + 拒绝断言双字段。RUN 2/2。
+- **#855**：`ensure_e2e_venv` 零 requirements 误用守卫的 rc=2 契约钉——闭环我 #586/#800 锁工作引入的守卫（回归到 stdin 挂死或通用 rc=1 会变红）。RUN 全绿。
+- **#856**：assemble 对缺 server.js 的源在**staging 之前**拒绝的次序钉。RUN 全绿。
+- 生产零变更确认：三钉均为既有行为的覆盖补齐（`assemble-web-resources.py`/`run-sidecar-e2e.sh` 在范围内零 diff）。
+
+**认证**：journal+assemble+runner **42/42**；`open_append_regular` 家族 **2/2**。
