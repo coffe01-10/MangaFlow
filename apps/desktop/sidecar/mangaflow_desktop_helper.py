@@ -893,6 +893,28 @@ def _node_child_env() -> dict[str, str]:
         "MANGAFLOW_STATIC_EXPORT",
         "NODE_OPTIONS",
         "NODE_PATH",
+        # Node reads these natively at startup (no flag needed): trusting an
+        # attacker CA, disabling TLS verify, writing coverage files at exit,
+        # and flipping proxy semantics — same injection class as
+        # NODE_OPTIONS above.
+        "NODE_TLS_REJECT_UNAUTHORIZED",
+        "NODE_EXTRA_CA_CERTS",
+        "NODE_V8_COVERAGE",
+        "NODE_USE_ENV_PROXY",
+        # ld.so applies these to the node binary itself before anything
+        # node-side could matter; the NODE_OPTIONS drop already accepts the
+        # "ambient launcher env is hostile" posture.
+        "LD_PRELOAD",
+        "LD_AUDIT",
+        # App wiring promoted by _apply_app_environment before the spawn:
+        # the web child's contract is PORT/HOSTNAME/MANGAFLOW_API_ORIGIN/
+        # NODE_ENV only — user-data paths and DB URLs must not ride along
+        # (same ride-along class as MANGAFLOW_DESKTOP_EMBEDDED, #800).
+        "DATABASE_URL",
+        "STORAGE_ROOT",
+        "UPLOAD_ROOT",
+        "WEB_ORIGIN",
+        "MANGAFLOW_DISABLE_DOTENV",
     }
     return {
         name: value for name, value in os.environ.items() if name.upper() not in dropped
@@ -915,6 +937,13 @@ def _web_spawn_env_additions(node_port: int) -> dict[str, str]:
         "HOSTNAME": "127.0.0.1",
         "MANGAFLOW_API_ORIGIN": f"http://127.0.0.1:{WEB_RELAY_PORT}",
         "NODE_ENV": "production",
+        # The child's only legitimate egress is loopback: an ambient proxy
+        # env (HTTPS_PROXY without a matching NO_PROXY is common in
+        # corporate shells) would otherwise route the baked rewrite target
+        # and API-origin fetches through a foreign proxy — session cookies
+        # and auth headers included.
+        "NO_PROXY": "127.0.0.1,localhost",
+        "no_proxy": "127.0.0.1,localhost",
     }
 
 
