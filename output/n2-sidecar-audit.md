@@ -904,3 +904,26 @@
   ——后者被遮蔽从未运行（39 计数含遮蔽）。改名
   `test_embedded_auto_diagnostics_report_local_despite_reachable_redis` 后 40 收集全绿
   （诊断腿首次真跑通过）；F811 清零。教训：插入测试用同名锚时必须核对新名唯一性。
+
+## 111. 20260914 夜班开窗（分支 night/n2-platform-burn-20260914，基线 23ae8fc；账本 906 行在位）
+
+- **开窗证据**：runner 首跑 **2 failed**——溯源门按设计响亮（白天 apps/web 变更）；重建后
+  **160 passed**（exit=0）+ cargo **168/0**。
+- **第 31 轮交叉审（1 子代理：#748 last-resort catch + #747 plan-B evidence filter，
+  他组 fresh 代码）**：
+  - #748 APPROVE-grade：处理域/测试轨迹/红power 全实证（pre-29e582a 红：RuntimeError
+    逃逸 main 于 helper:1310）；顺带修复 _run_stub/_run_app 全部 8 个 _write_journal
+    调用点的 guard 逃逸。
+  - #747 FINDINGS 两条 LOW：(1) plan-B 证据按路径计数——loopback 跨源 `/api/` 调用
+    （CSP `connect-src http://localhost:*` 允许）可独占满足"direct API observed"门，
+    PASS 行声称"同源经中继"而无实证；(2) test_sidecar_journal 的 in-process main()
+    首例——SIGTERM handler 副作用 + 潜在 setsid 分离 + mkfifo skipif 过宽（Windows
+    连纯 monkeypatch 测试也跳过）。
+- **PR #780（待 lead）**：plan-B 证据加 **同源约束**（origin === web_origin && /api/
+  path）；source pin 扩展防回归；plan-B 活体 **D5 PASS** 复验（合法同源调用仍计数）。
+- **追踪**：#727 的 drop-in 钉与分支既有诊断测试目标重复——已在 #725 留防重说明。
+
+- **§35 补遗二十二（#802 扩展）**：#385 smoke gate（index.html + stub 路由 + 平铺布局）
+  为 build-frontend-static.sh 内第二个内联未测循环——提取至
+  `check_static_entry_files`（与 chunk 门同文件）；契约测试 6 例（完整集通过/缺失列举/
+  缺 index 拒绝/查询串/未引用冗余/缺 index 门）+ chunk 门 5 例。真 runner 165 green。
