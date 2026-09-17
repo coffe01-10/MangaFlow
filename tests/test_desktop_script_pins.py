@@ -32,9 +32,16 @@ def _api_test_deps_available() -> bool:
     not _api_test_deps_available(),
     reason="API test stack (fastapi/httpx/sqlalchemy/alembic) not installed",
 )
-
-
 def test_desktop_script_contract_pins_pass():
+    # --ignore keeps the bridge green on a CLEAN checkout: the directory
+    # sweep otherwise collects environment-dependent tests that no gate
+    # can satisfy from tracked files alone —
+    #   test_mjs_no_undef.py: npx --no-install eslint needs eslint in the
+    #     root node_modules (its skipif only checks npx itself);
+    #   test_sidecar_e2e.py: needs the GENERATED, untracked
+    #     apps/desktop/dist/web-standalone/server.js (plan-B web serve).
+    # Both keep their dedicated invocations; the bridge pins the hermetic
+    # contract remainder (bind policy, journal guards, relay, run-log…).
     result = subprocess.run(
         [
             sys.executable,
@@ -43,6 +50,8 @@ def test_desktop_script_contract_pins_pass():
             "apps/desktop/scripts",
             "-q",
             "--noconftest",
+            "--ignore=apps/desktop/scripts/test_mjs_no_undef.py",
+            "--ignore=apps/desktop/scripts/test_sidecar_e2e.py",
         ],
         cwd=ROOT,
         capture_output=True,
