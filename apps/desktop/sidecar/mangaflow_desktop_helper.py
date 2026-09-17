@@ -156,7 +156,14 @@ def _write_journal(journal: Path, record: dict) -> None:
     # open(O_NOFOLLOW|O_CREAT) + fstat, beyond this parity's scope).
     if pending.exists() and not pending.is_file():
         raise RuntimeError("journal pending sibling must be a regular file")
-    pending.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    payload = json.dumps(record, sort_keys=True).encode("utf-8")
+    # Red team #824: fsync the payload before the replace so a power loss
+    # cannot leave a zero-length/torn journal (which mark_stopped-style
+    # readers and the sweep would then treat as unreadable forever).
+    with pending.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
     current_state: str | None = None
     try:
         # Bounded like the Rust read_journal_bounded (64 KiB + 1): a planted
