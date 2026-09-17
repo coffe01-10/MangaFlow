@@ -16,6 +16,11 @@ from pathlib import Path
 _GATE = Path(__file__).resolve().parent / "chunk-consistency-gate.sh"
 
 
+def _run_entry_smoke(frontend_dir: Path) -> subprocess.CompletedProcess:
+    script = f"source {_GATE} && check_static_entry_files \"{frontend_dir}\""
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+
 def _run_gate(frontend_dir: Path, index_html: Path) -> subprocess.CompletedProcess:
     # as_posix + quoting: on a Windows-hosted venv the bare str(path) hands
     # bash backslash paths whose escapes get eaten before source resolves
@@ -93,6 +98,48 @@ def test_gate_ignores_query_strings_via_the_char_class(tmp_path):
     )
     done = _run_gate(frontend, index_html)
     assert done.returncode == 0, done.stderr
+
+
+def test_static_entry_files_smoke_covers_the_pinned_routes(tmp_path):
+    """The #385 smoke gate: the shell entry, every stub-combo route the
+    export patch generates, and the shell-owned tools page must exist.
+    A route missing → exit 1 listing it; the complete set → exit 0."""
+
+    def _frontend_with(routes: list[str]) -> tuple[Path, Path]:
+        frontend = tmp_path / f"frontend-{len(routes)}-{routes and routes[0].count('/')}"
+        frontend.mkdir(parents=True, exist_ok=True)
+        for rel in routes:
+            target = frontend / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"html")
+        return frontend, frontend / "index.html"
+
+    complete = [
+        "index.html",
+        "projects/poc/poc-invalid.html",
+        "projects/poc/assets/poc-invalid.html",
+        "projects/poc/settings.html",
+    ]
+    frontend, _ = _make_frontend(tmp_path, {})
+    for rel in complete:
+        target = frontend / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"html")
+
+    done = _run_entry_smoke(frontend)
+    assert done.returncode == 0, done.stderr
+
+    # Drop one stub route: refused, naming it.
+    (frontend / "projects" / "poc" / "poc-invalid.html").unlink()
+    done = _run_entry_smoke(frontend)
+    assert done.returncode == 1
+    assert "poc-invalid.html" in done.stderr
+
+    # A missing entry document: refused, naming it (the gate file's own
+    # contract for the pinned-list arm).
+    done = _run_entry_smoke(tmp_path / "empty-frontend")
+    assert done.returncode == 1
+    assert "index.html missing" in done.stderr
 
 
 def test_gate_refuses_a_missing_index_html(tmp_path):

@@ -927,3 +927,8 @@
   为 build-frontend-static.sh 内第二个内联未测循环——提取至
   `check_static_entry_files`（与 chunk 门同文件）；契约测试 6 例（完整集通过/缺失列举/
   缺 index 拒绝/查询串/未引用冗余/缺 index 门）+ chunk 门 5 例。真 runner 165 green。
+
+- **§35 补遗二十一（合并去重）**：#693 谱系合并把两代 smoke 门（master 的 DS-04 out/
+  前置块 + 我支的 dist/frontend 提取块）同时留下——chunk 门双跑、init×2 破坏 count==1
+  源序钉（test_static_build_smoke_gate_failure_flag_precedes_both_loops 红）。去重：
+  保留 master 的 DS-04 顺序，entry 循环换提取函数；删除 lock 后的冗余块。20 tests 绿。

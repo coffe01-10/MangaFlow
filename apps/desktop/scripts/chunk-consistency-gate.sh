@@ -31,3 +31,25 @@ check_referenced_chunks() {
   done < <(grep -oE '/_next/static/[A-Za-z0-9/_.-]+' "$index_html" | sort -u)
   return "$missing"
 }
+
+# check_static_entry_files <frontend_dir>
+#   The #385 smoke gate: the shell entry document, every stub-combo route
+#   the export patch generates (generateStaticParams), and the shell-owned
+#   tools page must exist as flat <route>.html files (trailingSlash:false
+#   layout). Exit 1 listing every missing file on stderr; the caller
+#   accumulates its smoke flag from the exit code.
+check_static_entry_files() {
+  local frontend_dir="$1" rel_html missing=0
+  for rel_html in \
+    index.html \
+    projects/poc/poc-invalid.html \
+    projects/poc/assets/poc-invalid.html \
+    projects/poc/settings.html
+  do
+    if [ ! -f "$frontend_dir/$rel_html" ]; then
+      echo "smoke gate: dist/frontend/$rel_html missing (#385)" >&2
+      missing=1
+    fi
+  done
+  return "$missing"
+}
