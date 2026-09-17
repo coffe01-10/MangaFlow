@@ -752,4 +752,8 @@ reset 至 origin/master 1386570（含 ledger-39 谱系）；flock 时代 CI 红�
 - [native] 票（#847/#830/#829/#817/#812/#811/#810/#808/#807）：按规只评论
   「本轮不修 WPF」。
 
-**§39 补充（夜班 04:30 段）**：`run_e2e_owned.py`（验收控制器驱动，232 行）全文审——**CLEAN**：端口预检（SO_EXCLUSIVEADDRUSE 拒未知服务）、allowlist 环境构造（仅 9 个 Windows 系统键透传 + 显式 e2e 身份键；SystemRoot/WINDIR 合并与 node 22.17 CSPRNG quirk 有文档）、混合编码子进程输出按字节转发（无损）、`finish` 的"stop 失败绝不落到目录删除"（防删活运行时）、`--port` 双层验证。Windows 活体 NOT RUN 边界维持。至此 Windows 验收栈三文件全读全审。
+**§40 补充（夜班 07:50 段）**：#884/#885/#886/#887 批次审阅（生产 414+/17-）：
+- **D5 静态 API 证据过滤器的 userinfo-origin 绕过修复**（night 代理）：`http://127.0.0.1:8000@evil.example/…` 字符串前缀匹配已验证 origin——跨源调用满足"直连 API"门而中继无流量。改 origin 相等判定（与 plan-B 分支同型）。**同类即我 #537 authority-gate 的用户信息注入族**——该消费者（D5 证据层）此前未覆盖，夜班补齐。
+- **x-nonce 死头移除**（我此前 cosmetic 观察的落地）+ 注释精确化（CSP 请求头机制）。
+- **manifest.json 碰撞钉**：日志树内种植同名文件会被 exporter 归档成同中心目录双条目——现跳过并报 reserved_manifest_name。
+- **wait-for-health 预算钉** + runner 拒绝 selection flags。
