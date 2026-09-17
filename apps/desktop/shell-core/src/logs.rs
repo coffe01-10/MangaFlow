@@ -1278,6 +1278,30 @@ fn export_logs_with(
                 ExportError::Io(error)
             }
         })?;
+    // Placement-time re-verification: destination_canonical was resolved
+    // at VALIDATION time, and the archive build above leaves a
+    // seconds-wide window in which a same-user ancestor swap (rename +
+    // same-leaf symlink) can redirect the staged pending file — and the
+    // rename that follows — INSIDE the user-data root, defeating the
+    // DestinationInsideUserData exclusion computed at validation. Resolve
+    // the pending file's CURRENT location and re-apply the exclusion
+    // before anything is placed.
+    let placement_root = pending
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .ok_or_else(|| {
+            ExportError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "export staging parent vanished during the archive build",
+            ))
+        })?;
+    let user_data_now = user_data.canonicalize().map_err(ExportError::Io)?;
+    if placement_root.starts_with(&user_data_now) {
+        // Remove the staged orphan at the redirected location — the
+        // failure must leave nothing behind but its error.
+        let _ = remove_file_if_exists(&pending);
+        return Err(ExportError::DestinationInsideUserData);
+    }
     place_archive(&pending, &destination_canonical, overwrite_confirmed)?;
 
     Ok(ExportReport {
@@ -3342,6 +3366,105 @@ mod tests {
         assert_eq!(included, vec!["real.log"], "{manifest}");
         let _ = fs::remove_dir_all(&user_data);
         let _ = fs::remove_dir_all(&destination);
+    }
+
+    /// The ancestor-swap TOCTOU on the export placement: the destination
+    /// was validated OUTSIDE the user-data root, but a same-user swap
+    /// (rename the parent + same-leaf symlink INTO the user-data root)
+    /// during the seconds-wide archive build redirects the staged pending
+    /// file — the placement-time re-verification must catch it, refuse
+    /// with DestinationInsideUserData, and remove the staged orphan.
+    /// The swapper fires 150ms in; the 300MB member set keeps the build
+    /// comfortably past that, so the hit is deterministic in practice.
+    #[test]
+    #[cfg(unix)]
+    fn export_refuses_a_mid_build_ancestor_swap_into_user_data() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let user_data = temp_user_data("ancestor-swap");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        // 150 × 1MB: enough staging work that the swap (which fires the
+        // moment the pending file APPEARS — a poll, not a timer) lands
+        // mid-write instead of after the placement re-verification.
+        let big = vec![b'x'; 1024 * 1024];
+        for i in 0..150 {
+            fs::write(logs.join(format!("member-{i:03}.log")), &big).unwrap();
+        }
+
+        let exports = std::env::temp_dir().join(format!(
+            "mfd-exports-{}-{}",
+            std::process::id(),
+            crate::protocol::new_token()
+        ));
+        fs::create_dir_all(&exports).unwrap();
+        let destination = exports.join("out.zip");
+
+        let (tx, rx) = mpsc::channel();
+        let swapper_exports = exports.clone();
+        let swapper_user_data = user_data.clone();
+        let worker = std::thread::spawn(move || {
+            // Swap the parent the moment the staged pending file APPEARS
+            // (create_new runs before the archive write, so this is
+            // deterministically mid-call): rename away + same-leaf
+            // symlink into the user-data root. A hard 30s escape keeps a
+            // pathological stall a loud failure instead of a hang.
+            let pending_path = swapper_exports.join("out.zip.pending");
+            let started = std::time::Instant::now();
+            loop {
+                if pending_path.exists() {
+                    break;
+                }
+                if started.elapsed() > Duration::from_secs(30) {
+                    let _ = tx.send(());
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let renamed = swapper_exports.with_file_name("exports-real");
+            let _ = fs::remove_dir_all(&renamed);
+            fs::rename(&swapper_exports, &renamed).unwrap();
+            std::os::unix::fs::symlink(&swapper_user_data, &swapper_exports).unwrap();
+            let _ = tx.send(());
+        });
+        // The export runs CONCURRENTLY with the swapper: recv waits below,
+        // after the export, so the swap lands mid-call (the previous
+        // recv-first ordering let the swap complete before validation and
+        // passed vacuously through the validation-time refusal).
+        let result = export_logs_with(
+            &user_data,
+            &destination,
+            false,
+            ExportLimits {
+                max_members: EXPORT_MAX_MEMBERS,
+                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+            },
+        );
+
+        worker.join().unwrap();
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("the swapper must have signaled");
+        match result {
+            Err(ExportError::DestinationInsideUserData) => {}
+            other => panic!(
+                "the mid-build ancestor swap must be caught by the placement re-verification: {other:?}"
+            ),
+        }
+        // The staged orphan inside the user-data root must be gone.
+        let orphans: Vec<_> = fs::read_dir(&user_data)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".pending") || name.ends_with(".zip"))
+            .collect();
+        assert!(
+            orphans.is_empty(),
+            "the redirected staging/placement must leave nothing behind: {orphans:?}"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&exports);
+        let _ = fs::remove_dir_all(exports.with_file_name("exports-real"));
     }
 
 }
