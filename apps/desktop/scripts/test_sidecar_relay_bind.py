@@ -152,11 +152,8 @@ def test_bind_web_port_failure_returns_none_closes_and_logs(monkeypatch, capsys,
     real_close = socket.socket.close
     closed = []
 
-    def raising(self, *args, **kwargs):
-        if (failing == "bind" and self is not None) or True:
-            if failing == "bind":
-                raise OSError("simulated: bind refused")
-            return real_bind(self, *args, **kwargs)
+    def raising_bind(self, *args, **kwargs):
+        raise OSError("simulated: bind refused")
 
     def raising_listen(self, backlog):
         if failing == "listen":
@@ -167,7 +164,7 @@ def test_bind_web_port_failure_returns_none_closes_and_logs(monkeypatch, capsys,
         closed.append(self)
         return real_close(self)
 
-    monkeypatch.setattr(socket.socket, "bind", raising if failing == "bind" else real_bind)
+    monkeypatch.setattr(socket.socket, "bind", raising_bind if failing == "bind" else real_bind)
     monkeypatch.setattr(socket.socket, "listen", raising_listen)
     monkeypatch.setattr(socket.socket, "close", spy_close)
 
