@@ -904,3 +904,8 @@
   ——后者被遮蔽从未运行（39 计数含遮蔽）。改名
   `test_embedded_auto_diagnostics_report_local_despite_reachable_redis` 后 40 收集全绿
   （诊断腿首次真跑通过）；F811 清零。教训：插入测试用同名锚时必须核对新名唯一性。
+
+- **§35 补遗二十一（合并去重）**：#693 谱系合并把两代 smoke 门（master 的 DS-04 out/
+  前置块 + 我支的 dist/frontend 提取块）同时留下——chunk 门双跑、init×2 破坏 count==1
+  源序钉（test_static_build_smoke_gate_failure_flag_precedes_both_loops 红）。去重：
+  保留 master 的 DS-04 顺序，entry 循环换提取函数；删除 lock 后的冗余块。20 tests 绿。
