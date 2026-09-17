@@ -1763,3 +1763,22 @@ os._exit(0)
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&script);
 }
+
+
+/// alive() lifecycle pins: a freshly spawned helper must read alive, and
+/// after stop() the same tree must read dead. Both are poll-based
+/// decisions the native host makes on every loop.
+#[test]
+fn owned_tree_alive_tracks_the_lifecycle_accurately() {
+    let user_data = temp_user_data("alive-lifecycle");
+    let mut command = Command::new(python());
+    command.arg("-c").arg("import time; time.sleep(3600)");
+    let mut tree = OwnedTree::spawn(command).unwrap();
+
+    assert!(tree.alive(), "freshly spawned helper must be alive");
+
+    tree.stop(Duration::from_secs(5)).expect("stop succeeds");
+    assert!(!tree.alive(), "a stopped tree must report dead");
+
+    let _ = fs::remove_dir_all(&user_data);
+}
