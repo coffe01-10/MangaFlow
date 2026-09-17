@@ -615,3 +615,107 @@
 **认证**：Python 五套 **75/75**；shell-core **169/169**。
 
 **新窗配额状态**：B 0/20、C 0/6、E 1/6（§35-36 两轮审计计入）。继续挖。
+
+---
+
+## 9. 20260917 夜班窗口台账（窗口至 2026-09-18 09:00）
+
+- 基线：origin/master `4fa8fb6`（PR #805）。桌面 owner 在 c3d694a..4fa8fb6 期间认领并修复了上一窗全部 24 个 issue（#409-#462）+ 新特性 9ad1000（WorkflowView 页面选章/失败重试/版本恢复）、dc901b0（native UI 覆盖扩展）、c991f39（MANGAFLOW_DESKTOP_EMBEDDED strip）等。
+- **R1（本窗第一轮）：修复批三路并行审计 + 独立 Verifier**。
+  - **关闭核验（D ✓ 首批）**：#426/#427/#429/#448 **FULLY CLOSED**（机制逐行核实 + 证据评论已挂）；#430 三项、#457、#458、#460、#461、#462 全部 FIXED（证据评论已挂）。#428 **PARTIAL** → 残余升级为新 issue #808（preserve-dispatch 漏 Settings/ProjectSettings + disposed-client 顺序保证假冲突框 + discard 不重武自动保存）。
+  - **新发现**：
+    - #807 [P2] WorkflowView 陈旧 `selectedNodes` 残留跨工作流注入——CommitLoadedWorkflow/Restore 清了 selected/selectedEdgeKey 但没清 selectedNodes；克隆获得新 Guid 绕过后端唯一 ID 校验，静默写入 B 的 draft_graph（Copy 按钮经陈旧计数保持可用）。
+    - [P3] LoadRunsAsync 无身份守卫（跨工作流 run 行/Retry/取消按钮错挂；终态 run 停轮询 → 可持久）——待与 #807 合并修复面评估后归档。
+    - [P3] 全屏退出在紧凑布局同时打开双 overlay（UI 态）；GenerateView 场景继承 fetch 错误被伪装成「场景不存在」。
+  - **反驳记录（防重复误报）**：「RunAsync 不 flush 防抖导致用陈旧草稿启动 run」不成立——runs 执行 published_version.graph 而非 draft_graph（planning.py:60-73），且同 scope 活跃 run 有定义锁 409 守卫（planning.py:87-109）。已记录在 #427。
+- **配额进度**：B 2/20（#807/#808）；C 0/6；D 首批 10 issue 完成；E 2/6（R1 三路 Hunter + 独立 Verifier 算 2 轮）。
+- **下一轮优先**：B 挖掘面——9ad1000 新状态机深挖（选章/版本恢复的并发序）、dc901b0 新覆盖面反向审计、native Services 层（ApiClient/缓存/轮询）细节；C 候选——为 #807/#808 修复预置契约测试位、GenerateView PollTick 停轮询的语义钉。
+
+### 本窗 R2（20260917 夜）结果：9ad1000 新特性深挖 + Services 层 + shell-core 边缘。3 路 Hunter + 1 轮独立 Verifier
+
+**已归档 issue（B 账 +7，累计 7/20）**：
+- #810 [P2] 版本恢复 409 分支解除 autosave 防抖（finally 门 `Contains("失败")` 对 409 文案确定性为假——ThrowResponseError 统一前缀「数据已变化…」）→ 离开时无提示丢失未保存编辑；同路径 saveChain 不排空 → 排队的恢复前 PATCH 可覆盖恢复后的草稿 [P3 同族并入]
+- #807 加重证据：catalog.py 稳定节点 ID 跨版本复用 → 陈旧 selectedNodes 的 Delete 会误删恢复后图的同名节点并 PATCH 残缺图（Copy 注入之外的第二打击面）
+- #811 [P3] StartAsync 启动超时清理用默认 40s graceful → 重连冻结 ~75-85s（gracefulTimeout 参数在该调用点未用）
+- #812 [P3] Director 命令信封 created_at 用 CurrentCulture 自定义格式（fi-FI/ar-SA 下非 ISO/回历年份）→ 422 或审计行错日期
+- #813 [P3] 导出 ≤2GiB 全内存构建于 UI 线程同步命令 + 无磁盘空间预检（#430-1 的清理仍有效——这是构建前缺口）
+- #814 [P3] get_status 超时是 per-read 非总预算——慢滴对端可拖住线程远超预算（health_probe 在 UI 线程）
+- #808 已立的两个 P2 残余经独立 Verifier 全链确认（disposed-client 顺序、preserve dispatch 缺口、discard 不重武）
+
+**核实为守住（R2 clean inventory）**：#438 relay accept 修复已落地 HEAD（transient_accept_errors 重试 + 终态错误日志一次退出）；web-exit-watch 释放公告端口；导出轮转竞态全守卫（staging 跳过/canonical 复检/no-follow 尺寸/cap+1 读取/changed_during_export）；picker take(MAX+1) 不整读大文件；canonicalize-then-validate 对重植父链接 fail-closed；#316 读取+base64 已异步化（27MB 内存尖峰仍受 20MiB 上限约束）；run_phase2_acceptance 的 LIVE=NOT_RUN 诚实性；9ad1000 的 scopeLoadVersion/retrying/restoring 纪律与 #153 服务端版本钉。
+### 本窗 R3（20260917 夜续）结果：三路 Hunter（native Controls 补扫 / native Services 全量 / shell-core 边缘）+ Verifier（X5）+ lead 直读
+
+**已归档 issue（B 账 +3，累计 9/20）**：
+- #816 [P3] health 门不复查 owned-helper 存活——helper 在 GO→uvicorn 导入窗口崩溃后，公告端口释放被同用户抢占者绑定，200 即过门且其 origin 注入 WebView（一行 tree.alive() 修复；严重度裁定 P3：同用户已在 A3 边界外，增益为可信壳内钓鱼伪装）
+- #817 [P3] native UI 状态完整性集群四例：Ctrl+N 陈旧抽屉、预算表单区域文化错配（逗号小数locale 永无法重存）、包规格编辑器无脏守卫、DeleteDraft/archive 缺 busy 闩
+- #812 家族证据评论：UsageView 金额 prefill/parse 区域文化错配（CurrentCulture prefill vs InvariantCulture 校验）
+
+**已归档 PR（C 账 1/6）**：#815 get_status 总读预算（慢滴对端测试钉死；后续 commit 补 connect 相 connect_timeout——纯 connect 阻塞 ~2min 曾绕过全部健康预算）
+
+**新批核实为守住（R3 clean inventory）**：#438 relay accept 修复落地；#411 状态重置 + kill 升级全路径 finally；#446 Preferences catch；#442 '..' 仅路由检查；UploadAsync 超时翻译已加（:110）；导航取消真实取消在途读取；SaveDownloadAsync OCE 双调用点处理；api-root 阴影扫描含 traverse-only fallback（fail-closed）；spawn_helper 的 abort_spawn 覆盖全部 post-spawn 失败路径；READY 多行/重复 JSON 键/近 cap origin 全部有界。
+
+### 本窗 R2（20260917 夜续，master 对齐 b638c49）结果：三路交叉审新修复批（E 轮次）
+
+- **关闭核验（D 延续）**：#807 **FIXED**（1659080：selectedNodes 清理 + action targets 重定 + over-guard 反向检查通过；附带修复 #810 的重武根因——succeeded 旗标取代「失败」嗅探）；#808 **仍开放**（两处 P2 残余在 HEAD 复证：preserve-dispatch 缺口 + disposed-client 顺序；8ea1a9a 只关了相邻导演草稿家族）；#431 部分（fadb26f 关 Windows runner 类，POSIX 拆分已由 #455 覆盖）。
+- **新 issue（B 账 +4，累计 13/20）**：
+  - #819 [P3] apps/desktop/scripts 全部契约钉对 CI 不可见（pytest.ini 排除 + 唯一 runner 无 workflow 调用）
+  - #820 [P3] phase2_runner_lib.cjs 在一切类型/lint 门之外，手写 .d.cts 可静默漂移
+  - #821 [P3] native/web 条件值解析器分歧（hex/exponent：web 存数字、native 存字符串 → 同图换 UI 保存翻转分支；execution.py 类型严格比较）
+  - #822 [P3] 端口钉测试缺口：relay-bind Windows 臂从未在任何主机断言、backlog 128 从未被真钉（生产代码已核实正确）
+- **核实为守住**：d949ab5 的 MISSING/null 语义翻转被 tests/test_workflow_issue798.py 钉住；verify-static-origin.mjs 同源过滤属性正确（3xx 仍触发 api_bad）；cab7faf 生产代码未动；1925556 新 CI（windows-latest npm run check）真实存在且 ruff tests 通过。
+
+### 本窗 R4（20260917 夜续）结果：fake_channel 全语义 + relay 空闲边缘 + acceptance runner 家族 + protocol.rs 全读。3 路 Hunter + 1 轮独立 Verifier
+
+**已归档 issue（B 账 +4，累计 17/20）**：
+- #824 [P2] ownership-journal 写跳过 fsync（protocol.rs:482-483 无 sync_all；helper 无任何 fsync）——断电后 owner.json 撕裂/丢失 → mark_stopped 永拒 unparsable + sweep 永留 → runtime 目录永久不可回收；protocol.rs:277-281 引用 owned_processes.py（有 fsync）的「durable」契约在 shell+helper 两路径未满足
+- #825 [P3] relay 槽位无空闲截止——128 个空连接永久饱和 plan-B API relay（每连接 1 槽 + 2-3 线程直到会话重启；10s 冷却日志一行）
+- #826 [P3] runtime 容器检查不于写时复验——同用户 dir-swap 竞态在检查与写窗口内植入 owner.json 到 user_data 之外（#458 静态形态的动态形态）
+- 附带 [P3] run_phase2_acceptance --dry-run 遮蔽 BLOCKED 契约（docstring 自相矛盾；组合未被钉）
+
+**核实为守住**：relay 限位器全路径释放（拒绝/上游失败/spawn 失败/pump finally）；journal 非终态-over-终态复活守卫（:180-192）；announce 端口绑 0（崩溃重启获新端口，TIME_WAIT 无关）；relay SO_REUSEADDR 恰好覆盖崩溃重启 TIME_WAIT 且不能共绑活 POSIX 监听；fake_channel 实现完整 base 接口 + bind_execution_context getattr 守卫；acceptance_safety mask_url 全拒绝形态（点分十进制/八进制/zone-ID/尾点/查询/空白/坏端口）；e2e_node_bootstrap 缺 RUN_ID/@next-env fail-closed。
+
+**驳回/降级记录**：Y3 「--run-live 被 $PgUrl 位置吞」——PowerShell 对 dash-token 是参数 token，未匹配即终止错误（非静默吞）；Y6 「created/ready 残余无界且无认账」——行为确认但 #311 part 2 已裁决「蓄意不自动回收 + 重开条件」，降 P4/仅文档。
+
+### 本窗 R5（20260917 夜续）结果：SourceView/UsageView/剩余 Views + setup/runner 工具族。2 路 Hunter + 1 轮批量 Verifier（7/7 确认）
+
+**已归档 issue（B 账 +3，累计 20/20 ✓ 配额 B 达成）**：
+- #829 [P3] StyleWorkspace kind 选择器即改即发无确认——后端 kind 翻转触发 _detach_reference_asset：剥离 StyleProfile 引用 + 降级 ACTIVE→DRAFT（三个姊妹面都有确认，唯一缺口）
+- #830 [P3] Views 集群三例：UsageView attempt 抽屉把未知 duration 渲染成 「0 ms」（页脚自己写着 未知≠0）；SourceView delete/restore 无激活纪元守卫（陈旧横幅跨项目 + 撤回 404 假弹窗）；CharacterPackagePane DeleteDraft/archive 缺 busy 闩（双击双 POST 假失败 toast）
+- #831 [P3] 工具集群三例：start-dev 端口冲突静默半栈（无 --kill-others/无 LASTEXITCODE 检查/WEB_ORIGIN 3000 vs 实际 3001）；setup-codex 版本门只有文案（Node 18 通过）；run-sidecar-e2e venv 创建硬编码 python3 破坏文档化的 Windows 路径
+
+**核实为守住（R5 clean inventory）**：UsageView from>to 由 UsageFilter 抛错并呈现；parse 双击有服务端 mutex 409；章节删除有确认；JobDetailsWindow close-during-load token 检查；事件泄漏无（对称重订阅/构造期订阅）；ObservableCollection 全 UI 线程；多币种不跨币合计；除零渲染 未知；setup-codex 无下载执行/无 PATH 写/无密钥回显；start-dev env 提升完整（其余走 pydantic env_file）；backup-restore.ps1 参数校验 + 退出码传播；run-sidecar-e2e 锁/戳/tmp 逻辑有守卫（含 30 分钟陈旧抢占）。
+### 本窗 C 配额补录（20260917 夜续）
+
+- #815 已合入 master（d6edb5f）；后续 commit 补 connect 相 `connect_timeout`（纯 connect 对满 backlog 阻塞 ~2min 曾绕过全部健康预算）+ PR 评论留痕。
+- #832 [契约] run_phase2_acceptance docstring 校准（--dry-run 忽略 live/container 开关并返回 0 的行为由 test_acceptance_entry_dry_run_does_not_load_app_or_dotenv 钉死——初始误改行为方向，经既有测试纠正为纯文档修复）
+- #833 [修复] protocol.rs ownership journal fsync（#824 P2 主修；106+11+12 全绿）
+- #834 [修复] helper 侧同款 fsync（#824 配套；37 通过/2 环境预存失败经 stash 对照确认与改动无关）
+- #835 [测试桥] tests/test_desktop_script_pins.py 把 apps/desktop/scripts 契约钉接入默认 pytest 门（缺 API 测试栈的沙箱干净跳过；真实 CI 生效）——关 #819 的可推送形态（workflow 编辑被 OAuth workflow scope 拒绝）
+
+**C 配额：6/6 ✓**（#815、#832、#833、#834、#835 + CI 接线经 #835 桥接等效达成——workflow 本体因 token scope 不可推，已在 PR 内说明）
+
+### 本窗 R9（20260917 夜续，master 00b0d5b）结果：#823/#828 修复批审计（E 第 9 轮）
+
+- **#430 终局 CLOSED**（证据评论已挂）：(i) .pending ENOSPC 孤儿 FIXED（logs.rs 清理 + 测试）；(ii) RunLog::create journal 泄漏 FIXED（633a868，三臂全部 finalize——dir-creation 经 spawn_helper 臂、canonicalize/open 经 record_stopped）；(iii) .rotating 楔死 = 文档化残余（logs.rs:1418-1430 手动补救）。
+- **#836 [P3] 新立**：#828 的新钉测试从不读 owner.json/不断言 state=="stopped"——还原 633a868 一行修复它照样绿（测试名与行为不符 + 惰性夹具/无清理等质量项）。
+- **#823 裁决**：PIN-ONLY 诚实——经生产 Display `.to_string()` 构造变体断言（非 Debug 串匹配），能抓 arm 塌缩/清空；缺口：三个符号链接 arm 钉同一「符号链接」片段，两两互换不落网。生产代码零改动。
+- **#816 状态确认**：wait_for_health 的 tree.alive() 复查**未落地**（#809 只钉了 primitive）；native 侧 b638c49..00b0d5b 零提交。
+
+### 本窗 R10（20260917 夜续）结果：CI 红因定位（E 第 10 轮）
+
+- **#839 [P3] 新立**：dist-lock contender 测试门只查 bash 存在性（windows-latest 的 Git Bash 在 PATH 上）但脚本需要 `flock`（Git Bash 无）→ rc=1 断言失败 → **master 自己的 check 门全红**（#832/#833/#834 的 merge runs 同样在跑向同一失败）。修复面：门改查 flock 可用性（python-vs-python interlock 对仍可跑）。
+- **#835 澄清评论已挂**：桥接步骤在 npm run check 失败后从未执行；红因与桥接内容无关。
+### 本窗 R11（20260917 夜续）结果：E10 互审（8 窗内 issue 对抗复审 + GenerateView/AssetsView 最后清扫）
+
+- **关闭/开放裁决（E10）**：#807 **FIXED-AT-HEAD**（1659080 selectedNodes.Clear :744/:1507；restore 经 CommitLoadedWorkflow）；#810 **FIXED-AT-HEAD**（:859 succeeded 旗标 + :888-894 重武；残余 P3：restore 不排空 saveChain——已并入 #810 相关）；#814 **FIXED-AT-HEAD**（PR #815 全要素含 connect_timeout 与慢滴测试）；**#808/#811/#812/#813/#816/#817 仍开放**（逐项 HEAD 复证）。
+- **新 issue（B 账 +1，累计 9/20 本窗）**：
+  - #847 [P2] 8ea1a9a 回归：GenerateView DirectorDraftActive 守卫跨项目泄漏（RefreshAsync 永久中止 + 渲染抑制 + 幽灵离开提示）+ JournalAsync accept 后不清草稿 → 工作台冻结（同一修复引入的两个机制，合并立卷）
+- **#817 家族证据**：AssetsView DeleteOutfit :1104-1113 同缺 busy 闩。
+- **E 轮次累计 10**。
+### 本窗 R12（20260917 夜续）结果：E11 审计 owner 新批（#837/#842/#840）+ C 配额 #851
+
+- **E11 裁决**：PR #837 复活的是 mutex-poisoning 测试并钉了 record 行三键（真实价值）——但**未触及 #836**（runlog_create_failure 测试仍不断言 journal 终态，#836 保持开放）；PR #842 web-port-bind-failure fail-closed 无回归（merge tree 核验保留全部修复与 §111 台账）；PR #840 panic-hook take-first/restore 正确（全仓扫尾无残留 set_hook(take_hook())）。
+- **#851 [C PR]**：补全 #836 的钉测试——断言 journal 终态 stopped + 移除惰性夹具（还原 633a868 一行修复即红）。
+- **开放 issue HEAD 复核**：#808/#812/#813/#816/#847 均未修（b638c49..74af953 零 native 提交）；#811 的 gracefulTimeout 在 StopAsync 已消费但 StartAsync 调用点仍传默认。
+
+**§37 补充（夜班 03:00 段）**：**#815 交叉审**（get_status 慢滴/连接加固，夜班代理）：`get_status` 家族 **6/6** + 全量 **174/174**。连接阶段 `connect_timeout` 封 SYN 重传旁路；读阶段**总预算**（每读剩余预算 + 逐读重查 + WouldBlock/TimedOut 归一 + 字节帽精确边界 + 非 UTF8 fail-closed 保持）；`try_clone` 共享描述符正确；滴注测试（64×1B@150ms）为恰当证伪器。另审阅 #846（stuck-candidate 扫描续行钉，RUN 1 passed，生产臂 :595 log-and-continue 相符）。认证：shell-core 174/174 @ 2309213。
