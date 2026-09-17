@@ -112,6 +112,31 @@ def test_full_assemble_sweeps_other_pid_debris_after_swap(tmp_path):
     assert not stuck_tmp.exists(), "staged debris from another pid must be swept"
 
 
+def test_assemble_refuses_a_source_without_server_js_and_touches_nothing(tmp_path):
+    # The FIRST line of defense against staging a placeholder bundle: a
+    # src/ with no server.js must be refused before the dist lock, before
+    # any staging, and before anything in `res` is touched — otherwise a
+    # stale or never-built source silently ships as the session bundle.
+    # `tauri build` would package whatever assembled output exists, so the
+    # refusal (not a degraded assemble) is the contract (#382 posture).
+    src, res, node = _buildable_source(tmp_path)
+    (src / "server.js").unlink()
+    res_before = sorted(str(p.relative_to(res)) for p in res.rglob("*"))
+
+    try:
+        assemble.assemble(src=src, res=res, node=node)
+    except SystemExit as error:
+        assert "run build-web-standalone.py first" in str(error), str(error)
+    else:
+        raise AssertionError("a server.js-less source must be refused")
+
+    res_after = sorted(str(p.relative_to(res)) for p in res.rglob("*"))
+    assert res_after == res_before, (
+        "the refusal must precede any staging or sweep: the result tree "
+        f"changed {res_before!r} -> {res_after!r}"
+    )
+
+
 def test_error_texts_tell_the_truth_about_the_sweep(tmp_path):
     """#457 finding 1: the recovery instructions must not promise the
     parked tree stays forever — a later successful assemble removes it."""
