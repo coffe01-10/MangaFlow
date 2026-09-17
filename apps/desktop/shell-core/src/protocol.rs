@@ -2155,4 +2155,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
     }
 
+    /// A candidate runtime directory with NO journal at all must be kept:
+    /// read_journal_bounded returns None (the journal path does not exist),
+    /// and without a parsable terminal state the directory may belong to a
+    /// live session — the sweep has no evidence it is dead. Pins the
+    /// read-failure keep arm for the plain-missing case (the FIFO /
+    /// directory / symlink journal shapes have their own pins above).
+    #[test]
+    fn sweep_keeps_a_candidate_with_no_journal_at_all() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-nojournal-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        std::fs::create_dir_all(&user_data).unwrap();
+        let journalless = {
+            let dir = user_data
+                .join("runtime")
+                .join(format!("{RUNTIME_DIR_PREFIX}{}", "7".repeat(32)));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        assert!(!journalless.join(JOURNAL_NAME).exists());
+
+        // grace = 0: even without the age gate, a journal-less candidate
+        // is kept because its terminal state is unknown.
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+        assert!(
+            journalless.exists(),
+            "a candidate with no journal must be kept: it may be live"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
 }
