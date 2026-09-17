@@ -17,9 +17,13 @@ _GATE = Path(__file__).resolve().parent / "chunk-consistency-gate.sh"
 
 
 def _run_gate(frontend_dir: Path, index_html: Path) -> subprocess.CompletedProcess:
+    # as_posix + quoting: on a Windows-hosted venv the bare str(path) hands
+    # bash backslash paths whose escapes get eaten before source resolves
+    # them (every gate test failed with "No such file or directory"); Git
+    # Bash accepts D:/... forward-slash spellings.
     script = (
-        f"source {_GATE} && "
-        f'check_referenced_chunks "{frontend_dir}" "{index_html}"'
+        f'source "{_GATE.as_posix()}" && '
+        f'check_referenced_chunks "{frontend_dir.as_posix()}" "{index_html.as_posix()}"'
     )
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
 
@@ -97,3 +101,21 @@ def test_gate_refuses_a_missing_index_html(tmp_path):
     done = _run_gate(frontend, frontend / "index.html")
     assert done.returncode == 1
     assert "not found" in done.stderr
+
+
+def test_build_script_gates_before_the_destructive_copy():
+    """Ordering pin (DS-04): the smoke gate must run against the freshly
+    built out/ tree BEFORE the destructive dist/frontend replace. A gate
+    that only runs after the copy fails the build but leaves the known-
+    broken export sitting in the shippable path, and gating the dist copy
+    after its lock was released can observe another writer's torn state."""
+    script = (_GATE.parent / "build-frontend-static.sh").read_text(
+        encoding="utf-8"
+    )
+    gate_at = script.index('check_referenced_chunks "$WORKTREE/apps/web/out"')
+    copy_at = script.index('rm -rf "$DESKTOP_ROOT/dist/frontend"')
+    assert gate_at < copy_at, (
+        "smoke gate must run before the destructive dist/frontend replace"
+    )
+    # The gate must not be re-anchored at the dist copy (post-lock read).
+    assert 'check_referenced_chunks "$DESKTOP_ROOT/dist/frontend"' not in script

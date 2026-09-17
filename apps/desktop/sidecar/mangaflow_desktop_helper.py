@@ -66,6 +66,30 @@ def _log(message: str) -> None:
     print(f"[desktop-helper] {message}", file=sys.stderr, flush=True)
 
 
+def _reject_linked_runtime_directory(directory: Path) -> None:
+    """Refuse a runtime directory reachable only through a link (#313).
+
+    The guard originally compared ``directory.resolve() != directory.absolute()``
+    as text. On Windows ``resolve()`` (GetFinalPathNameByHandle) also expands
+    8.3 short names and mapped drives into different text — legitimate
+    non-link paths the shell-core side accepts were fail-closed here, so the
+    desktop session could never start from an installer-returned short path.
+    Probe the link semantics instead: every component from the directory to
+    the root must be a real directory (symlink, or junction on Windows).
+    """
+    is_junction = getattr(os.path, "isjunction", None)
+    current = directory
+    while True:
+        if current.is_symlink():
+            raise ValueError("process runtime path/ownership mismatch")
+        if is_junction is not None and is_junction(current):
+            raise ValueError("process runtime path/ownership mismatch")
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
+
+
 def _read_context() -> tuple[str, Path]:
     token = os.environ.get("MANGAFLOW_DESKTOP_TOKEN", "")
     journal = Path(os.environ.get("MANGAFLOW_DESKTOP_JOURNAL", ""))
@@ -76,8 +100,7 @@ def _read_context() -> tuple[str, Path]:
     directory = journal.parent
     if directory.name != f"mangaflow-desktop-{token}":
         raise ValueError("process journal/runtime ownership mismatch")
-    if directory.resolve() != directory.absolute():
-        raise ValueError("process runtime path/ownership mismatch")
+    _reject_linked_runtime_directory(directory)
     # Drop the handshake secrets from the helper's own environment: the
     # long-lived server (and every subprocess it spawns later - the CLI
     # channel's children inherit os.environ) must not carry the ownership

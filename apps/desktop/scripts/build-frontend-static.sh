@@ -197,26 +197,6 @@ if [ ! -f out/index.html ]; then
   exit 1
 fi
 
-# Destructive section (#350): the delete+repopulate of dist/frontend must
-# not interleave with the other dist/ writers (build-web-standalone.py's
-# rmtree+move, the e2e runner's rebuild) or a serving run reading the tree.
-acquire_dist_build_lock "$DIST_LOCK" 600
-dist_lock_held=1
-rm -rf "$DESKTOP_ROOT/dist/frontend"
-mkdir -p "$DESKTOP_ROOT/dist/frontend"
-cp -r out/. "$DESKTOP_ROOT/dist/frontend/"
-# The shell-owned tools page is not part of the web export; keep it shipped.
-cp "$DESKTOP_ROOT/shell/shell-tools.html" "$DESKTOP_ROOT/dist/frontend/"
-# Provenance stamp (web-standalone's build-info.json precedent): what was
-# built, from which commit, when — written INSIDE the lock like every other
-# write to the dist trees (#350 discipline; the stamp landed outside it in
-# #741 and that was an unlocked-write slip).
-printf '{"commit":"%s","built_at":"%s"}\n' \
-  "$(git -C "$REPO_ROOT" rev-parse HEAD)" \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DESKTOP_ROOT/dist/frontend/build-info.json"
-release_dist_build_lock "$DIST_LOCK"
-dist_lock_held=0
-
 # Smoke gate (#385): a green `next build` plus a copied out/ tree can
 # still hide a broken export (wrong output dir, empty routes). Pin the
 # shell entry document and every stub combo the export patch generates
@@ -233,8 +213,13 @@ dist_lock_held=0
 # shell. Extracted to the sourceable chunk-consistency-gate.sh so the gate
 # itself is contract-tested (the script body cannot be sourced — its
 # top-level worktree/build side effects).
+# Ordering (DS-04): the gate runs against the freshly built out/ tree
+# BEFORE the destructive dist/frontend replace — a failing gate must not
+# leave a known-broken export in the shippable path, and gating out/
+# (instead of the dist copy after its lock was already released) can never
+# observe another writer's torn state.
 smoke_missing=0
-if ! check_referenced_chunks "$DESKTOP_ROOT/dist/frontend" "$DESKTOP_ROOT/dist/frontend/index.html"; then
+if ! check_referenced_chunks "$WORKTREE/apps/web/out" "$WORKTREE/apps/web/out/index.html"; then
   smoke_missing=1
 fi
 
@@ -244,13 +229,35 @@ for rel_html in \
   projects/poc/assets/poc-invalid.html \
   projects/poc/settings.html
 do
-  if [ ! -f "$DESKTOP_ROOT/dist/frontend/$rel_html" ]; then
-    echo "smoke gate: dist/frontend/$rel_html missing (#385)" >&2
+  if [ ! -f "$WORKTREE/apps/web/out/$rel_html" ]; then
+    echo "smoke gate: out/$rel_html missing (#385)" >&2
     smoke_missing=1
   fi
 done
 if [ "$smoke_missing" -ne 0 ]; then
   exit 1
 fi
+
+# Destructive section (#350): the delete+repopulate of dist/frontend must
+# not interleave with the other dist/ writers (build-web-standalone.py's
+# rmtree+move, the e2e runner's rebuild) or a serving run reading the tree.
+# Runs only after the gate above is green, so the previous (known-good)
+# export stays in place on a failed build.
+acquire_dist_build_lock "$DIST_LOCK" 600
+dist_lock_held=1
+rm -rf "$DESKTOP_ROOT/dist/frontend"
+mkdir -p "$DESKTOP_ROOT/dist/frontend"
+cp -r out/. "$DESKTOP_ROOT/dist/frontend/"
+# The shell-owned tools page is not part of the web export; keep it shipped.
+cp "$DESKTOP_ROOT/shell/shell-tools.html" "$DESKTOP_ROOT/dist/frontend/"
+# Provenance stamp (web-standalone's build-info.json precedent): what was
+# built, from which commit, when — written INSIDE the lock like every other
+# write to the dist trees (#350 discipline; the stamp landed outside it in
+# #741 and that was an unlocked-write slip).
+printf '{"commit":"%s","built_at":"%s"}\n' \
+  "$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DESKTOP_ROOT/dist/frontend/build-info.json"
+release_dist_build_lock "$DIST_LOCK"
+dist_lock_held=0
 
 echo "static export copied to $DESKTOP_ROOT/dist/frontend"

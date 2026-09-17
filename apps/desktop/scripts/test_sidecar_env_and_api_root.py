@@ -35,6 +35,33 @@ HELPER_PATH = Path(helper.__file__).resolve()
 HOSTILE_IMPORT_MARKER = "HOSTILE_FAKE_CHANNEL_IMPORTED"
 
 
+def _can_create_symlink() -> bool:
+    """Capability probe for the link-refusal pins. On Windows hosts without
+    Developer Mode/admin, os.symlink raises OSError 1314 at setup and would
+    take the whole suite down (#573's runner explicitly supports
+    Windows-hosted venvs)."""
+    import shutil
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(prefix="mangaflow-symlink-probe-"))
+    try:
+        (root / "target.txt").write_text("x", encoding="utf-8")
+        try:
+            os.symlink(root / "target.txt", root / "link.txt")
+        except (OSError, NotImplementedError):
+            return False
+        return True
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+requires_symlink_capability = pytest.mark.skipif(
+    not _can_create_symlink(),
+    reason="creating symlinks needs Developer Mode/admin on Windows hosts; "
+    "the link-refusal pins need the capability at setup",
+)
+
+
 def _plant_hostile_fake_channel(root: Path) -> None:
     """A fake_channel.py that records its own import.
 
@@ -426,6 +453,7 @@ def test_stdin_eof_watch_drains_post_go_bytes_and_signals(monkeypatch):
     )
 
 
+@requires_symlink_capability
 def test_read_context_rejects_a_symlinked_journal(monkeypatch, tmp_path):
     """A symlink planted at the journal path must be refused before the
     token is trusted as the runtime anchor: the link could point the
@@ -472,30 +500,36 @@ def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
     runtime.mkdir(parents=True)
     journal = runtime / "owner.json"
 
+    # Sections (1)/(2) plant real symlinks: run them only where the host
+    # grants the capability (Windows without Developer Mode raises OSError
+    # 1314 at planting time). The atomic-write happy path (3) runs everywhere.
+    can_link = _can_create_symlink()
+
     # (1) A symlink at the journal itself must be refused, target untouched.
     outside = tmp_path / "outside.json"
     outside.write_text("{}", encoding="utf-8")
-    journal.symlink_to(outside)
-    with pytest.raises(RuntimeError, match="must not be a link"):
-        helper._write_journal(journal, record)
-    assert outside.read_text(encoding="utf-8") == "{}"
+    if can_link:
+        journal.symlink_to(outside)
+        with pytest.raises(RuntimeError, match="must not be a link"):
+            helper._write_journal(journal, record)
+        assert outside.read_text(encoding="utf-8") == "{}"
 
-    journal.unlink()
+        journal.unlink()
 
-    # (2) A symlink at the helper's OWN staging sibling
-    # (owner.json.helper.pending, #602) must also be refused — and because
-    # write_text would FOLLOW that link, the outside target must still
-    # carry its original bytes (a guard removed or reordered, or a helper
-    # regression back to the legacy shared .pending name, lets the record
-    # clobber the target through the link).
-    pending = journal.with_name(journal.name + ".helper.pending")
-    pending.symlink_to(outside)
-    with pytest.raises(RuntimeError, match="must not be a link"):
-        helper._write_journal(journal, record)
-    assert outside.read_text(encoding="utf-8") == "{}", (
-        "the .pending link target must not be clobbered"
-    )
-    pending.unlink()
+        # (2) A symlink at the helper's OWN staging sibling
+        # (owner.json.helper.pending, #602) must also be refused — and because
+        # write_text would FOLLOW that link, the outside target must still
+        # carry its original bytes (a guard removed or reordered, or a helper
+        # regression back to the legacy shared .pending name, lets the record
+        # clobber the target through the link).
+        pending = journal.with_name(journal.name + ".helper.pending")
+        pending.symlink_to(outside)
+        with pytest.raises(RuntimeError, match="must not be a link"):
+            helper._write_journal(journal, record)
+        assert outside.read_text(encoding="utf-8") == "{}", (
+            "the .pending link target must not be clobbered"
+        )
+        pending.unlink()
 
     # (3) Happy path: the journal lands with sorted-key JSON and no
     # .pending. Byte-exact: a dropped sort_keys changes the file's shape
@@ -504,9 +538,15 @@ def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
     assert journal.read_text(encoding="utf-8") == json_module.dumps(
         record, sort_keys=True
     ), "the stamp must be the exact sorted-key serialization"
-    assert not pending.exists()
+    assert not journal.with_name(journal.name + ".helper.pending").exists()
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="live /proc/self/stat cross-check is the Linux identity anchor; "
+    "the runner explicitly supports Windows-hosted venvs where /proc is absent "
+    "(the degrade-to-none contract below covers non-Linux hosts)",
+)
 def test_pid_starttime_reads_live_anchor_and_is_deterministic():
     """The helper's Linux identity anchor: /proc/self/stat field 22
     (index 19 after the comm close-paren split) as a positive int.
@@ -545,6 +585,7 @@ def test_pid_starttime_degrades_to_none_without_proc(monkeypatch):
         assert helper._pid_starttime() is None
 
 
+@requires_symlink_capability
 def test_read_context_rejects_a_symlinked_runtime_directory(tmp_path, monkeypatch):
     """The resolve() vs absolute() guard: a symlink planted at the runtime
     DIRECTORY (not the journal file) redirects the ownership anchor to a
@@ -569,6 +610,42 @@ def test_read_context_rejects_a_symlinked_runtime_directory(tmp_path, monkeypatc
 
     with pytest.raises(ValueError, match="ownership mismatch"):
         helper._read_context()
+
+
+def test_read_context_accepts_short_name_ancestor_runtime_directory(
+    tmp_path, monkeypatch
+):
+    """DS-03: a runtime directory whose ANCESTOR is spelled as a Windows 8.3
+    short name (leaf kept verbatim) must be accepted. The old
+    ``resolve() != absolute()`` text guard rejected it — GetFinalPathNameByHandle
+    expands short names, so installers handing the shell a short path could
+    never start a desktop session even though the shell-core side accepts
+    the same path. Link probing (real symlink/junction) stays rejected."""
+
+    if sys.platform != "win32":
+        pytest.skip("8.3 short names are a Windows filesystem artifact")
+    import ctypes
+
+    token = "e" * 32
+    runtime = tmp_path / f"mangaflow-desktop-{token}"
+    runtime.mkdir()
+    (runtime / "owner.json").write_text("{}", encoding="utf-8")
+
+    buffer = ctypes.create_unicode_buffer(1024)
+    length = ctypes.windll.kernel32.GetShortPathNameW(str(tmp_path), buffer, 1024)
+    assert length > 0, "GetShortPathNameW failed"
+    short_root = Path(buffer.value)
+    if short_root == tmp_path:
+        pytest.skip("volume has 8.3 name generation disabled")
+    short_journal = short_root / f"mangaflow-desktop-{token}" / "owner.json"
+
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_TOKEN", token)
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_JOURNAL", str(short_journal))
+
+    got_token, got_journal = helper._read_context()
+    assert got_token == token
+    assert got_journal.name == "owner.json"
+
 
 def test_await_go_accepts_exact_line_and_rejects_drift(monkeypatch):
     """_await_go is the handshake's final gate: the line must be exactly
@@ -688,7 +765,13 @@ def test_apply_app_environment_refuses_url_hostile_user_data(tmp_path):
     execute for a refused path."""
 
     hostile = tmp_path / "w?rd"
-    hostile.mkdir()
+    try:
+        hostile.mkdir()
+    except OSError:
+        # Windows forbids '?' in names outright — the refusal under test
+        # validates the path STRING before any filesystem access, so the
+        # hostile directory need not exist for the pin.
+        pass
     helper.os.environ.pop("DATABASE_URL", None)
     helper.os.environ.pop("MANGAFLOW_DISABLE_DOTENV", None)
 
@@ -856,7 +939,12 @@ def test_refusal_leaves_user_data_untouched_and_exits_cleanly(tmp_path, monkeypa
     (api_root / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
     (api_root / "app" / "main.py").write_text("# marker\n", encoding="utf-8")
     hostile = tmp_path / "w?rd"
-    hostile.mkdir()
+    try:
+        hostile.mkdir()
+    except OSError:
+        # Windows forbids '?' in names outright; the refusal fires on the
+        # path string before the helper touches the filesystem.
+        pass
     # The real shell creates the runtime directory before spawning.
     (tmp_path / "runtime" / f"mangaflow-desktop-{'e' * 32}").mkdir(parents=True)
 

@@ -237,15 +237,40 @@ fn directory_pick_validates_type_and_symlinks() {
         Err(PickError::NotADirectory)
     ));
 
-    // A trailing slash / inner dot on the picked directory must not
-    // change the reported name: the page renders the picked folder's
-    // display name verbatim, and a trailing separator would leak into it.
+    // Alternate separator spellings of the picked directory must not change
+    // the reported name: the page renders the picked folder's display name
+    // verbatim, and a trailing separator (or mixed separators, which native
+    // dialogs hand back on Windows) would leak into it. Each raw spelling is
+    // asserted to actually differ from the original form first, so the name
+    // and canonical-path equalities below are not vacuous. (A `.`-component
+    // form cannot be pinned here: Path component normalization drops CurDir,
+    // so it never reaches the validator as a distinct spelling.)
     let trailing = dir.join("素材").join("");
+    assert_ne!(
+        trailing.as_os_str(),
+        material.as_os_str(),
+        "the trailing-separator spelling must differ from the plain one"
+    );
     let picked_trailing = validate_picked_directory(&trailing).unwrap();
     assert_eq!(picked_trailing.name, "素材", "trailing separator must not leak into the name");
     assert_eq!(
-        picked_trailing.path, picked.path,
+        picked_trailing.path,
+        material.canonicalize().unwrap(),
         "the canonical directory must be identical"
+    );
+
+    let mixed = PathBuf::from(format!("{}/", material.to_string_lossy().replace('\\', "/")));
+    assert_ne!(
+        mixed.as_os_str(),
+        material.as_os_str(),
+        "the mixed-separator spelling must differ from the plain one"
+    );
+    let picked_mixed = validate_picked_directory(&mixed).unwrap();
+    assert_eq!(picked_mixed.name, "素材", "mixed separators must not leak into the name");
+    assert_eq!(
+        picked_mixed.path,
+        material.canonicalize().unwrap(),
+        "mixed separators must canonicalize to the same directory"
     );
 
     let link = dir.join("dir-link");
