@@ -337,6 +337,7 @@ function Probe({ collect, selectedPageId = "page-1" }: { collect: (value: unknow
     setDraft: () => undefined,
     activeDrawModel: "image.nano_banana_2",
     requireDrawModel: () => "image.nano_banana_2",
+    draftResolution: "1K",
   });
   useEffect(() => collect(workspace));
   return null;

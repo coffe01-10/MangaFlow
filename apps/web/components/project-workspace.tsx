@@ -256,6 +256,9 @@ export default function ProjectWorkspace({
     setDraft,
     activeDrawModel,
     requireDrawModel,
+    // 项目设置的「草稿清晰度」此前是无消费者假开关：抽卡硬编码 1K。这里
+    // 把设置真正接到生成载荷与按钮文案上。
+    draftResolution: draft?.draft_resolution ?? "1K",
   });
 
   const assignOutfit = useMutation({
@@ -539,6 +542,7 @@ export default function ProjectWorkspace({
               projectPath={projectPath}
               setSelectedPageId={setSelectedPageId}
               workspace={generationWorkspace}
+              draftResolution={draft?.draft_resolution ?? "1K"}
               models={models}
               localEditCandidate={localEditCandidate}
               openLocalEdit={openLocalEdit}

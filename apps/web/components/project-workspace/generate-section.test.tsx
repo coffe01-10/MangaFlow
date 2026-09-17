@@ -255,9 +255,11 @@ function createClient() {
 function GenerateHarness({
   initialPageId = "page-1",
   initialLocalEdit = null,
+  draftResolution = "1K",
 }: {
   initialPageId?: string;
   initialLocalEdit?: PageCandidate | null;
+  draftResolution?: "1K" | "2K" | "4K";
 } = {}) {
   const queries = useWorkspaceQueries({
     id: "project-1",
@@ -282,6 +284,7 @@ function GenerateHarness({
     setDraft: () => undefined,
     activeDrawModel: "image.nano_banana_2",
     requireDrawModel: () => "image.nano_banana_2",
+    draftResolution,
   });
   return (
     <GenerateSection
@@ -311,6 +314,7 @@ function GenerateHarness({
       projectPath={(target) => `/projects/project-1/${target}`}
       setSelectedPageId={setSelectedPageId}
       workspace={workspace}
+      draftResolution={draftResolution}
       models={queries.models}
       localEditCandidate={localEditCandidate}
       openLocalEdit={setLocalEditCandidate}
@@ -322,6 +326,7 @@ function GenerateHarness({
 function renderGenerate(harnessProps?: {
   initialPageId?: string;
   initialLocalEdit?: PageCandidate | null;
+  draftResolution?: "1K" | "2K" | "4K";
 }) {
   const client = createClient();
   const view = render(
@@ -1024,6 +1029,72 @@ describe("GenerateSection 关键行为", () => {
     await waitFor(() => {
       expect(generateCandidate).toHaveBeenCalled();
       expect(screen.getByText("供应商返回 429")).toBeInTheDocument();
+    });
+  });
+
+  it("快速双击生成只入队一次付费任务（同步在途守卫，R1）", async () => {
+    // isPending 经 notifyManager 异步传播：双击的第二份 mutationFn 在第一份
+    // 仍在途时就会执行，各自 currentBatch 为空 → 各开一个批次、各入队一个
+    // 付费任务。把生成挂起，同一帧内连点两次，必须只发出一次
+    // startBatch + 一次 generateCandidate。
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      production: {
+        page_id: "page-1",
+        state: "READY",
+        ready: true,
+        selected_candidate_id: null,
+        blockers: [],
+      },
+      current_batch: null,
+    }));
+    let releaseGenerate: ((value: { job_id: string; job_status: string; candidate: PageCandidate }) => void) | undefined;
+    generateCandidate.mockImplementation(
+      () => new Promise((resolve) => {
+        releaseGenerate = resolve;
+      }),
+    );
+    startBatch.mockResolvedValue(workbenchFixture().current_batch!);
+    renderGenerate();
+    const button = await screen.findByRole("button", { name: "生成 1 个 1K 彩色候选" });
+    await waitFor(() => {
+      expect(button).toBeEnabled();
+    });
+    fireEvent.click(button);
+    fireEvent.click(button);   // isPending 尚未传播：第二击必须被 ref 守卫挡下
+    await waitFor(() => {
+      expect(startBatch).toHaveBeenCalledTimes(1);
+      expect(generateCandidate).toHaveBeenCalledTimes(1);
+    });
+    releaseGenerate?.({ job_id: "job-gen", job_status: "PENDING", candidate: candidateFixture() });
+  });
+
+  it("项目设置「草稿清晰度」接入生成载荷与按钮文案（R1）", async () => {
+    // 抽卡此前硬编码 1K，设置页的「草稿清晰度」是无消费者假开关。
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      production: {
+        page_id: "page-1",
+        state: "READY",
+        ready: true,
+        selected_candidate_id: null,
+        blockers: [],
+      },
+    }));
+    generateCandidate.mockResolvedValue({ job_id: "job-gen", job_status: "PENDING", candidate: candidateFixture() });
+    renderGenerate({ draftResolution: "2K" });
+    const button = await screen.findByRole("button", { name: "生成 1 个 2K 彩色候选" });
+    await waitFor(() => {
+      expect(button).toBeEnabled();
+    });
+    expect(screen.getByText("2K · 彩色 · 1 个候选")).toBeInTheDocument();
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(generateCandidate).toHaveBeenCalledWith(
+        expect.any(String),
+        "image.nano_banana_2",
+        "2K",
+        2,
+        expect.anything(),
+      );
     });
   });
 

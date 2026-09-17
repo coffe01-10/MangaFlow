@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
-import { api, isConflictError, type CharacterPackageSummary, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
+import { api, isConflictError, type CharacterPackageSummary, type ImageModelAlias, type InspectionResult, type Job, type Resolution } from "@/lib/api";
 import { activePollInterval, hasActiveItem, isTerminalTaskStatus } from "@/lib/task-status";
 
 import { recommendedRepairType } from "./display";
@@ -39,6 +39,7 @@ export function useGenerationWorkspace({
   setDraft,
   activeDrawModel,
   requireDrawModel,
+  draftResolution,
 }: {
   id: string;
   section: WorkspaceSection;
@@ -53,6 +54,7 @@ export function useGenerationWorkspace({
   setDraft: (draft: null) => void;
   activeDrawModel: ImageModelAlias | null;
   requireDrawModel: () => ImageModelAlias;
+  draftResolution: Resolution;
 }) {
   const queryClient = useQueryClient();
   const [actionNotice, setActionNotice] = useState<Error | null>(null);
@@ -243,11 +245,22 @@ export function useGenerationWorkspace({
   const selectedWorkbenchCandidate = workbench.data?.selected_candidate ?? null;
   const productionBlocker = pageProduction?.blockers[0] ?? null;
 
+  // 同步在途守卫：isPending 经 notifyManager 异步传播，快速双击会跑两份
+  // mutationFn（与 usePerJobMutation 的 inFlight ref、shared.tsx 记录过的
+  // 「提交后首帧仍见 pending=false」同一家族）。mutate() 同步调用
+  // mutationFn，ref 检查因此在第二次点击的 await 之前完成。
+  const startBatchInFlight = useRef(false);
   const startBatch = useMutation({
     mutationFn: () => {
-      const issue = getPageStructureIssue(selectedPage);
-      if (issue) throw new Error(issue);
-      return api.startBatch(selectedPage!.id);
+      if (startBatchInFlight.current) throw new Error("新批次请求已在进行中，请勿重复点击");
+      startBatchInFlight.current = true;
+      try {
+        const issue = getPageStructureIssue(selectedPage);
+        if (issue) throw new Error(issue);
+        return api.startBatch(selectedPage!.id);
+      } finally {
+        startBatchInFlight.current = false;
+      }
     },
     onSuccess: (batch) => {
       setActionNotice(null);
@@ -259,25 +272,35 @@ export function useGenerationWorkspace({
     onError: (error) => setActionNotice(error),
   });
 
+  const generateInFlight = useRef(false);
   const generate = useMutation({
     mutationFn: async () => {
-      // Defense in depth for the fail-closed package gate: the UI keeps the
-      // workbench skeleton/error up while the list is unknown, but a stale
-      // click must not send a legacy reference payload either.
-      if (characterPackages.isLoading) throw new Error("正在读取角色模型包，请稍候重试");
-      if (characterPackages.isError) throw new Error("角色模型包状态无法确认，请重试后再生成");
-      const issue = getPageGenerationIssue(selectedPage, activeDrawModel);
-      if (issue) throw new Error(issue);
-      if (!pageReadiness.data?.ready) throw new Error(pageReadiness.isLoading ? "正在检查页面生产条件" : "页面生产准备尚未完成，请先处理阻塞项");
-      if (!generationReferenceReady) throw new Error("请为本页每个入镜人物选择人物参考图，并补齐分镜指定服装的参考图");
-      const batch = currentBatch ?? await api.startBatch(selectedPage!.id);
-      return api.generateCandidate(
-        batch.id,
-        requireDrawModel(),
-        "1K",
-        selectedPage!.storyboard_version,
-        effectiveReferenceSelections,
-      );
+      // 双击会各自看到 currentBatch 为空并各开一个新批次、入队两个付费任务
+      // （防抖到 workbench 失效重拉之间没有服务端幂等键），ref 守卫在第一次
+      // await 之前挡住第二次点击。
+      if (generateInFlight.current) throw new Error("生成请求已在进行中，请勿重复点击");
+      generateInFlight.current = true;
+      try {
+        // Defense in depth for the fail-closed package gate: the UI keeps the
+        // workbench skeleton/error up while the list is unknown, but a stale
+        // click must not send a legacy reference payload either.
+        if (characterPackages.isLoading) throw new Error("正在读取角色模型包，请稍候重试");
+        if (characterPackages.isError) throw new Error("角色模型包状态无法确认，请重试后再生成");
+        const issue = getPageGenerationIssue(selectedPage, activeDrawModel);
+        if (issue) throw new Error(issue);
+        if (!pageReadiness.data?.ready) throw new Error(pageReadiness.isLoading ? "正在检查页面生产条件" : "页面生产准备尚未完成，请先处理阻塞项");
+        if (!generationReferenceReady) throw new Error("请为本页每个入镜人物选择人物参考图，并补齐分镜指定服装的参考图");
+        const batch = currentBatch ?? await api.startBatch(selectedPage!.id);
+        return api.generateCandidate(
+          batch.id,
+          requireDrawModel(),
+          draftResolution,
+          selectedPage!.storyboard_version,
+          effectiveReferenceSelections,
+        );
+      } finally {
+        generateInFlight.current = false;
+      }
     },
     onSuccess: () => {
       setActionNotice(null);

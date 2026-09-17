@@ -105,6 +105,7 @@ const runDetailSpy = vi.spyOn(api, "workflowRun").mockImplementation(async (runI
 const startRunSpy = vi.spyOn(api, "startWorkflowRun");
 const updateSpy = vi.spyOn(api, "updateWorkflow");
 const publishSpy = vi.spyOn(api, "publishWorkflow");
+const restoreSpy = vi.spyOn(api, "restoreWorkflowVersion");
 
 function renderStudio() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -185,6 +186,60 @@ describe("WorkflowStudio 草稿保存与发布", () => {
     await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(2));
     expect(updateSpy.mock.calls[1][2].draft_graph?.nodes[0].config[key as "temperature"])
       .toBe(expected);
+  });
+
+  it("TEST-WF-Restore1 恢复成功立即用恢复图重置画布，不依赖列表重取落地（R1）", async () => {
+    // 旧实现的画布重载完全依赖 refetch 落地后 activeWorkflow 的新对象身份：
+    // refetch 失败（retry 后仍错）时画布永远停在恢复前的图，而 notice 已宣称
+    // 成功——随后任意一次保存会把「旧图 + 恢复后的新版本号」PATCH 回服务端，
+    // 静默回滚这次恢复。恢复 onSuccess 必须直接用返回值重置画布。
+    const restoredGraph: WorkflowGraph = {
+      schema_version: 2,
+      nodes: [{ id: "restored-node", type: "agent.parse_story", name: "恢复节点", position: { x: 0, y: 0 }, inputs: [], outputs: [], config: {} as WorkflowGraph["nodes"][number]["config"] }],
+      edges: [],
+    };
+    versionsSpy.mockResolvedValue([{
+      id: "ver-3", workflow_id: "wf-1", revision: 3, graph: emptyGraph,
+      graph_checksum: "abc", validation_report: { valid: true, issues: [], topological_order: [] },
+      published_at: "2026-08-27T00:00:00Z",
+    }]);
+    restoreSpy.mockReset().mockResolvedValue(workflow({ version: 9, draft_version: 4, draft_graph: restoredGraph }));
+    // 列表重取挂起在途（网络抖动窗口）：既不落地新身份（旧实现画布永不
+    // 重载），也不进入列表错误屏（refetch 失败会让整屏切到错误视图）。
+    let workflowsCalls = 0;
+    const refetchGate = deferred<WorkflowDefinition[]>();
+    workflowsSpy.mockImplementation(async () => {
+      workflowsCalls += 1;
+      if (workflowsCalls === 1) return [workflow()];
+      return refetchGate.promise;
+    });
+    updateSpy.mockResolvedValue(workflow({ version: 10, draft_version: 5, draft_graph: restoredGraph }));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderStudio();
+    fireEvent.click(await screen.findByRole("button", { name: /^V3/ }));
+    await waitFor(() => expect(restoreSpy).toHaveBeenCalledTimes(1));
+    // 恢复后的图必须已在画布上（不等重取落地）：恢复后再做一次编辑并显式
+    // 保存，提交的 draft_graph 必须包含恢复节点——旧实现画布仍停在恢复前
+    // 的空图，这次保存会把「空图 + 恢复后版本号 9」PATCH 回服务端，静默
+    // 回滚恢复。
+    fireEvent.click(screen.getByRole("button", { name: /解析原作/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+    expect(updateSpy.mock.calls[0][1]).toBe(9);
+    const savedIds = updateSpy.mock.calls[0][2].draft_graph?.nodes.map((node) => node.id) ?? [];
+    expect(savedIds).toContain("restored-node");
+    confirmSpy.mockRestore();
+    refetchGate.resolve([workflow({ version: 9, draft_version: 4, draft_graph: restoredGraph })]);
+  });
+
+  it("TEST-WF-RUNS-ERR runs 查询失败不再用「尚未运行」空态冒充（R1）", async () => {
+    // 运行历史读取失败时页脚必须呈现错误与重试：空态会让用户以为运行丢失而
+    // 重复发起（同 scope 活跃 run 守卫随即 409）。
+    runsSpy.mockRejectedValue(new Error("网关 502"));
+    renderStudio();
+    expect(await screen.findByText(/运行列表读取失败：网关 502/)).toBeInTheDocument();
+    expect(screen.queryByText("尚未运行已发布版本")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
   });
 
   // 键盘删除（deleteKeyCode=Backspace/Delete）走 onNodesChange 的 remove
