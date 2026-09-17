@@ -618,7 +618,7 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     const reopened = screen.getByRole("dialog", { name: storyboardCopy.rebuildTitle });
     fireEvent.click(within(reopened).getByRole("button", { name: "5 格" }));
     fireEvent.click(within(reopened).getByRole("button", { name: storyboardCopy.rebuildConfirm }));
-    await waitFor(() => expect(updatePageLayout).toHaveBeenCalledWith("page-1", 5, "dynamic"));
+    await waitFor(() => expect(updatePageLayout).toHaveBeenCalledWith("page-1", 5, "dynamic", 1));
   });
 
   it("S15 ?page= 与 ?character= 深链仍定位", async () => {

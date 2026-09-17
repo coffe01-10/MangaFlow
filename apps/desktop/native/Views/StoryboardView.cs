@@ -1524,7 +1524,8 @@ public sealed partial class StoryboardView : WorkspaceView
         try
         {
             await Api.SendAsync($"pages/{pageAtRequest.Id}/layout", HttpMethod.Patch,
-                new { panel_count = count, layout_mode = mode }, cancellation: lifetime.Token);
+                new { panel_count = count, layout_mode = mode, storyboard_version = pageAtRequest.StoryboardVersion },
+                cancellation: lifetime.Token);
             history.Clear();
             geometryRequest = null;   // 整页重排后旧草稿指纹全部作废
             bubblesDeleted = false;

@@ -871,6 +871,9 @@ class CandidateCreate(BaseModel):
 
 
 class PageLayoutUpdate(BaseModel):
+    # 版本锚点（与 storyboard-geometry 同语义）：整页重建会硬删全部 Panel 与
+    # Dialogue 再从 beat 重生成，无锚点时陈旧客户端的重建会静默抹掉并发编辑。
+    storyboard_version: VersionToken
     panel_count: int = Field(ge=3, le=8)
     layout_mode: str = Field(default="dynamic", pattern="^(dynamic|balanced)$")
 
@@ -880,6 +883,7 @@ class ReadingOrderUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    storyboard_version: VersionToken
     order: list[str] = Field(min_length=1)
 
 

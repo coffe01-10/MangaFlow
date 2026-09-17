@@ -90,6 +90,32 @@ def _scope_via_workflow_definition(db: Session, obj: WorkflowVersion) -> str | N
     return workflow.project_id if workflow else None
 
 
+def _chain_chapter_id(db: Session, obj: Any) -> str | None:
+    """Chapter whose soft-delete must hide every descendant object.
+
+    delete_chapter only tombstones the chapter row (no page cascade), so a
+    soft-deleted chapter's pages/panels/dialogues/scenes/beats keep resolving
+    to a live project. Object-id routes that only re-read their target row
+    kept answering 200 for them — the chapter's own list/read routes 404,
+    so workbench deep links could keep writing into (and enqueueing paid
+    jobs under) a chapter the user believes is gone.
+    """
+
+    if isinstance(obj, (MangaPage, Scene)):
+        return obj.chapter_id
+    if isinstance(obj, Panel):
+        page = db.get(MangaPage, obj.page_id)
+        return page.chapter_id if page else None
+    if isinstance(obj, Dialogue):
+        panel = db.get(Panel, obj.panel_id)
+        page = db.get(MangaPage, panel.page_id) if panel else None
+        return page.chapter_id if page else None
+    if isinstance(obj, Beat):
+        scene = db.get(Scene, obj.scene_id)
+        return scene.chapter_id if scene else None
+    return None
+
+
 # One resolver per entity (issue #143): the mapping table keeps every project
 # ownership chain explicit instead of an if/else pyramid at each call site.
 _PROJECT_SCOPE_RESOLVERS: Mapping[type, ProjectScopeResolver] = {
@@ -160,6 +186,15 @@ def ensure_project_scope(
         owner = db.get(Project, scope)
         if owner is None or owner.deleted_at is not None:
             raise HTTPException(status_code=404, detail=f"{label}所属项目已删除")
+    # Chapter liveness sits at the same shared boundary: a soft-deleted chapter
+    # hides its pages/panels/dialogues/scenes/beats from object routes exactly
+    # as its own list/read routes already 404 (the restore path clears the
+    # tombstone and reopens writes).
+    chain_chapter_id = _chain_chapter_id(db, obj)
+    if chain_chapter_id is not None:
+        chapter = db.get(Chapter, chain_chapter_id)
+        if chapter is None or chapter.deleted_at is not None:
+            raise HTTPException(status_code=404, detail=f"{label}所属章节已删除")
     if project_id is None:
         return
     if scope != project_id:

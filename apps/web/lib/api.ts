@@ -1978,10 +1978,10 @@ export const api = {
     request<{ candidate_id: string; approved: boolean }>(`/asset-candidates/${candidateId}/approve-reference`, {
       method: "DELETE",
     }),
-  updatePageLayout: (pageId: string, panelCount: number, layoutMode: "dynamic" | "balanced") =>
+  updatePageLayout: (pageId: string, panelCount: number, layoutMode: "dynamic" | "balanced", storyboard_version: number) =>
     request<Storyboard>(`/pages/${pageId}/layout`, {
       method: "PATCH",
-      body: JSON.stringify({ panel_count: panelCount, layout_mode: layoutMode }),
+      body: JSON.stringify({ panel_count: panelCount, layout_mode: layoutMode, storyboard_version }),
     }),
   batches: (pageId: string) => request<GenerationBatch[]>(`/pages/${pageId}/batches`),
   startBatch: (pageId: string) => request<GenerationBatch>(`/pages/${pageId}/batches`, { method: "POST" }),

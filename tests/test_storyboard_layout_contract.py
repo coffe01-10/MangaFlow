@@ -652,6 +652,38 @@ def test_put_storyboard_geometry_saves_snapshot_atomically(client, db_session):
 # --- L5: reading order ------------------------------------------------------
 
 
+def test_whole_page_rewrites_reject_a_stale_storyboard_version(client, db_session):
+    """R1（丢失更新家族）：整页重建/阅读序重排此前无版本锚点——陈旧客户端的
+    PATCH 会硬删全部 Panel 与 Dialogue 再从 beat 重生成，把并发编辑静默抹掉。
+    两条整页路由现在都在页锁下比对锚点：不匹配 409，且拒绝不得推进栅栏。"""
+    _, _, page, panels, _, _ = _storyboard_fixture(db_session)
+    original_version = page.storyboard_version
+
+    # 并发方先落一次成功的整页重排，推进 storyboard_version 栅栏。
+    ok = client.patch(
+        f"/api/v1/pages/{page.id}/reading-order",
+        json={"order": [panels[2].id, panels[0].id, panels[1].id], "storyboard_version": original_version},
+    )
+    assert ok.status_code == 200
+
+    # 陈旧客户端仍持有 original_version：重建与重排都必须 409。
+    rebuilt = client.patch(
+        f"/api/v1/pages/{page.id}/layout",
+        json={"panel_count": 5, "layout_mode": "dynamic", "storyboard_version": original_version},
+    )
+    assert rebuilt.status_code == 409
+    assert "分镜版本已变化" in rebuilt.json()["detail"]
+    reordered = client.patch(
+        f"/api/v1/pages/{page.id}/reading-order",
+        json={"order": [panels[0].id, panels[1].id, panels[2].id], "storyboard_version": original_version},
+    )
+    assert reordered.status_code == 409
+
+    db_session.expire_all()
+    fresh = db_session.get(MangaPage, page.id)
+    assert fresh.storyboard_version == original_version + 1, "两次 409 不得推进栅栏"
+
+
 def test_reading_order_renumber_keeps_constraint_and_final_coordinates(
     client, db_session
 ):
@@ -660,7 +692,8 @@ def test_reading_order_renumber_keeps_constraint_and_final_coordinates(
     version_before = page.storyboard_version
 
     response = client.patch(
-        f"/api/v1/pages/{page.id}/reading-order", json={"order": reversed_ids}
+        f"/api/v1/pages/{page.id}/reading-order",
+        json={"order": reversed_ids, "storyboard_version": version_before},
     )
 
     assert response.status_code == 200
@@ -670,21 +703,23 @@ def test_reading_order_renumber_keeps_constraint_and_final_coordinates(
     assert payload["panels"][0]["bounds"] == LEGACY_BOUNDS[2]
     assert payload["page"]["storyboard_version"] == version_before + 1
 
+    # 重排成功后栅栏已推进：后续 422/409 用例携带新锚点，测各自的本职拒绝。
+    db_session.refresh(page)
     duplicate = client.patch(
         f"/api/v1/pages/{page.id}/reading-order",
-        json={"order": [panels[0].id, panels[0].id, panels[1].id]},
+        json={"order": [panels[0].id, panels[0].id, panels[1].id], "storyboard_version": page.storyboard_version},
     )
     assert duplicate.status_code == 422
 
     unknown = client.patch(
         f"/api/v1/pages/{page.id}/reading-order",
-        json={"order": [panels[0].id, panels[1].id, "panel-unknown"]},
+        json={"order": [panels[0].id, panels[1].id, "panel-unknown"], "storyboard_version": page.storyboard_version},
     )
     assert unknown.status_code == 409
 
     partial = client.patch(
         f"/api/v1/pages/{page.id}/reading-order",
-        json={"order": [panels[0].id]},
+        json={"order": [panels[0].id], "storyboard_version": page.storyboard_version},
     )
     assert partial.status_code == 409
 
@@ -699,7 +734,7 @@ def test_even_page_read_path_never_remirrors_coordinates(client, db_session):
 
     reordered = client.patch(
         f"/api/v1/pages/{page.id}/reading-order",
-        json={"order": [panels[2].id, panels[0].id, panels[1].id]},
+        json={"order": [panels[2].id, panels[0].id, panels[1].id], "storyboard_version": page.storyboard_version},
     )
     assert reordered.status_code == 200
     bounds_by_id = {
@@ -716,7 +751,7 @@ def test_layout_panel_count_supports_three_to_eight(client, db_session):
 
     eight = client.patch(
         f"/api/v1/pages/{page.id}/layout",
-        json={"panel_count": 8, "layout_mode": "dynamic"},
+        json={"panel_count": 8, "layout_mode": "dynamic", "storyboard_version": page.storyboard_version},
     )
     assert eight.status_code == 200
     assert len(eight.json()["panels"]) == 8
@@ -725,20 +760,21 @@ def test_layout_panel_count_supports_three_to_eight(client, db_session):
         assert round(panel["bounds"]["x"] + panel["bounds"]["width"], 4) <= 1
         assert panel["geometry"]["z_order"] == panel["reading_order"]
 
+    db_session.refresh(page)
     balanced = client.patch(
         f"/api/v1/pages/{page.id}/layout",
-        json={"panel_count": 8, "layout_mode": "balanced"},
+        json={"panel_count": 8, "layout_mode": "balanced", "storyboard_version": page.storyboard_version},
     )
     assert balanced.status_code == 200
     assert len(balanced.json()["panels"]) == 8
 
     too_few = client.patch(
-        f"/api/v1/pages/{page.id}/layout", json={"panel_count": 2}
+        f"/api/v1/pages/{page.id}/layout", json={"panel_count": 2, "storyboard_version": page.storyboard_version}
     )
     assert too_few.status_code == 422
 
     too_many = client.patch(
-        f"/api/v1/pages/{page.id}/layout", json={"panel_count": 9}
+        f"/api/v1/pages/{page.id}/layout", json={"panel_count": 9, "storyboard_version": page.storyboard_version}
     )
     assert too_many.status_code == 422
 
@@ -828,7 +864,7 @@ def test_layout_rebuild_marks_downstream_pages_for_review(client, db_session):
 
     response = client.patch(
         f"/api/v1/pages/{pages[1].id}/layout",
-        json={"panel_count": 5, "layout_mode": "dynamic"},
+        json={"panel_count": 5, "layout_mode": "dynamic", "storyboard_version": storyboard_version_before},
     )
 
     assert response.status_code == 200, response.json()
@@ -856,7 +892,7 @@ def test_layout_rebuild_refuses_fewer_panels_than_beats(client, db_session):
 
     refused = client.patch(
         f"/api/v1/pages/{pages[0].id}/layout",
-        json={"panel_count": 3, "layout_mode": "dynamic"},
+        json={"panel_count": 3, "layout_mode": "dynamic", "storyboard_version": pages[0].storyboard_version},
     )
     assert refused.status_code == 409
     assert "分格数少于情节拍数量" in refused.json()["detail"]
@@ -872,7 +908,7 @@ def test_layout_rebuild_refuses_fewer_panels_than_beats(client, db_session):
 
     allowed = client.patch(
         f"/api/v1/pages/{page.id}/layout",
-        json={"panel_count": 5, "layout_mode": "dynamic"},
+        json={"panel_count": 5, "layout_mode": "dynamic", "storyboard_version": page.storyboard_version},
     )
     assert allowed.status_code == 200, allowed.json()
     assert len(allowed.json()["panels"]) == 5
@@ -1127,3 +1163,24 @@ def test_put_geometry_bumps_panel_version_when_dialogue_changes(client, db_sessi
     db_session.expire_all()
     panel = db_session.get(Panel, panel.id)
     assert panel.version > version_before
+
+
+def test_generation_workbench_canvas_matches_storyboard_read(client, db_session):
+    """R1（API-04）：workbench 的 page 与 storyboard.page 此前都是裸
+    PageRead.model_validate（canvas=None），与 GET /pages/{id}/storyboard 的
+    派生画布形状不一致——用 workbench 载荷驱动画布/出血/安全区的消费方会
+    进入「画布信息缺失」降级分支。"""
+
+    _, _, page, _, _, _ = _storyboard_fixture(db_session)
+
+    storyboard = client.get(f"/api/v1/pages/{page.id}/storyboard")
+    workbench = client.get(f"/api/v1/pages/{page.id}/generation-workbench")
+
+    assert storyboard.status_code == 200, storyboard.text
+    assert workbench.status_code == 200, workbench.text
+    assert workbench.json()["page"]["canvas"] is not None
+    assert workbench.json()["page"]["canvas"] == storyboard.json()["page"]["canvas"]
+    assert (
+        workbench.json()["storyboard"]["page"]["canvas"]
+        == storyboard.json()["page"]["canvas"]
+    )
