@@ -1793,32 +1793,11 @@ fn owned_tree_alive_tracks_the_lifecycle_accurately() {
 #[test]
 fn runlog_create_failure_finalizes_the_ownership_journal() {
     let user_data = temp_user_data("runlog-create-fail");
-    // A regular file parked at the logs path blocks create_dir_all during
-    // RunLog::create's session-start sweep path.
-    let logs_path = user_data.join("logs");
-    logs_path.parent().unwrap();
-    fs::create_dir_all(&user_data).unwrap();
-    // Pre-create the runtime dir the way spawn_helper's layout does, then
-    // block the logs path.
-    fs::create_dir_all(&user_data).unwrap();
-
-    // Block the logs path with a regular FILE at <user_data>/logs.
+    // Block the logs path with a regular FILE at <user_data>/logs so
+    // RunLog::create's session-start sweep fails during create_dir_all.
     let logs_blocker = user_data.join("logs");
-    fs::remove_dir_all(&logs_blocker).ok();
+    fs::create_dir_all(&user_data).unwrap();
     fs::write(&logs_blocker, b"not a directory").unwrap();
-
-    // A runtime dir must exist first (as RuntimeLayout::create would make),
-    // else RunLog::create is not even reached — so build the minimal state.
-    let token = "f".repeat(32);
-    let runtime = user_data
-        .join("runtime")
-        .join(format!("mangaflow-desktop-{token}"));
-    fs::create_dir_all(&runtime).unwrap();
-    fs::write(
-        runtime.join("owner.json"),
-        format!("{{\"version\":1,\"token\":\"{token}\",\"state\":\"created\"}}"),
-    )
-    .unwrap();
 
     let config = HelperConfig::stub(&python(), &helper_script());
     let error = spawn_helper(&config, &user_data).err();
@@ -1831,4 +1810,37 @@ fn runlog_create_failure_finalizes_the_ownership_journal() {
     );
     // The stray file stays (the shell must not delete user-supplied files).
     assert!(logs_blocker.is_file(), "the blocker file must stay");
+
+    // #836: the whole point of the fix (spawn_helper's mark_stopped on
+    // RunLog::create failure) is that the layout's OWN runtime journal
+    // reaches a terminal state the sweep can reclaim. Read the journal
+    // spawn_helper actually wrote — RuntimeLayout::create mints a random
+    // 32-hex token — and require "stopped".
+    let runtime_root = user_data.join("runtime");
+    let mut journals = Vec::new();
+    for entry in fs::read_dir(&runtime_root)
+        .expect("runtime root must exist after a failed spawn")
+    {
+        let journal = entry.unwrap().path().join("owner.json");
+        let text = fs::read_to_string(&journal)
+            .expect("the failed run's owner.json must exist and be readable");
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .expect("the failed run's owner.json must be valid JSON");
+        assert_ne!(
+            value["state"].as_str(),
+            Some("created"),
+            "the failed run's journal must not stay in the non-terminal 'created' state"
+        );
+        journals.push(value);
+    }
+    assert_eq!(
+        journals.len(),
+        1,
+        "exactly one runtime journal (the failed run's) must exist"
+    );
+    assert_eq!(
+        journals[0]["state"].as_str(),
+        Some("stopped"),
+        "RunLog::create failure must finalize the ownership journal as stopped"
+    );
 }
