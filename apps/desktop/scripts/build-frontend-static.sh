@@ -223,17 +223,12 @@ if ! check_referenced_chunks "$WORKTREE/apps/web/out" "$WORKTREE/apps/web/out/in
   smoke_missing=1
 fi
 
-for rel_html in \
-  index.html \
-  projects/poc/poc-invalid.html \
-  projects/poc/assets/poc-invalid.html \
-  projects/poc/settings.html
-do
-  if [ ! -f "$WORKTREE/apps/web/out/$rel_html" ]; then
-    echo "smoke gate: out/$rel_html missing (#385)" >&2
-    smoke_missing=1
-  fi
-done
+# Entry/route smoke (#385), extracted alongside the chunk gate: the flat
+# trailingSlash:false layout's pinned files must exist in the freshly
+# built out/ tree before anything replaces the shippable export.
+if ! check_static_entry_files "$WORKTREE/apps/web/out"; then
+  smoke_missing=1
+fi
 if [ "$smoke_missing" -ne 0 ]; then
   exit 1
 fi
@@ -260,18 +255,4 @@ printf '{"commit":"%s","built_at":"%s"}\n' \
 release_dist_build_lock "$DIST_LOCK"
 dist_lock_held=0
 
-smoke_missing=0
-if ! check_referenced_chunks "$WORKTREE/apps/web/out" "$WORKTREE/apps/web/out/index.html"; then
-  smoke_missing=1
-fi
-
-# Entry/route smoke (#385), extracted alongside the chunk gate: the flat
-# trailingSlash:false layout's pinned files must exist in the freshly
-# built out/ tree before anything replaces the shippable export.
-if ! check_static_entry_files "$WORKTREE/apps/web/out"; then
-  smoke_missing=1
-fi
-if [ "$smoke_missing" -ne 0 ]; then
-  exit 1
-fi
 echo "static export copied to $DESKTOP_ROOT/dist/frontend"
