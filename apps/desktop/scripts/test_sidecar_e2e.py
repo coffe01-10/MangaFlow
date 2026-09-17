@@ -1267,6 +1267,12 @@ def test_web_spawn_env_additions_are_exact():
         "HOSTNAME": "127.0.0.1",
         "MANGAFLOW_API_ORIGIN": f"http://127.0.0.1:{helper.WEB_RELAY_PORT}",
         "NODE_ENV": "production",
+        # The child's only legitimate egress is loopback: without an
+        # explicit NO_PROXY an ambient HTTPS_PROXY would route the baked
+        # rewrite target and API-origin fetches (cookies included)
+        # through a foreign proxy.
+        "NO_PROXY": "127.0.0.1,localhost",
+        "no_proxy": "127.0.0.1,localhost",
     }
 
     # Composed with the strip list: a MANGAFLOW_DESKTOP_* key surviving
