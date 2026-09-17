@@ -238,17 +238,9 @@ if ! check_referenced_chunks "$DESKTOP_ROOT/dist/frontend" "$DESKTOP_ROOT/dist/f
   smoke_missing=1
 fi
 
-for rel_html in \
-  index.html \
-  projects/poc/poc-invalid.html \
-  projects/poc/assets/poc-invalid.html \
-  projects/poc/settings.html
-do
-  if [ ! -f "$DESKTOP_ROOT/dist/frontend/$rel_html" ]; then
-    echo "smoke gate: dist/frontend/$rel_html missing (#385)" >&2
-    smoke_missing=1
-  fi
-done
+if ! check_static_entry_files "$DESKTOP_ROOT/dist/frontend"; then
+  smoke_missing=1
+fi
 if [ "$smoke_missing" -ne 0 ]; then
   exit 1
 fi
