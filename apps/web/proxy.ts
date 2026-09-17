@@ -24,8 +24,8 @@ export function proxy(request: NextRequest) {
   );
 
   const requestHeaders = new Headers(request.headers);
-  requestHeaders.set("x-nonce", nonce);
-  // Next reads this request header to propagate the nonce onto its scripts.
+  // Next reads the CSP request header to propagate the nonce onto its
+  // scripts (app-render's get-script-nonce-from-header).
   requestHeaders.set("Content-Security-Policy", contentSecurityPolicy);
 
   const response = NextResponse.next({ request: { headers: requestHeaders } });
