@@ -479,7 +479,21 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
     let payload = serde_json::to_vec(record).map_err(|error| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
     })?;
-    std::fs::write(&pending, payload)?;
+    // Red team #824: the ownership journal is the durable record the
+    // teardown hotline depends on — mirror owned_processes.py and fsync the
+    // payload before the rename so a power loss cannot leave a zero-length
+    // or torn journal that mark_stopped would refuse (and the sweep would
+    // then keep) forever.
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&pending)?;
+        file.write_all(&payload)?;
+        file.sync_all()?;
+    }
     std::fs::rename(&pending, journal)
 }
 

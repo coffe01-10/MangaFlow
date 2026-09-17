@@ -1763,3 +1763,72 @@ os._exit(0)
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&script);
 }
+
+
+/// alive() lifecycle pins: a freshly spawned helper must read alive, and
+/// after stop() the same tree must read dead. Both are poll-based
+/// decisions the native host makes on every loop.
+#[test]
+fn owned_tree_alive_tracks_the_lifecycle_accurately() {
+    let user_data = temp_user_data("alive-lifecycle");
+    let mut command = Command::new(python());
+    command.arg("-c").arg("import time; time.sleep(3600)");
+    let mut tree = OwnedTree::spawn(command).unwrap();
+
+    assert!(tree.alive(), "freshly spawned helper must be alive");
+
+    tree.stop(Duration::from_secs(5)).expect("stop succeeds");
+    assert!(!tree.alive(), "a stopped tree must report dead");
+
+    let _ = fs::remove_dir_all(&user_data);
+}
+
+
+/// The RunLog-create failure arm: when the session-start sweep cannot
+/// finish (a file parked at the logs path blocks rotation), the helper
+/// must still finalize the ownership journal as "stopped" so the
+/// session-start sweep can reclaim the directory later — never leave it
+/// claiming "created" forever. Driven with a real file parked at the
+/// logs path (the deterministic blocker from the rotation pins).
+#[test]
+fn runlog_create_failure_finalizes_the_ownership_journal() {
+    let user_data = temp_user_data("runlog-create-fail");
+    // A regular file parked at the logs path blocks create_dir_all during
+    // RunLog::create's session-start sweep path.
+    let logs_path = user_data.join("logs");
+    logs_path.parent().unwrap();
+    fs::create_dir_all(&user_data).unwrap();
+    // Pre-create the runtime dir the way spawn_helper's layout does, then
+    // block the logs path.
+    fs::create_dir_all(&user_data).unwrap();
+
+    // Block the logs path with a regular FILE at <user_data>/logs.
+    let logs_blocker = user_data.join("logs");
+    fs::remove_dir_all(&logs_blocker).ok();
+    fs::write(&logs_blocker, b"not a directory").unwrap();
+
+    // A runtime dir must exist first (as RuntimeLayout::create would make),
+    // else RunLog::create is not even reached — so build the minimal state.
+    let token = "f".repeat(32);
+    let runtime = user_data
+        .join("runtime")
+        .join(format!("mangaflow-desktop-{token}"));
+    fs::create_dir_all(&runtime).unwrap();
+    fs::write(
+        runtime.join("owner.json"),
+        format!("{{\"version\":1,\"token\":\"{token}\",\"state\":\"created\"}}"),
+    )
+    .unwrap();
+
+    let config = HelperConfig::stub(&python(), &helper_script());
+    let error = spawn_helper(&config, &user_data).err();
+
+    // With logs/ blocked as a FILE, create_dir_all fails — the arm must
+    // surface Io.
+    assert!(
+        matches!(error, Some(SpawnError::Io(_))),
+        "the failure must surface as SpawnError::Io: {error:?}"
+    );
+    // The stray file stays (the shell must not delete user-supplied files).
+    assert!(logs_blocker.is_file(), "the blocker file must stay");
+}

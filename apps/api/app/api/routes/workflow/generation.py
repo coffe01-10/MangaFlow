@@ -68,7 +68,9 @@ def start_batch(
     project_id: str | None = None,
 ) -> GenerationBatch:
     page = _page(db, page_id)
-    ensure_project_scope(db, page, project_id, label="页面")
+    # #633 契约：已删除章节的批次创建由 readiness 门以结构化 409
+    # （PAGE_NOT_READY + CHAPTER_DELETED 阻塞项）拒绝，而非通用 404。
+    ensure_project_scope(db, page, project_id, label="页面", require_live_chapter=False)
     # Contract §8.1: batch start gates on the default-inheritance package
     # context (ACTIVE package + published version) when no payload exists yet.
     ensure_page_ready(

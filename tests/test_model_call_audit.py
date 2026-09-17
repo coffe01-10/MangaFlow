@@ -220,6 +220,71 @@ def test_failed_audit_survives_worker_rollback(audit_sessions, monkeypatch):
     assert row is not None and row.outcome == "FAILED"
 
 
+def test_begin_replay_dedupes_only_open_rows(audit_sessions):
+    """R2A-02：手动重试（reset_for_retry）把 attempt_count 归零后，重试首轮的
+    dispatch 元组与原运行首次付费调用完全相同（哈希修复前）。若 replay 无条件
+    复用旧行：原运行已 FAILED 的审计行会被新调用拿来 finalize——成功付费结果
+    被 RuntimeError 顶成终态失败（FAILED→SUCCEEDED 升级只认 sweep 错误码），
+    重试永远无法成功；原运行 SUCCEEDED 时则重复付费零记账。replay 去重只允许
+    命中未终态行；同键已终态行必须为本次调用落一张新行（丢弃碰撞键，避免撞
+    唯一索引）。"""
+
+    job = _seed_job(audit_sessions)
+
+    original = begin_model_call_attempt(
+        _meta(job, dispatch_request_id="legacy-colliding-key")
+    )
+    finalize_model_call_attempt(
+        original,
+        outcome="FAILED",
+        error_code="RATE_LIMIT",
+        error_message="upstream 429",
+        model_id="model-xyz",
+    )
+
+    retried = begin_model_call_attempt(
+        _meta(job, dispatch_request_id="legacy-colliding-key")
+    )
+    assert retried != original, "同键已终态行必须新开审计行，不得复用（R2A-02）"
+
+    # 新行可独立 finalize 为成功——这正是手动重试的主场景（原运行因 provider
+    # 错误 FAILED，重试成功）。
+    finalize_model_call_attempt(
+        retried,
+        outcome="SUCCEEDED",
+        model_id="model-xyz",
+        usage={"input_tokens": 1, "output_tokens": 2},
+    )
+    with audit_sessions() as db:
+        old_row = db.get(ModelCallAttempt, original)
+        new_row = db.get(ModelCallAttempt, retried)
+    assert old_row.outcome == "FAILED" and old_row.usage is None
+    assert new_row.outcome == "SUCCEEDED" and new_row.usage is not None
+    assert new_row.dispatch_no == 2, "新行延续 (job, attempt) 内的单调度序号"
+    assert new_row.dispatch_request_id is None, "碰撞键被丢弃而非复用"
+
+
+def test_dispatch_hash_carries_the_claim_owner():
+    """R2A-02（源契约钉）：dispatch_request_id 的哈希输入必须包含 lease_owner
+    （按认领唯一的因子），否则 attempt_count 被重试归零后新执行会命中原运行的
+    键。纯文本 pin：provider 模块的哈希元组里必须出现 lease_owner。"""
+
+    import pathlib
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "apps" / "api" / "app" / "services" / "worker_handlers" / "provider.py"
+    ).read_text(encoding="utf-8")
+    hash_block = source[source.index("dispatch_request_id = hashlib.sha256"):]
+    tuple_body = hash_block[: hash_block.index(").encode")]
+    code_lines = [
+        line for line in tuple_body.splitlines() if not line.strip().startswith("#")
+    ]
+    assert any("lease_owner" in line for line in code_lines), (
+        "dispatch_request_id 哈希元组必须包含 lease_owner（认领唯一因子）"
+    )
+
+
 def test_unknown_attempt_finalize_raises(audit_sessions):
     with pytest.raises(RuntimeError, match="审计行不存在"):
         finalize_model_call_attempt("missing-attempt-id", outcome="FAILED")

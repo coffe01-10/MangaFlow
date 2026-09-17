@@ -156,6 +156,14 @@ def _audit_meta(
                 job.id,
                 str(job.attempt_count),
                 str(sequence),
+                # R2A-02: 每次认领的唯一因子。手动重试（reset_for_retry）把
+                # attempt_count 归零后，重试首轮的 (job, attempt, seq, 模型)
+                # 与原运行首次付费调用完全相同——若哈希不含认领身份，其
+                # dispatch_request_id 会命中原运行已 finalize 的审计行，
+                # replay 复用旧行后：成功付费结果被旧终态顶掉（升级路径只
+                # 认 sweep 错误码），任务永远无法重试成功；或重复付费零记
+                # 账。lease_owner 由 _worker_id() 带随机 uuid，按认领唯一。
+                str(job.lease_owner or ""),
                 str(connection_id or provider_id),
                 str(catalog_model_id or binding.resolved.model.provider_model_id),
                 "switch" if route_switched else "primary",

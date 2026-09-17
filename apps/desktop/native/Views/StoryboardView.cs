@@ -156,6 +156,22 @@ public sealed partial class StoryboardView : WorkspaceView
                 chapterSelector.Items.Add(new ComboBoxItem { Tag = chapter.Id, Content = $"第 {chapter.Ordinal} 章 · {chapter.Title}" });
             if (chapters.Count == 0)
             {
+                // R2D-02：无章节项目必须连同上一项目的画布/页签状态一起清空，
+                // 否则面包屑已切到新项目、画布仍显示旧项目的分镜页——页签点击、
+                // 拖动格子、保存本页都会读写旧项目的数据（跨项目污染）。
+                chapterId = "";
+                pages = [];
+                currentPage = null;
+                panels = [];
+                bubbles.Clear();
+                storyboard = default;
+                dialogueDrafts.Clear();
+                history.Clear();
+                geometryRequest = null;
+                dirty = false;
+                bubblesDeleted = false;
+                RenderPageBar();
+                page.Children.Clear();
                 inspector.Children.Clear();
                 inspector.Children.Add(Kit.Caption("尚未生成分页分镜。先完成漫画剧本。"));
                 return;
@@ -1524,7 +1540,8 @@ public sealed partial class StoryboardView : WorkspaceView
         try
         {
             await Api.SendAsync($"pages/{pageAtRequest.Id}/layout", HttpMethod.Patch,
-                new { panel_count = count, layout_mode = mode }, cancellation: lifetime.Token);
+                new { panel_count = count, layout_mode = mode, storyboard_version = pageAtRequest.StoryboardVersion },
+                cancellation: lifetime.Token);
             history.Clear();
             geometryRequest = null;   // 整页重排后旧草稿指纹全部作废
             bubblesDeleted = false;

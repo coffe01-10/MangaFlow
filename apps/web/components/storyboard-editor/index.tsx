@@ -431,7 +431,9 @@ export function StoryboardEditor({
   });
   const updateLayout = useMutation({
     mutationFn: ({ panelCount, layoutMode }: { panelCount: number; layoutMode: "dynamic" | "balanced" }) =>
-      api.updatePageLayout(currentPage.id, panelCount, layoutMode),
+      // 携带版本锚点：整页重建在服务端硬删全部格与对白，陈旧锚点必须 409
+      // 而不是静默抹掉并发编辑（与 storyboard-geometry 同语义）。
+      api.updatePageLayout(currentPage.id, panelCount, layoutMode, serverPage?.storyboard_version ?? currentPage.storyboard_version),
     onSuccess: () => {
       clearGeometryDrafts();
       setSelection(null);

@@ -546,7 +546,7 @@ CROSS_PROJECT_CASES = [
     ),
     pytest.param("GET", "/api/v1/pages/{page_id_b}/storyboard", None, id="page-storyboard-get"),
     pytest.param(
-        "PATCH", "/api/v1/pages/{page_id_b}/layout", {"panel_count": 5}, id="page-layout-patch"
+        "PATCH", "/api/v1/pages/{page_id_b}/layout", {"panel_count": 5, "storyboard_version": 1}, id="page-layout-patch"
     ),
     pytest.param(
         "POST", "/api/v1/pages/{page_id_b}/batches", None, id="page-batches-start"
@@ -1382,7 +1382,7 @@ def test_storyboard_panel_and_dialogue_routes_scoping(client, scoped_world, db_s
         client.patch(
             f"/api/v1/pages/{context['page_id_b']}/reading-order",
             params=foreign,
-            json={"order": [panel_id]},
+            json={"order": [panel_id], "storyboard_version": 1},
         ),
         client.put(
             f"/api/v1/pages/{context['page_id_b']}/storyboard-geometry",
@@ -1421,7 +1421,7 @@ def test_storyboard_panel_and_dialogue_routes_scoping(client, scoped_world, db_s
     owned_layout = client.patch(
         f"/api/v1/pages/{context['page_id_b']}/layout",
         params=owned,
-        json={"panel_count": 5},
+        json={"panel_count": 5, "storyboard_version": 1},
     )
     assert owned_layout.status_code == 409
     assert owned_layout.json()["detail"] == "当前页缺少剧本或原文追溯，不能调整格数"
@@ -1457,6 +1457,59 @@ def test_storyboard_panel_and_dialogue_routes_scoping(client, scoped_world, db_s
     db_session.expire_all()
     assert db_session.get(Dialogue, new_dialogue_id) is None
     assert db_session.get(Dialogue, dialogue_id).target_text == "合法文本"
+
+
+def test_deleted_chapter_hides_its_objects_from_object_routes(
+    client, scoped_world, db_session
+):
+    """R1（API-02）：delete_chapter 只给章节打墓碑、不级联页面，页面/分镜格/
+    对白仍归属活跃项目——对象路由（不带 project_id 的旧调用）此前照常 200
+    并可继续写入/开付费批次，与章节自身列表/读取的 404 不一致。共享 scope
+    边界现在连带校验章节存活；restore 清除墓碑后写路径恢复。"""
+
+    context = scoped_world["context"]
+    panel_id = context["panel_id_b"]
+    dialogue_id = context["dialogue_id_b"]
+    deleted = client.delete(f"/api/v1/chapters/{context['chapter_id_b']}")
+    assert deleted.status_code == 204, deleted.text
+
+    hidden = [
+        client.get(f"/api/v1/pages/{context['page_id_b']}"),
+        client.get(f"/api/v1/pages/{context['page_id_b']}/storyboard"),
+        client.patch(
+            f"/api/v1/panels/{panel_id}",
+            json={"version": _panel_version(db_session, panel_id), "shot_type": "wide_shot"},
+        ),
+        client.patch(
+            f"/api/v1/dialogues/{dialogue_id}",
+            json={"panel_version": _panel_version(db_session, panel_id), "target_text": "墓碑下改写"},
+        ),
+    ]
+    assert [response.status_code for response in hidden] == [404] * 4, [
+        response.text for response in hidden
+    ]
+    # 批次创建走 #633 设计契约：readiness 门以结构化 409 拒绝（不是通用 404）。
+    blocked = client.post(f"/api/v1/pages/{context['page_id_b']}/batches")
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"]["code"] == "PAGE_NOT_READY"
+    assert "CHAPTER_DELETED" in {
+        item["code"] for item in blocked.json()["detail"]["blockers"]
+    }
+    readiness = client.get(f"/api/v1/pages/{context['page_id_b']}/readiness")
+    assert readiness.status_code == 200, readiness.text
+    assert "CHAPTER_DELETED" in {item["code"] for item in readiness.json()["blockers"]}
+    db_session.expire_all()
+    assert db_session.get(Dialogue, dialogue_id).target_text == "隔离对白B", (
+        "已删除章节下的对白不得被改写"
+    )
+
+    restored = client.post(f"/api/v1/chapters/{context['chapter_id_b']}/restore")
+    assert restored.status_code == 200, restored.text
+    reopened = client.patch(
+        f"/api/v1/dialogues/{dialogue_id}",
+        json={"panel_version": _panel_version(db_session, panel_id), "target_text": "恢复后可写"},
+    )
+    assert reopened.status_code == 200, reopened.text
 
 
 def test_scene_bind_asset_route_scoping(client, scoped_world, db_session):

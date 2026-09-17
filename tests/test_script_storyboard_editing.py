@@ -294,7 +294,7 @@ def test_storyboard_layout_can_reflow_three_to_five_panels_from_script(client, d
 
     response = client.patch(
         f"/api/v1/pages/{pages[0].id}/layout",
-        json={"panel_count": 5, "layout_mode": "dynamic"},
+        json={"panel_count": 5, "layout_mode": "dynamic", "storyboard_version": pages[0].storyboard_version},
     )
 
     assert response.status_code == 200
@@ -307,7 +307,7 @@ def test_storyboard_layout_can_reflow_three_to_five_panels_from_script(client, d
 
     balanced = client.patch(
         f"/api/v1/pages/{pages[0].id}/layout",
-        json={"panel_count": 3, "layout_mode": "balanced"},
+        json={"panel_count": 3, "layout_mode": "balanced", "storyboard_version": pages[0].storyboard_version},
     )
     assert balanced.status_code == 200
     assert balanced.json()["page"]["source_coverage"]["layout_mode"] == "balanced"

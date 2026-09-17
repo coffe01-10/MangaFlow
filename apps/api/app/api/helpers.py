@@ -90,6 +90,32 @@ def _scope_via_workflow_definition(db: Session, obj: WorkflowVersion) -> str | N
     return workflow.project_id if workflow else None
 
 
+def _chain_chapter_id(db: Session, obj: Any) -> str | None:
+    """Chapter whose soft-delete must hide every descendant object.
+
+    delete_chapter only tombstones the chapter row (no page cascade), so a
+    soft-deleted chapter's pages/panels/dialogues/scenes/beats keep resolving
+    to a live project. Object-id routes that only re-read their target row
+    kept answering 200 for them — the chapter's own list/read routes 404,
+    so workbench deep links could keep writing into (and enqueueing paid
+    jobs under) a chapter the user believes is gone.
+    """
+
+    if isinstance(obj, (MangaPage, Scene)):
+        return obj.chapter_id
+    if isinstance(obj, Panel):
+        page = db.get(MangaPage, obj.page_id)
+        return page.chapter_id if page else None
+    if isinstance(obj, Dialogue):
+        panel = db.get(Panel, obj.panel_id)
+        page = db.get(MangaPage, panel.page_id) if panel else None
+        return page.chapter_id if page else None
+    if isinstance(obj, Beat):
+        scene = db.get(Scene, obj.scene_id)
+        return scene.chapter_id if scene else None
+    return None
+
+
 # One resolver per entity (issue #143): the mapping table keeps every project
 # ownership chain explicit instead of an if/else pyramid at each call site.
 _PROJECT_SCOPE_RESOLVERS: Mapping[type, ProjectScopeResolver] = {
@@ -136,6 +162,7 @@ def ensure_project_scope(
     project_id: str | None,
     *,
     label: str,
+    require_live_chapter: bool = True,
 ) -> None:
     """Return a 404 unless ``obj`` belongs to ``project_id`` (issue #143).
 
@@ -153,6 +180,16 @@ def ensure_project_scope(
     this shared scope boundary so every caller inherits it; no un-archive
     route exists for projects (chapter/scene-asset/job restores operate
     under live projects), so legitimate recovery paths are unaffected.
+
+    Chapter liveness sits at the same shared boundary: a soft-deleted chapter
+    hides its pages/panels/dialogues/scenes/beats from object routes exactly
+    as its own list/read routes already 404 (the restore path clears the
+    tombstone and reopens writes). ``require_live_chapter=False`` is the
+    escape hatch for routes whose #633 contract is to REPORT on a deleted
+    chapter instead of hiding it: page readiness and batch start answer with
+    the structured CHAPTER_DELETED blocker / PAGE_NOT_READY 409 from their
+    own readiness gate, which the UI renders as the reason generation is
+    blocked.
     """
 
     scope = resolve_project_scope(db, obj)
@@ -160,6 +197,12 @@ def ensure_project_scope(
         owner = db.get(Project, scope)
         if owner is None or owner.deleted_at is not None:
             raise HTTPException(status_code=404, detail=f"{label}所属项目已删除")
+    if require_live_chapter:
+        chain_chapter_id = _chain_chapter_id(db, obj)
+        if chain_chapter_id is not None:
+            chapter = db.get(Chapter, chain_chapter_id)
+            if chapter is None or chapter.deleted_at is not None:
+                raise HTTPException(status_code=404, detail=f"{label}所属章节已删除")
     if project_id is None:
         return
     if scope != project_id:

@@ -118,6 +118,12 @@ public sealed class ScriptView : WorkspaceView
             }
             else
             {
+                // R2D-04：无章节项目必须清掉上一章的锚点与数据，否则 F5/轮询会按
+                // 旧 chapterId 把上一项目的剧本渲染进新项目，表单提交会跨项目
+                // PATCH 旧章的 scenes/beats。
+                chapterId = "";
+                script = default;
+                sceneCount.Text = "—";
                 body.Children.Clear();
                 body.Children.Add(EmptyState("请先导入原作", "在“原作与修订”页导入章节后，才能生成漫画剧本。"));
             }

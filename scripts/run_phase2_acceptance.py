@@ -3,8 +3,10 @@
 The offline harness runs by default. Live pytest execution is available through
 pytest itself with explicit isolated URLs (--run-live-integration --pg-url ...
 --redis-url ...); the owner-scoped container orchestration behind
---run-live/--start-containers is still not implemented, so those switches stay
-a nonzero BLOCKED result that must not be presented as live acceptance.
+--run-live/--start-containers is still not implemented: those switches stay
+a nonzero BLOCKED result whenever they are the requested action. The one
+exception is --dry-run, which previews endpoints only, ignores them, and
+returns 0 (pinned by test_acceptance_entry_dry_run_does_not_load_app_or_dotenv).
 """
 
 from __future__ import annotations

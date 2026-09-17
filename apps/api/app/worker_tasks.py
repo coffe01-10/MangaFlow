@@ -181,14 +181,19 @@ class _LeaseHeartbeat:
                     return False
                 return True
         except Exception:
-            # A transient heartbeat failure should not turn a healthy
-            # provider call into a second paid request.  The lease itself
-            # remains the source of truth and will be reclaimed if it
-            # eventually expires.
+            # A transient heartbeat failure must not stop the heartbeat
+            # thread: returning False here would permanently end renewals on
+            # a single DB hiccup, the lease would lapse while the provider
+            # call is still running, and the janitor's reclaim would hand the
+            # row to a second executor — the exact #130 double-spend fence
+            # this class exists to hold. Wait out the error, then keep
+            # renewing; only stop()/a real ownership loss (the CAS above)
+            # ends the loop.
             LOGGER.warning(
                 "lease heartbeat failed for job %s", self.job_id, exc_info=True
             )
-            return self.stop.wait(1.0)
+            self.stop.wait(1.0)
+            return True
 
     def _mark_local_timeout(self) -> None:
         """Write the one-shot LOCAL_TIMEOUT marker while the lease is live.

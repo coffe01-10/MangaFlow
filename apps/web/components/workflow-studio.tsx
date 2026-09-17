@@ -248,7 +248,12 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     queryKey: ["workflow-runs", activeWorkflow?.id],
     queryFn: () => api.workflowRuns(activeWorkflow!.id),
     enabled: Boolean(activeWorkflow),
-    refetchInterval: (query) => workflowRunsPollInterval(query.state.data),
+    // Error state previously returned false forever (the interval keys on
+    // cached data, which is undefined while erroring): a transient API
+    // outage froze the run list with no self-heal. Back off to a slow retry
+    // instead; the footer also surfaces the error instead of masquerading
+    // as an empty history.
+    refetchInterval: (query) => (query.state.status === "error" ? 10_000 : workflowRunsPollInterval(query.state.data)),
   });
 
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
@@ -639,12 +644,28 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     },
     onSuccess: (restored) => {
       workflowRef.current = restored;
-      // 恢复是破坏性覆盖：立即丢弃未落的防抖草稿，否则 800ms 定时器会在
-      // 重取落地前用旧节点图 + 恢复后的新版本号提交，静默回滚这次恢复。
+      // 恢复是破坏性覆盖：立即把画布重置为恢复后的图（与初始化 effect
+      // 同款），并丢弃未落的防抖草稿。此前画布只靠 refetch 落地后新的
+      // activeWorkflow 对象身份重载：refetch 失败（retry 后仍错）时缓存
+      // 身份不变、画布永远停在恢复前的图而 notice 已宣称成功，此后任意
+      // 一次编辑的防抖保存会用「旧节点图 + 恢复后的新版本号」PATCH，把
+      // 恢复静默回滚；即使 refetch 成功，落地前的防抖窗口内一次编辑也
+      // 一样。先落画布，refetch 只负责刷新侧栏版本等衍生数据。
+      setNodes(graphNodes(restored.draft_graph));
+      setEdges(graphEdges(restored.draft_graph));
+      setPast([]);
+      setFuture([]);
+      setValidation([]);
+      setSelectedId(null);
+      setCurrentRun(null);
       draftSaver.current?.reset();
       initializedId.current = null;
-      void workflows.refetch();
       setNotice(`已恢复发布版本到草稿（V${restored.version}）`);
+      void workflows.refetch().then((result) => {
+        if (result.isError) {
+          setNotice(`已恢复发布版本到草稿（V${restored.version}）；工作流列表刷新失败：${result.error instanceof Error ? result.error.message : "请手动刷新"}`);
+        }
+      });
     },
     onError: (error) => setNotice(error instanceof Error ? error.message : "恢复版本失败"),
   });
@@ -742,6 +763,12 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const displayedRun = (liveRun.data && liveRun.data.id === listedRun?.id)
     ? liveRun.data
     : listedRun;
+  // 错误可见性（与 versions/models 的错误面纪律一致）：runs 后台重试失败
+  // 且无缓存时不得用「尚未运行」空态冒充事实——那会让用户以为运行丢失而
+  // 重复发起（同 scope 活跃 run 守卫随即 409）。liveRun 失败但列表快照仍在
+  // 时保留快照展示并标注来源，不回退到空态。
+  const runsUnavailable = runs.isError && runs.data === undefined;
+  const liveRunStale = Boolean(liveRunId) && liveRun.isError;
   const selectedNodeRun = displayedRun?.node_runs.find((item) => item.node_id === selectedId) ?? null;
   const renderedNodes = useMemo(() => {
     if (!displayedRun) return nodes;
@@ -911,7 +938,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
 
       <footer className={styles.runner}>
         <div className={styles.runScope}><span>运行范围</span><select aria-label="运行范围类型" value={scopeType} onChange={(event) => { const next = event.target.value as "CHAPTER" | "PAGE"; setScopeType(next); setScopeId(next === "CHAPTER" ? chapters.data?.[0]?.id ?? "" : ""); }}><option value="CHAPTER">章节</option><option value="PAGE">页面</option></select>{scopeType === "PAGE" ? <select aria-label="页面所属章节" value={activeChapter} onChange={(event) => { setPageChapterId(event.target.value); setScopeId(""); }}>{chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>)}</select> : null}<select aria-label="运行目标" value={effectiveScopeId} onChange={(event) => setScopeId(event.target.value)}>{scopeType === "CHAPTER" ? chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>) : pages.data?.map((page) => <option value={page.id} key={page.id}>第 {page.page_number} 页</option>)}</select></div>
-        <div className={styles.runState}><i className={displayedRun?.status === "RUNNING" ? styles.running : ""} /><span>{displayedRun ? `运行 ${statusLabel[displayedRun.status] ?? displayedRun.status} · ${displayedRun.node_runs.filter((item) => item.status === "COMPLETED").length}/${displayedRun.node_runs.length}` : "尚未运行已发布版本"}</span></div>
+        <div className={styles.runState}>{runsUnavailable ? <><i /><span role="alert">运行列表读取失败：{runs.error instanceof Error ? runs.error.message : "请稍后重试"}</span><button type="button" onClick={() => void runs.refetch()}>重试</button></> : <><i className={displayedRun?.status === "RUNNING" ? styles.running : ""} /><span>{displayedRun ? `运行 ${statusLabel[displayedRun.status] ?? displayedRun.status} · ${displayedRun.node_runs.filter((item) => item.status === "COMPLETED").length}/${displayedRun.node_runs.length}${liveRunStale ? " · 实时状态读取失败，显示快照" : ""}` : "尚未运行已发布版本"}</span>{liveRunStale ? <button type="button" onClick={() => void liveRun.refetch()}>重试</button> : null}</>}</div>
         {/* 取消按钮必须覆盖 PAUSED（审批栅栏态）：cancel_run 接受 PAUSED，
             而同 scope 的重复运行守卫会把 PAUSED 当活跃 run 拒绝（409 文案
             指示“先取消”）——不在这里露出按钮，用户就没有任何停止途径。 */}

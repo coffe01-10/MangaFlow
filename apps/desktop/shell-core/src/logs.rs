@@ -1675,8 +1675,36 @@ mod tests {
         ));
         // The Display arms render the refusal reason (user-visible in the
         // export dialog path).
-        assert!(!ExportError::DestinationIsDirectory.to_string().is_empty());
-        assert!(!ExportError::DestinationNoFileName.to_string().is_empty());
+        // Every arm's refusal text must name the operator action or the
+        // offending shape: DestinationExists and PendingIsSymlink carry
+        // distinct remediation wording, and the whole family stays
+        // non-empty. A regression that collapses two arms into one
+        // message (or drops the interpolation) goes red here.
+        let arms = [
+            (ExportError::DestinationNotAbsolute, "绝对路径"),
+            (ExportError::DestinationNoFileName, "文件名"),
+            (ExportError::DestinationParentMissing, "上级目录"),
+            (ExportError::DestinationHasDotComponents, ".."),
+            (ExportError::DestinationIsSymlink, "符号链接"),
+            (ExportError::DestinationIsDirectory, "目录"),
+            (ExportError::DestinationExists, "已存在"),
+            (ExportError::PendingIsSymlink, "符号链接"),
+            (ExportError::DestinationInsideUserData, "用户数据"),
+            (ExportError::LogsRootIsSymlink, "符号链接"),
+        ];
+        for (error, fragment) in &arms {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains(fragment),
+                "{error:?} lost its distinguishing text: {rendered}"
+            );
+        }
+        // The Io arm must embed the inner error (source chain parity).
+        let io = ExportError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "inner detail",
+        ));
+        assert!(io.to_string().contains("inner detail"), "{io}");
         let _ = fs::remove_dir_all(&user_data);
         let _ = fs::remove_dir_all(&dir_destination);
     }
@@ -1967,7 +1995,6 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
-    #[test]
     /// The record line's exact shape: ts/event/fields in one JSONL line —
     /// the export manifest and every forensics reader parse THIS shape.
     /// Pins the three keys (no extras that would grow the contract), the
@@ -1996,10 +2023,16 @@ mod tests {
             value["ts"].as_u64().is_some(),
             "ts must be a number (unix seconds): {value}"
         );
+        assert_eq!(
+            value.as_object().expect("the line is a JSON object").len(),
+            3,
+            "exactly ts/event/fields — an extra top-level key grows the contract: {value}"
+        );
         assert!(log.ends_with('\n'), "each record is one newline-terminated line");
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    #[test]
     fn run_log_record_survives_mutex_poisoning() {
         let user_data = temp_user_data("poison");
         let token = "cd".repeat(16);

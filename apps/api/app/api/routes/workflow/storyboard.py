@@ -113,6 +113,17 @@ def _page_for_write(db: Session, page_id: str, project_scope: str | None) -> Man
     return lock_entity(db, MangaPage, page.id)
 
 
+def _claim_storyboard_version(page: MangaPage, expected: int) -> None:
+    """Reject whole-page destructive rewrites (layout rebuild, reading-order
+    renumber) whose client anchor is stale. The comparison runs under the page
+    lock taken by _page_for_write, mirroring save_storyboard_geometry: without
+    it, a stale client's rebuild hard-deletes every panel and dialogue written
+    by a concurrent editor since its last load."""
+
+    if expected != page.storyboard_version:
+        raise HTTPException(status_code=409, detail="分镜版本已变化，请刷新画布后重试")
+
+
 @router.patch("/pages/{page_id}/layout", response_model=StoryboardRead)
 def patch_page_layout(
     page_id: str,
@@ -121,6 +132,7 @@ def patch_page_layout(
     project_id: str | None = None,
 ) -> StoryboardRead:
     page = _page_for_write(db, page_id, project_id)
+    _claim_storyboard_version(page, payload.storyboard_version)
     page = update_page_layout(
         db,
         page,
@@ -138,6 +150,7 @@ def patch_page_reading_order(
     project_id: str | None = None,
 ) -> StoryboardRead:
     page = _page_for_write(db, page_id, project_id)
+    _claim_storyboard_version(page, payload.storyboard_version)
     reorder_page_panels(db, page, payload.order)
     return _storyboard_read(db, page)
 

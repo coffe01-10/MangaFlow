@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.helpers import candidate_read, ensure_project_scope
-from app.api.routes.workflow.common import _page, _page_candidate_count, _panel_read
+from app.api.routes.workflow.common import _page, _page_candidate_count, _page_read, _panel_read
 from app.config import get_settings
 from app.database import get_db
 from app.models import (
@@ -70,7 +70,9 @@ def get_page_readiness(
     project_id: str | None = None,
 ) -> PageReadinessRead:
     page = _page(db, page_id)
-    ensure_project_scope(db, page, project_id, label="页面")
+    # #633 契约：已删除章节的 readiness 返回 200 + CHAPTER_DELETED 阻塞项
+    # （UI 以此解释为什么不能生成），不隐藏为 404。
+    ensure_project_scope(db, page, project_id, label="页面", require_live_chapter=False)
     return build_page_readiness(db, page, get_settings())
 
 
@@ -142,10 +144,14 @@ def get_generation_workbench(
         db.get(PageCandidate, page.selected_candidate_id) if page.selected_candidate_id else None
     )
     selected_read = candidate_read(selected, page) if selected else None
+    # canvas 与 storyboard 读路径同源（_page_read 派生画布/出血/安全区）：
+    # 此前两处 PageRead.model_validate 都留 canvas=None，任何用 workbench 载荷
+    # 驱动画布的消费方都会进入「画布信息缺失」降级分支。
+    workbench_page = _page_read(db, page)
     return GenerationWorkbenchRead(
-        page=PageRead.model_validate(page),
+        page=workbench_page,
         storyboard=StoryboardRead(
-            page=PageRead.model_validate(page),
+            page=workbench_page,
             panels=[_panel_read(db, panel) for panel in panels],
             candidate_count=_page_candidate_count(db, page.id),
         ),

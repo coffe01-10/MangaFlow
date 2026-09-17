@@ -11,7 +11,6 @@ import shutil
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -19,9 +18,8 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.database import SessionLocal
-from app.domain.states import JobStatus
 from app.model_adapters.base import ImageRequest, ModelResponse, ProviderAdapterError
 from app.models import GenerationJob
 from app.services.cli_executor import (
@@ -732,16 +730,15 @@ class GrokBuildCLIImageAdapter:
         try:
             with self.runtime.session_factory() as db:
                 job = db.get(GenerationJob, context.job_id)
-                if job is None or job.status == JobStatus.CANCELLED or job.cancelled_at is not None:
+                if job is None:
                     return True
-                if context.lease_owner and job.lease_owner != context.lease_owner:
-                    return True
-                expires_at = job.lease_expires_at
-                if expires_at is not None:
-                    if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=UTC)
-                    if expires_at <= datetime.now(UTC):
-                        return True
+                # Shared #130-aligned predicate (lazy import: job_service is a
+                # heavy module and adapters must not take it at import time).
+                from app.services.job_service import cli_cancel_probe_should_stop
+
+                return cli_cancel_probe_should_stop(
+                    job, context.lease_owner, get_settings()
+                )
         except Exception:
             # A controller-side probe failure (e.g. a transient DB error)
             # must not kill the paid child run mid-generation as CRASH:
