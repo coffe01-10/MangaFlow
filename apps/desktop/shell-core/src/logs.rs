@@ -3393,17 +3393,20 @@ mod tests {
             fs::write(logs.join(format!("member-{i:03}.log")), &big).unwrap();
         }
 
-        let exports = std::env::temp_dir().join(format!(
-            "mfd-exports-{}-{}",
-            std::process::id(),
-            crate::protocol::new_token()
-        ));
+        let unique = format!("{}-{}", std::process::id(), crate::protocol::new_token());
+        let exports = std::env::temp_dir().join(format!("mfd-exports-{unique}"));
+        // Unique rename leaf: a fixed "exports-real" collides across
+        // concurrent test processes on one machine — one swapper's
+        // cleanup would rmtree another's staged-orphan home (round-11
+        // review P2).
+        let exports_real = exports.with_file_name(format!("exports-real-{unique}"));
         fs::create_dir_all(&exports).unwrap();
         let destination = exports.join("out.zip");
 
         let (tx, rx) = mpsc::channel();
         let swapper_exports = exports.clone();
         let swapper_user_data = user_data.clone();
+        let swapper_unique = unique.clone();
         let worker = std::thread::spawn(move || {
             // Swap the parent the moment the staged pending file APPEARS
             // (create_new runs before the archive write, so this is
@@ -3422,7 +3425,8 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
-            let renamed = swapper_exports.with_file_name("exports-real");
+            let renamed = swapper_exports
+                .with_file_name(format!("exports-real-{swapper_unique}"));
             let _ = fs::remove_dir_all(&renamed);
             fs::rename(&swapper_exports, &renamed).unwrap();
             std::os::unix::fs::symlink(&swapper_user_data, &swapper_exports).unwrap();
@@ -3451,6 +3455,23 @@ mod tests {
                 "the mid-build ancestor swap must be caught by the placement re-verification: {other:?}"
             ),
         }
+        // Panic-safe teardown of all three locations (the symlink form
+        // needs remove_file; remove_dir_all alone refuses links).
+        struct CleanupAll(Vec<std::path::PathBuf>);
+        impl Drop for CleanupAll {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = fs::remove_dir_all(path);
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+        let _cleanup = CleanupAll(vec![
+            user_data.clone(),
+            exports.clone(),
+            exports_real.clone(),
+        ]);
+
         // The staged orphan inside the user-data root must be gone.
         let orphans: Vec<_> = fs::read_dir(&user_data)
             .unwrap()
@@ -3462,10 +3483,6 @@ mod tests {
             orphans.is_empty(),
             "the redirected staging/placement must leave nothing behind: {orphans:?}"
         );
-        let _ = fs::remove_dir_all(&user_data);
-        let _ = fs::remove_dir_all(&exports);
-        let _ = fs::remove_dir_all(exports.with_file_name("exports-real"));
     }
 
 }
-
