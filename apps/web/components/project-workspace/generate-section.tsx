@@ -219,7 +219,7 @@ export function GenerateSection({
           </div>
         </div>
         <div className="draw-context"><div><span>PAGE LOAD</span><strong>{selectedPage.estimated_text_chars} 字</strong><small>{selectedPage.panel_count} 格 / {selectedPage.estimated_bubbles} 气泡</small></div><p>{selectedPage.source_coverage.ranges?.map((item) => item.text).join("").slice(0, 180)}</p></div>
-        <ProductionReadiness projectId={id} readiness={pageReadiness.data} loading={pageReadiness.isLoading} error={pageReadiness.error} targetDialogues={targetDialogues} />
+        <ProductionReadiness projectId={id} readiness={pageReadiness.data} loading={pageReadiness.isLoading} error={pageReadiness.error} targetDialogues={targetDialogues} draftResolution={draftResolution} />
         <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="本次页面生成模型（仅显示支持图片编辑的已启用模型）" />
         <PageSceneInheritance
           page={selectedPage}

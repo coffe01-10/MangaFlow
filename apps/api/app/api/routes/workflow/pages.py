@@ -70,7 +70,9 @@ def get_page_readiness(
     project_id: str | None = None,
 ) -> PageReadinessRead:
     page = _page(db, page_id)
-    ensure_project_scope(db, page, project_id, label="页面")
+    # #633 契约：已删除章节的 readiness 返回 200 + CHAPTER_DELETED 阻塞项
+    # （UI 以此解释为什么不能生成），不隐藏为 404。
+    ensure_project_scope(db, page, project_id, label="页面", require_live_chapter=False)
     return build_page_readiness(db, page, get_settings())
 
 

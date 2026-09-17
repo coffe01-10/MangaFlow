@@ -57,12 +57,14 @@ export function ProductionReadiness({
   loading,
   error,
   targetDialogues,
+  draftResolution = "1K",
 }: {
   projectId: string;
   readiness?: PageReadiness;
   loading: boolean;
   error?: Error | null;
   targetDialogues: string[];
+  draftResolution?: "1K" | "2K" | "4K";
 }) {
   return <section className="generation-reference-check production-readiness">
     <header>
@@ -77,7 +79,7 @@ export function ProductionReadiness({
       {readiness.blockers.length ? <div className="workflow-warning readiness-blockers">
         <CircleAlert size={17} />
         <div><strong>{readiness.blockers.length} 项准备工作未完成</strong><ul>{readiness.blockers.map((blocker) => <li key={`${blocker.code}-${blocker.target_id ?? "page"}`}><span>{blocker.message}</span><Link href={routeForBlocker(projectId, readiness.page_id, blocker)}>去处理</Link></li>)}</ul></div>
-      </div> : <p className="edit-notice"><Check size={13} />页面生产条件已全部满足，可以确认参考图后生成 1 个 1K 彩色候选。</p>}
+      </div> : <p className="edit-notice"><Check size={13} />页面生产条件已全部满足，可以确认参考图后生成 1 个 {draftResolution} 彩色候选。</p>}
 
       <details className="production-diagnostics" open={!readiness.ready}>
         <summary>{readiness.ready ? "查看原文覆盖、供应商目录与执行器诊断" : "展开查看阻塞诊断"}</summary>
@@ -100,7 +102,7 @@ export function ProductionReadiness({
           <ReadinessMark ok={readiness.style.test_image_approved}>测试图已通过</ReadinessMark>
         </article>
         <article>
-          <div><strong><Cpu size={15} />真实执行链</strong><span>所选模型 · 1K · 单候选</span></div>
+          <div><strong><Cpu size={15} />真实执行链</strong><span>所选模型 · {draftResolution} · 单候选</span></div>
           <ReadinessMark ok={readiness.provider.usable_image_model_count > 0}>可用图片模型 {readiness.provider.usable_image_model_count} 个 · 已验证 {readiness.provider.auto_image_model_count} 个</ReadinessMark>
           <ReadinessMark ok={readiness.worker.can_execute}>{readiness.worker.executor} · {readiness.worker.queue_mode}</ReadinessMark>
           <small>{readiness.estimated_cost_note}</small>

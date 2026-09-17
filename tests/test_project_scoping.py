@@ -1484,13 +1484,20 @@ def test_deleted_chapter_hides_its_objects_from_object_routes(
             f"/api/v1/dialogues/{dialogue_id}",
             json={"panel_version": _panel_version(db_session, panel_id), "target_text": "墓碑下改写"},
         ),
-        client.post(
-            f"/api/v1/pages/{context['page_id_b']}/batches",
-        ),
     ]
-    assert [response.status_code for response in hidden] == [404] * 5, [
+    assert [response.status_code for response in hidden] == [404] * 4, [
         response.text for response in hidden
     ]
+    # 批次创建走 #633 设计契约：readiness 门以结构化 409 拒绝（不是通用 404）。
+    blocked = client.post(f"/api/v1/pages/{context['page_id_b']}/batches")
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"]["code"] == "PAGE_NOT_READY"
+    assert "CHAPTER_DELETED" in {
+        item["code"] for item in blocked.json()["detail"]["blockers"]
+    }
+    readiness = client.get(f"/api/v1/pages/{context['page_id_b']}/readiness")
+    assert readiness.status_code == 200, readiness.text
+    assert "CHAPTER_DELETED" in {item["code"] for item in readiness.json()["blockers"]}
     db_session.expire_all()
     assert db_session.get(Dialogue, dialogue_id).target_text == "隔离对白B", (
         "已删除章节下的对白不得被改写"

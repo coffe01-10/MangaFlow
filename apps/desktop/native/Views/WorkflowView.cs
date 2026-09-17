@@ -1848,8 +1848,14 @@ public sealed partial class WorkflowView : WorkspaceView
             do
             {
             runsReloadRequested = false;
-            var runs = await Api.SendAsync($"workflows/{workflowId}/runs", cancellation: lifetime.Token);
+            // 监视面板与动作链（发布/校验/运行）同源，一律取画布归属：切换在途
+            // 窗口里 workflowId 已指向新工作流而画布还是旧的，按 workflowId 拉
+            // 会让刚启动的运行从监视面板消失。
+            var target = canvasWorkflowId;
+            if (target.Length == 0) return;   // 画布未载入：没有可展示的运行
+            var runs = await Api.SendAsync($"workflows/{target}/runs", cancellation: lifetime.Token);
             if (lifetime.Token.IsCancellationRequested) return;
+            if (target != canvasWorkflowId) continue;   // 在途期间画布已换主：丢弃迟到响应
             runRows = runs.EnumerateArray().ToList();
             runMonitor.Children.Clear();
             approvalQueue.Children.Clear();

@@ -305,6 +305,10 @@ export function useGenerationWorkspace({
     onSuccess: () => {
       setActionNotice(null);
       setDraft(null);
+      // 双击的第二击被在途守卫同步 throw 后，observer 会把守卫文案留在
+      // error 态上：第一击成功落地时必须一并清掉，否则任务已入队成功、
+      // 按钮恢复可用，错误行却持续显示"请勿重复点击"。
+      generate.reset();
       // 新批次（currentBatch 为空时 startBatch）会替换当前查看的批次；旧批次的
       // reviewCandidateId 若不清理，检查面板会在新批次下继续渲染，且其修复按钮
       // 会以旧候选提交（reviewCandidate 在新批次中查不到 → 分辨率回退 "1K"）。

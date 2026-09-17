@@ -647,6 +647,37 @@ def test_read_context_accepts_short_name_ancestor_runtime_directory(
     assert got_journal.name == "owner.json"
 
 
+def test_read_context_rejects_a_junction_runtime_directory(tmp_path, monkeypatch):
+    """RV-04: junctions are the Windows directory-link form creatable WITHOUT
+    any privilege (mklink /J) — and ``Path.is_symlink()`` returns False for
+    them, so the guard's ``os.path.isjunction`` branch is the only thing that
+    refuses a runtime directory redirected through one. Without a pin here
+    that branch could be deleted with every test still green."""
+
+    if sys.platform != "win32":
+        pytest.skip("junctions are a Windows reparse-point form")
+
+    token = "e" * 32
+    target = tmp_path / "foreign-runtime-junction" / f"mangaflow-desktop-{token}"
+    target.mkdir(parents=True)
+    (target / "owner.json").write_text("{}", encoding="utf-8")
+    link_parent = tmp_path / "junction-parent"
+    link_parent.mkdir()
+    link = link_parent / f"mangaflow-desktop-{token}"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction creation failed: {created.stderr.strip()}")
+
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_TOKEN", token)
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_JOURNAL", str(link / "owner.json"))
+    with pytest.raises(ValueError, match="ownership mismatch"):
+        helper._read_context()
+
+
 def test_await_go_accepts_exact_line_and_rejects_drift(monkeypatch):
     """_await_go is the handshake's final gate: the line must be exactly
     GO_PREFIX + token after strip() — a wrong token, a GO for a previous

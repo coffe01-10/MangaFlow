@@ -162,6 +162,7 @@ def ensure_project_scope(
     project_id: str | None,
     *,
     label: str,
+    require_live_chapter: bool = True,
 ) -> None:
     """Return a 404 unless ``obj`` belongs to ``project_id`` (issue #143).
 
@@ -179,6 +180,16 @@ def ensure_project_scope(
     this shared scope boundary so every caller inherits it; no un-archive
     route exists for projects (chapter/scene-asset/job restores operate
     under live projects), so legitimate recovery paths are unaffected.
+
+    Chapter liveness sits at the same shared boundary: a soft-deleted chapter
+    hides its pages/panels/dialogues/scenes/beats from object routes exactly
+    as its own list/read routes already 404 (the restore path clears the
+    tombstone and reopens writes). ``require_live_chapter=False`` is the
+    escape hatch for routes whose #633 contract is to REPORT on a deleted
+    chapter instead of hiding it: page readiness and batch start answer with
+    the structured CHAPTER_DELETED blocker / PAGE_NOT_READY 409 from their
+    own readiness gate, which the UI renders as the reason generation is
+    blocked.
     """
 
     scope = resolve_project_scope(db, obj)
@@ -186,15 +197,12 @@ def ensure_project_scope(
         owner = db.get(Project, scope)
         if owner is None or owner.deleted_at is not None:
             raise HTTPException(status_code=404, detail=f"{label}所属项目已删除")
-    # Chapter liveness sits at the same shared boundary: a soft-deleted chapter
-    # hides its pages/panels/dialogues/scenes/beats from object routes exactly
-    # as its own list/read routes already 404 (the restore path clears the
-    # tombstone and reopens writes).
-    chain_chapter_id = _chain_chapter_id(db, obj)
-    if chain_chapter_id is not None:
-        chapter = db.get(Chapter, chain_chapter_id)
-        if chapter is None or chapter.deleted_at is not None:
-            raise HTTPException(status_code=404, detail=f"{label}所属章节已删除")
+    if require_live_chapter:
+        chain_chapter_id = _chain_chapter_id(db, obj)
+        if chain_chapter_id is not None:
+            chapter = db.get(Chapter, chain_chapter_id)
+            if chapter is None or chapter.deleted_at is not None:
+                raise HTTPException(status_code=404, detail=f"{label}所属章节已删除")
     if project_id is None:
         return
     if scope != project_id:
