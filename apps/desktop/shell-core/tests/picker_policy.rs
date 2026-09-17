@@ -663,3 +663,50 @@ fn registry_kind_swap_updates_the_read_policy() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+
+#[test]
+fn readback_takes_exactly_cap_plus_one_and_refuses_when_over() {
+    // The read-side cap: the handle reads take(MAX+1) bytes, so a file
+    // AT the cap reads fully and passes while cap+1 overflows and refuses
+    // with GrewDuringRead. Pin both boundaries exactly.
+
+    let dir = temp_dir("read-cap");
+    fs::create_dir_all(&dir).unwrap();
+    let registry = PickedRegistry::new();
+
+    // Exactly at the cap: metadata gate passes, read is complete.
+    let at_cap = dir.join("at-cap.txt");
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(&at_cap)
+        .unwrap();
+    f.set_len(mangaflow_desktop_shell_core::MAX_PICKED_FILE_BYTES)
+        .unwrap();
+    drop(f);
+    let picked = validate_picked_file(&at_cap, PickKind::SourceText)
+        .expect("a file exactly at the cap is valid");
+    registry.register(&picked);
+    let (_, bytes) = read_registered_file(&registry, &at_cap)
+        .expect("a file at the cap reads fully");
+    assert_eq!(
+        bytes.len() as u64,
+        mangaflow_desktop_shell_core::MAX_PICKED_FILE_BYTES
+    );
+
+    // One byte over the metadata gate: refused at validation (TooLarge).
+    let over = dir.join("over-cap.txt");
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(&over)
+        .unwrap();
+    f.set_len(mangaflow_desktop_shell_core::MAX_PICKED_FILE_BYTES + 1)
+        .unwrap();
+    drop(f);
+    assert!(matches!(
+        validate_picked_file(&over, PickKind::SourceText),
+        Err(PickError::TooLarge { .. })
+    ));
+}
