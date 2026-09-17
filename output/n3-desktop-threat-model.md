@@ -753,3 +753,5 @@ reset 至 origin/master 1386570（含 ledger-39 谱系）；flock 时代 CI 红�
   「本轮不修 WPF」。
 
 **§39 补充（夜班 04:30 段）**：`run_e2e_owned.py`（验收控制器驱动，232 行）全文审——**CLEAN**：端口预检（SO_EXCLUSIVEADDRUSE 拒未知服务）、allowlist 环境构造（仅 9 个 Windows 系统键透传 + 显式 e2e 身份键；SystemRoot/WINDIR 合并与 node 22.17 CSPRNG quirk 有文档）、混合编码子进程输出按字节转发（无损）、`finish` 的"stop 失败绝不落到目录删除"（防删活运行时）、`--port` 双层验证。Windows 活体 NOT RUN 边界维持。至此 Windows 验收栈三文件全读全审。
+
+**§41 状态注记（08:00 段）**：master tip b8608f8（#886 wait-for-health 预算已合；#887/#889 流程中）。**工作树发现**：`/tmp/n3-mine` 残留 worktree 持有 night 分支的**未推送台账提交**（a7e6406 B/C 配额产出记录 + 8a66ed8 主合并收尾——夜班代理的进度，未在 origin/master 上）——已保留未动，待夜班代理推送或 lead 处置；我的工作继续走独立 ledger 分支。
