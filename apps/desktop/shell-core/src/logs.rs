@@ -3144,5 +3144,62 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    /// A FIFO planted at the shell log path must be REFUSED, never opened:
+    /// an open-for-append on a writer-less FIFO blocks forever, so a
+    /// regression that lets a non-regular entry reach OpenOptions would
+    /// hang spawn_helper instead of failing fast. The symlink half of this
+    /// guard has pins; the plain non-regular (FIFO) half did not — the
+    /// Python journal side pins the same posture
+    /// (test_non_regular_journal_is_refused_not_hung).
+    #[test]
+    #[cfg(unix)]
+    fn open_append_regular_refuses_a_planted_fifo_at_the_log_path() {
+        use std::ffi::CString;
+
+        let user_data = temp_user_data("log-fifo");
+        let logs_root = user_data.join("runtime").join(format!(
+            "mangaflow-desktop-{}",
+            "b".repeat(32)
+        ));
+        let log_path = logs_root.join("shell.log");
+        std::fs::create_dir_all(&logs_root).unwrap();
+        let cpath = CString::new(log_path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+
+        let logs_canonical = logs_root.canonicalize().unwrap();
+        // The wait is bounded by a channel: the regression this pins (a
+        // non-regular entry reaching OpenOptions) manifests as a BLOCKING
+        // open on the writer-less FIFO — a hang must surface as a test
+        // failure, not wedge the suite (same harness as the sweep's FIFO
+        // journal pin).
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let log_path = log_path.clone();
+            let logs_canonical = logs_canonical.clone();
+            move || {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || open_append_regular(&log_path, &logs_canonical),
+                ));
+                let _ = tx.send(());
+                // Unwrap HERE so the joined type is the plain io::Result —
+                // the refusal path is expect_err'd by the test body below.
+                outcome.expect("open_append_regular must not panic on a FIFO")
+            }
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the open hung on the writer-less FIFO — non-regular-refusal regression");
+        let result = worker
+            .join()
+            .unwrap_or_else(|payload| panic!("the refusal worker panicked: {payload:?}"));
+
+        let error = result.expect_err("a FIFO at the log path must be refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "the refusal must name the non-regular entry: {error}"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
 }
 
