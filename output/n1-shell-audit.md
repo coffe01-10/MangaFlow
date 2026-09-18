@@ -571,3 +571,6 @@ summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏
 - #943 rebase 解锁：与并行 fsync-order positional 精修的 EOF 尾冲突
   → 联合保留四枚耐久性钉（对 master 缺席逐一核验后插入），135/135
   lib 绿，MERGEABLE。
+- #947 重试：本会话凭证确实缺 workflow scope（push 二次被拒）——
+  完整 YAML 留在 #947，需 lead 或有凭据会话落地。阻塞分支已清理。
+- #943 MERGEABLE（rebase 后等 CI）。
