@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use mangaflow_desktop_shell_core::base64_encode;
-use mangaflow_desktop_shell_core::handshake::{get_status, spawn_helper, HelperConfig, SpawnedHelper};
+use mangaflow_desktop_shell_core::handshake::{
+    get_status, spawn_helper, HelperConfig, SpawnedHelper,
+};
 use mangaflow_desktop_shell_core::logs::export_logs_zip_overwrite;
 use mangaflow_desktop_shell_core::picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
@@ -111,18 +113,38 @@ fn desktop_health_probe(origin: tauri::State<ApiOrigin>) -> Result<u16, String> 
 /// arbitrary-overwrite primitive), and shell-core refuses an existing
 /// destination unless the caller carries the dialog's overwrite
 /// confirmation. Returns `Ok(None)` when the user cancels the dialog.
+///
+/// async (#813): the archive build (collect + zip + write) must not occupy
+/// the UI thread — a sync command froze dialogs and the WebView for the
+/// whole ≤2 GiB export. The rfd save dialog still runs on the GUI thread
+/// (`run_on_main_thread`) because Windows file dialogs need it; only the
+/// export itself is `spawn_blocking`.
 #[tauri::command]
-fn desktop_export_logs(paths: tauri::State<ShellPaths>) -> Result<Option<ExportReportDto>, String> {
+async fn desktop_export_logs(
+    app: tauri::AppHandle,
+    paths: tauri::State<'_, ShellPaths>,
+) -> Result<Option<ExportReportDto>, String> {
     let _guard = claim_dialog()?;
-    let Some(path) = rfd::FileDialog::new()
-        .set_title("导出运行日志")
-        .set_file_name("mangaflow-logs.zip")
-        .add_filter("ZIP 归档", &["zip"])
-        .save_file()
-    else {
+    let path = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let chosen = rfd::FileDialog::new()
+                .set_title("导出运行日志")
+                .set_file_name("mangaflow-logs.zip")
+                .add_filter("ZIP 归档", &["zip"])
+                .save_file();
+            let _ = tx.send(chosen);
+        })
+        .map_err(|error| error.to_string())?;
+        rx.recv().map_err(|error| error.to_string())?
+    };
+    let Some(path) = path else {
         return Ok(None);
     };
-    run_export(&paths.user_data, &path)
+    let user_data = paths.user_data.clone();
+    tauri::async_runtime::spawn_blocking(move || run_export(&user_data, &path))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 fn run_export(user_data: &Path, destination: &Path) -> Result<Option<ExportReportDto>, String> {
@@ -153,7 +175,8 @@ fn desktop_pick_file(
     picked: tauri::State<PickedState>,
 ) -> Result<Option<PickedFileDto>, String> {
     let _guard = claim_dialog()?;
-    let kind = PickKind::parse(&kind).ok_or("unknown pick kind; expected source_text | reference_image")?;
+    let kind = PickKind::parse(&kind)
+        .ok_or("unknown pick kind; expected source_text | reference_image")?;
     let (label, extensions) = kind.dialog_filter();
     let chosen = rfd::FileDialog::new()
         .set_title(match kind {
@@ -176,9 +199,7 @@ fn desktop_pick_file(
 #[tauri::command]
 fn desktop_pick_directory() -> Result<Option<PickedDirectoryDto>, String> {
     let _guard = claim_dialog()?;
-    let chosen = rfd::FileDialog::new()
-        .set_title("选择目录")
-        .pick_folder();
+    let chosen = rfd::FileDialog::new().set_title("选择目录").pick_folder();
     let Some(chosen) = chosen else {
         return Ok(None);
     };
@@ -203,8 +224,8 @@ async fn desktop_read_picked_file(
     if path.is_empty() {
         return Err(pick_error_message(PickError::EmptyPath));
     }
-    let (validated, bytes) = read_registered_file(&picked.0, Path::new(&path))
-        .map_err(pick_error_message)?;
+    let (validated, bytes) =
+        read_registered_file(&picked.0, Path::new(&path)).map_err(pick_error_message)?;
     Ok(ReadPickedFileDto {
         name: validated.name,
         size_bytes: validated.size_bytes,
@@ -295,9 +316,7 @@ fn stop_helper(helper: &mut Option<SpawnedHelper>) {
 // the menu must be able to bring it back instead of only showing it).
 // Programmatic construction AFTER the handshake gate, never config-declared,
 // hidden until the menu opens it.
-fn build_shell_tools_window(
-    app: &tauri::AppHandle,
-) -> Result<tauri::WebviewWindow, tauri::Error> {
+fn build_shell_tools_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, tauri::Error> {
     tauri::WebviewWindowBuilder::new(
         app,
         "shell-tools",
@@ -566,5 +585,41 @@ mod tests {
         assert!(!fake_channel_requested(None));
         assert!(!fake_channel_requested(Some("0".into())));
         assert!(!fake_channel_requested(Some("true".into())));
+    }
+
+    /// #813: the export command must be async so the archive build does not
+    /// freeze the UI thread. The rfd dialog stays on the GUI thread; only
+    /// `run_export` is spawn_blocking.
+    #[test]
+    fn desktop_export_logs_is_async_and_builds_the_archive_off_the_ui_thread() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("async fn desktop_export_logs("),
+            "desktop_export_logs must be async so the zip does not occupy the UI thread"
+        );
+        let after = source
+            .split("async fn desktop_export_logs(")
+            .nth(1)
+            .expect("desktop_export_logs must exist");
+        let body = after
+            .split("\nfn ")
+            .next()
+            .expect("command body is bounded by the next fn");
+        assert!(
+            body.contains("spawn_blocking"),
+            "the archive build must run on spawn_blocking, not the UI thread"
+        );
+        assert!(
+            body.contains("save_file()"),
+            "the rfd save dialog must stay in this command"
+        );
+        assert!(
+            body.contains("run_on_main_thread"),
+            "the rfd save dialog must run on the GUI thread (Windows COM)"
+        );
+        assert!(
+            !body.contains("run_export(&paths.user_data"),
+            "run_export must not run on the command's thread (UI or async worker)"
+        );
     }
 }

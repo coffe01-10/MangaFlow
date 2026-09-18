@@ -548,10 +548,7 @@ pub fn rotate_logs(user_data: &Path) -> std::io::Result<()> {
     // #610: a planted root link would redirect the sweep (renames/deletes of
     // oversized pattern matches) onto whatever it targets. Refuse and leave
     // the foreign tree alone.
-    if logs
-        .symlink_metadata()
-        .is_ok_and(|meta| meta.is_symlink())
-    {
+    if logs.symlink_metadata().is_ok_and(|meta| meta.is_symlink()) {
         eprintln!(
             "mangaflow-desktop: logs directory {} is a symlink; skipping the rotation sweep (#610)",
             logs.display()
@@ -682,18 +679,14 @@ impl RunLog {
             // failure — e.g. a stray file parked at the logs path — must hit
             // stderr like the per-file failures below it, or the one state
             // that breaks every future rotation is the least visible.
-            eprintln!(
-                "mangaflow-desktop: session-start log rotation failed: {error}"
-            );
+            eprintln!("mangaflow-desktop: session-start log rotation failed: {error}");
         }
         // The sweep's contract promises a stderr report for its failures —
         // discarding the Result wholesale left that promise unimplemented
         // (#264): a silently failing sweep is invisible exactly when stale
         // runtime directories start to matter for forensics.
         if let Err(error) = crate::protocol::sweep_runtime_dirs(user_data) {
-            eprintln!(
-                "mangaflow-desktop: stale runtime-directory sweep failed: {error}"
-            );
+            eprintln!("mangaflow-desktop: stale runtime-directory sweep failed: {error}");
         }
         let logs = logs_dir(user_data);
         fs::create_dir_all(&logs)?;
@@ -703,10 +696,7 @@ impl RunLog {
         // every session log lands in the attacker-chosen tree. rotate_logs
         // and export_logs_with already refuse; the create path now does
         // too.
-        if logs
-            .symlink_metadata()
-            .is_ok_and(|meta| meta.is_symlink())
-        {
+        if logs.symlink_metadata().is_ok_and(|meta| meta.is_symlink()) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "logs root is a symlink; refusing to redirect the session log tree",
@@ -792,6 +782,13 @@ pub enum ExportError {
     /// links must not redirect the export onto a foreign tree (the entry
     /// level already refuses link members; the root gets the same refusal).
     LogsRootIsSymlink,
+    /// #813: the destination volume does not have enough free space for the
+    /// collected members plus ZIP overhead and slack. Checked before any
+    /// member is read and before the `.pending` sibling is created.
+    InsufficientSpace {
+        needed: u64,
+        available: u64,
+    },
     Io(std::io::Error),
 }
 
@@ -816,7 +813,16 @@ impl std::fmt::Display for ExportError {
                 write!(f, "导出目标不能位于用户数据根之内")
             }
             ExportError::LogsRootIsSymlink => {
-                write!(f, "日志目录是符号链接，拒绝导出（#610：防止重定向到外部目录）")
+                write!(
+                    f,
+                    "日志目录是符号链接，拒绝导出（#610：防止重定向到外部目录）"
+                )
+            }
+            ExportError::InsufficientSpace { needed, available } => {
+                write!(
+                    f,
+                    "导出目标所在磁盘空间不足（需要至少 {needed} 字节，可用 {available} 字节）"
+                )
             }
             ExportError::Io(error) => write!(f, "导出失败: {error}"),
         }
@@ -1100,11 +1106,14 @@ pub fn export_logs_zip_overwrite(
 /// Archive-shape limits applied while building the member list (see the
 /// [`EXPORT_MAX_MEMBERS`] / [`EXPORT_MAX_TOTAL_BYTES`] docs). Internal and
 /// injectable so tests can exercise the caps without tens of thousands of
-/// files.
+/// files. `available_bytes` is a test seam: `None` queries the OS; `Some(n)`
+/// pretends the destination parent has `n` free bytes. Production callers
+/// leave this `None`.
 #[derive(Debug, Clone, Copy)]
 struct ExportLimits {
     max_members: usize,
     max_total_bytes: u64,
+    available_bytes: Option<u64>,
 }
 
 impl Default for ExportLimits {
@@ -1112,8 +1121,100 @@ impl Default for ExportLimits {
         ExportLimits {
             max_members: EXPORT_MAX_MEMBERS,
             max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+            available_bytes: None,
         }
     }
+}
+
+/// Extra free-space margin on top of payload + ZIP headers so a nearly-full
+/// volume is refused before the staging write hits ENOSPC.
+const EXPORT_SPACE_SLACK_BYTES: u64 = 1024 * 1024;
+
+fn zip_member_header_overhead(name_len: usize) -> u64 {
+    // local-file header (30) + central-directory header (46), excluding payload.
+    76u64.saturating_add((name_len as u64).saturating_mul(2))
+}
+
+fn estimate_manifest_bytes(members: &[(String, PathBuf, u64)]) -> u64 {
+    // Envelope: version / generated_at / source / included / skipped punctuation.
+    let mut n = 256u64;
+    for (name, _, _) in members {
+        n = n.saturating_add(40).saturating_add(name.len() as u64);
+        n = n.saturating_add(48).saturating_add(name.len() as u64);
+    }
+    n
+}
+
+/// Bytes the export may need on the destination volume: min(sum of collected
+/// sizes, max_total_bytes) plus local/central headers, the manifest member,
+/// EOCD, and ≥1 MiB slack.
+fn export_space_needed(members: &[(String, PathBuf, u64)], max_total_bytes: u64) -> u64 {
+    const EOCD_LEN: u64 = 22;
+    const MANIFEST_NAME_LEN: usize = "manifest.json".len();
+    let payload = members
+        .iter()
+        .fold(0u64, |acc, (_, _, size)| acc.saturating_add(*size))
+        .min(max_total_bytes);
+    let mut overhead = EOCD_LEN.saturating_add(EXPORT_SPACE_SLACK_BYTES);
+    for (name, _, _) in members {
+        overhead = overhead.saturating_add(zip_member_header_overhead(name.len()));
+    }
+    overhead = overhead.saturating_add(zip_member_header_overhead(MANIFEST_NAME_LEN));
+    overhead = overhead.saturating_add(estimate_manifest_bytes(members));
+    payload.saturating_add(overhead)
+}
+
+fn disk_available_bytes(path: &Path) -> std::io::Result<u64> {
+    #[cfg(windows)]
+    {
+        windows_disk_available_bytes(path)
+    }
+    #[cfg(unix)]
+    {
+        unix_disk_available_bytes(path)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = path;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "free-space query is not implemented on this platform",
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn windows_disk_available_bytes(path: &Path) -> std::io::Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut available: u64 = 0;
+    // SAFETY: `wide` is a NUL-terminated path that outlives the call;
+    // `available` is a valid out-pointer.
+    unsafe {
+        GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), Some(&mut available), None, None)
+            .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 as i32))?;
+    }
+    Ok(available)
+}
+
+#[cfg(unix)]
+fn unix_disk_available_bytes(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let mut vfs: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is a valid C string; `vfs` is a valid out-pointer.
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut vfs) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((vfs.f_bavail as u64).saturating_mul(vfs.f_frsize as u64))
 }
 
 fn export_logs_with(
@@ -1128,10 +1229,7 @@ fn export_logs_with(
     // would follow it and the containment check would compare the target
     // against itself. The entry level refuses link members; the root gets
     // the same refusal.
-    if logs
-        .symlink_metadata()
-        .is_ok_and(|meta| meta.is_symlink())
-    {
+    if logs.symlink_metadata().is_ok_and(|meta| meta.is_symlink()) {
         return Err(ExportError::LogsRootIsSymlink);
     }
     let logs_canonical = logs.canonicalize().map_err(ExportError::Io)?;
@@ -1142,111 +1240,18 @@ fn export_logs_with(
         .map_err(ExportError::Io)?;
     members.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut total_bytes = 0u64;
-    // (name, archived size) pairs, appended only as members are actually
-    // archived, so the manifest built after the loop describes the archive
-    // that was really written.
-    let mut included: Vec<(String, u64)> = Vec::new();
-    let (dos_date, dos_time) = dos_date_time(unix_now());
-    let mut zip = ZipWriter::new();
-
-    // (kept adjacent to the guard that uses it)
-    const EXPORT_MANIFEST_NAME: &str = "manifest.json";
-    const EXPORT_MANIFEST_SKIP_REASON: &str = "reserved_manifest_name";
-    for (member, path, size) in &members {
-        // The exporter appends its own manifest.json after the loop: a
-        // log-tree member of that name would produce TWO central-directory
-        // entries with one name (readers resolve to the last, and the
-        // manifest would advertise a member the archive cannot deliver
-        // under it). Skip the colliding name up front — it is the
-        // exporter's own artifact, not a forensics member.
-        if member == EXPORT_MANIFEST_NAME {
-            skipped.push(SkippedEntry {
-                name: member.clone(),
-                reason: EXPORT_MANIFEST_SKIP_REASON.into(),
-            });
-            continue;
-        }
-        // Archive-shape caps first (metadata only, before any read): the
-        // member count must stay inside the EOCD's u16 entry field and the
-        // running total inside the u32 offset field's safe range — beyond
-        // either, the archive would silently corrupt instead of failing.
-        if included.len() >= limits.max_members {
-            skipped.push(SkippedEntry {
-                name: member.clone(),
-                reason: "too_many_members".into(),
-            });
-            continue;
-        }
-        if total_bytes.saturating_add(*size) > limits.max_total_bytes {
-            skipped.push(SkippedEntry {
-                name: member.clone(),
-                reason: "archive_size_cap".into(),
-            });
-            continue;
-        }
-        // #241-5b: an unreadable member (locked by another process, permission
-        // revoked, vanished between collect and read) joins the size-change
-        // race below in the skip-and-report treatment instead of aborting the
-        // whole export — the remaining members are still worth archiving.
-        // The read itself is bounded by `take(EXPORT_MAX_FILE_BYTES + 1)`:
-        // the collect-time size is only a snapshot, and a log still being
-        // written can grow to many GiB before this line — `fs::read` would
-        // buffer the whole grown file just to reject it in the re-check
-        // below. The read is capped one byte PAST the limit instead: a
-        // member at exactly the cap is read whole and included, one that
-        // grew past it reads back over-cap and fails the re-check as
-        // "changed_during_export" without ever being buffered beyond cap+1.
-        let data = (|| -> std::io::Result<Vec<u8>> {
-            use std::io::Read;
-            let file = fs::File::open(path)?;
-            let mut data = Vec::new();
-            file.take(EXPORT_MAX_FILE_BYTES + 1).read_to_end(&mut data)?;
-            Ok(data)
-        })();
-        let data = match data {
-            Ok(data) => data,
-            Err(error) => {
-                skipped.push(SkippedEntry {
-                    name: member.clone(),
-                    reason: format!("read: {error}"),
-                });
-                continue;
-            }
-        };
-        if data.len() as u64 != *size || data.len() as u64 > EXPORT_MAX_FILE_BYTES {
-            skipped.push(SkippedEntry {
-                name: member.clone(),
-                reason: "changed_during_export".into(),
-            });
-            continue;
-        }
-        total_bytes += data.len() as u64;
-        included.push((member.clone(), data.len() as u64));
-        zip.add_file(member, &data, dos_date, dos_time);
+    // #813: refuse before reading member contents or creating `.pending`.
+    let parent = destination_canonical
+        .parent()
+        .ok_or(ExportError::DestinationNoFileName)?;
+    let available = match limits.available_bytes {
+        Some(bytes) => bytes,
+        None => disk_available_bytes(parent).map_err(ExportError::Io)?,
+    };
+    let needed = export_space_needed(&members, limits.max_total_bytes);
+    if available < needed {
+        return Err(ExportError::InsufficientSpace { needed, available });
     }
-
-    // The manifest is built AFTER the read loop and added as the last
-    // member: a member that changed mid-export then appears in its
-    // skipped list, not in included — a manifest written before the loop
-    // claimed contents the archive does not actually have. Zip readers
-    // locate members by name through the central directory, so manifest.json
-    // does not need to be the first entry.
-    let manifest = serde_json::json!({
-        "version": 1,
-        "generated_at": unix_now(),
-        "source": "user-data:logs",
-        "included": included.iter().map(|(name, size)| serde_json::json!({
-            "name": name, "size": size,
-        })).collect::<Vec<_>>(),
-        "skipped": skipped,
-    });
-    zip.add_file(
-        "manifest.json",
-        serde_json::to_string(&manifest).unwrap().as_bytes(),
-        dos_date,
-        dos_time,
-    );
 
     // Write through a pending sibling so a failed write never leaves a
     // truncated archive at the user-chosen path. #150: a planted
@@ -1266,34 +1271,149 @@ fn export_logs_with(
         return Err(ExportError::PendingIsSymlink);
     }
     remove_file_if_exists(&pending).map_err(ExportError::Io)?;
-    let archive = zip.finish();
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&pending)
-        .and_then(|mut file| {
-            // Durability: the pending sibling is the complete archive that
-            // place_archive then publishes. Without an fsync here a power
-            // loss after write_all and before the rename/hard_link can
-            // leave a torn zip at the user-chosen path (or a zero-length
-            // pending that placement then publishes). Mirror the journal
-            // writers: payload fsync before the publish step.
-            file.write_all(&archive)?;
-            file.sync_all()
-        })
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::AlreadyExists => ExportError::PendingIsSymlink,
-            _ => {
-                // A failed staging write (ENOSPC/EFBIG mid-write, disk
-                // vanishing) leaves a TRUNCATED archive at the pending
-                // sibling; the only other pending cleanup lives in
-                // place_archive, which this path never reaches (#430).
-                // Remove the orphan now — the failure must leave nothing
-                // behind but its error.
-                let _ = remove_file_if_exists(&pending);
-                ExportError::Io(error)
-            }
+            _ => ExportError::Io(error),
         })?;
+
+    let mut total_bytes = 0u64;
+    // (name, archived size) pairs, appended only as members are actually
+    // archived, so the manifest built after the loop describes the archive
+    // that was really written.
+    let mut included: Vec<(String, u64)> = Vec::new();
+    let (dos_date, dos_time) = dos_date_time(unix_now());
+
+    // (kept adjacent to the guard that uses it)
+    const EXPORT_MANIFEST_NAME: &str = "manifest.json";
+    const EXPORT_MANIFEST_SKIP_REASON: &str = "reserved_manifest_name";
+    let finish = (|| -> Result<std::fs::File, ExportError> {
+        let mut zip = ZipWriter::from_writer(file);
+        for (member, path, size) in &members {
+            // The exporter appends its own manifest.json after the loop: a
+            // log-tree member of that name would produce TWO central-directory
+            // entries with one name (readers resolve to the last, and the
+            // manifest would advertise a member the archive cannot deliver
+            // under it). Skip the colliding name up front — it is the
+            // exporter's own artifact, not a forensics member.
+            if member == EXPORT_MANIFEST_NAME {
+                skipped.push(SkippedEntry {
+                    name: member.clone(),
+                    reason: EXPORT_MANIFEST_SKIP_REASON.into(),
+                });
+                continue;
+            }
+            // Archive-shape caps first (metadata only, before any read): the
+            // member count must stay inside the EOCD's u16 entry field and the
+            // running total inside the u32 offset field's safe range — beyond
+            // either, the archive would silently corrupt instead of failing.
+            if included.len() >= limits.max_members {
+                skipped.push(SkippedEntry {
+                    name: member.clone(),
+                    reason: "too_many_members".into(),
+                });
+                continue;
+            }
+            if total_bytes.saturating_add(*size) > limits.max_total_bytes {
+                skipped.push(SkippedEntry {
+                    name: member.clone(),
+                    reason: "archive_size_cap".into(),
+                });
+                continue;
+            }
+            // #241-5b: an unreadable member (locked by another process, permission
+            // revoked, vanished between collect and read) joins the size-change
+            // race below in the skip-and-report treatment instead of aborting the
+            // whole export — the remaining members are still worth archiving.
+            // The read itself is bounded by `take(EXPORT_MAX_FILE_BYTES + 1)`:
+            // the collect-time size is only a snapshot, and a log still being
+            // written can grow to many GiB before this line — `fs::read` would
+            // buffer the whole grown file just to reject it in the re-check
+            // below. The read is capped one byte PAST the limit instead: a
+            // member at exactly the cap is read whole and included, one that
+            // grew past it reads back over-cap and fails the re-check as
+            // "changed_during_export" without ever being buffered beyond cap+1.
+            let data = (|| -> std::io::Result<Vec<u8>> {
+                use std::io::Read;
+                let file = fs::File::open(path)?;
+                let mut data = Vec::new();
+                file.take(EXPORT_MAX_FILE_BYTES + 1)
+                    .read_to_end(&mut data)?;
+                Ok(data)
+            })();
+            let data = match data {
+                Ok(data) => data,
+                Err(error) => {
+                    skipped.push(SkippedEntry {
+                        name: member.clone(),
+                        reason: format!("read: {error}"),
+                    });
+                    continue;
+                }
+            };
+            if data.len() as u64 != *size || data.len() as u64 > EXPORT_MAX_FILE_BYTES {
+                skipped.push(SkippedEntry {
+                    name: member.clone(),
+                    reason: "changed_during_export".into(),
+                });
+                continue;
+            }
+            zip.try_add_file(member, &data, dos_date, dos_time)
+                .map_err(ExportError::Io)?;
+            total_bytes += data.len() as u64;
+            included.push((member.clone(), data.len() as u64));
+        }
+
+        // The manifest is built AFTER the read loop and added as the last
+        // member: a member that changed mid-export then appears in its
+        // skipped list, not in included — a manifest written before the loop
+        // claimed contents the archive does not actually have. Zip readers
+        // locate members by name through the central directory, so manifest.json
+        // does not need to be the first entry.
+        let manifest = serde_json::json!({
+            "version": 1,
+            "generated_at": unix_now(),
+            "source": "user-data:logs",
+            "included": included.iter().map(|(name, size)| serde_json::json!({
+                "name": name, "size": size,
+            })).collect::<Vec<_>>(),
+            "skipped": skipped,
+        });
+        zip.try_add_file(
+            "manifest.json",
+            serde_json::to_string(&manifest).unwrap().as_bytes(),
+            dos_date,
+            dos_time,
+        )
+        .map_err(ExportError::Io)?;
+        zip.finish_into().map_err(ExportError::Io)
+    })();
+    let file = match finish {
+        Ok(file) => file,
+        Err(error) => {
+            // A failed staging write (ENOSPC/EFBIG mid-write, disk vanishing)
+            // leaves a TRUNCATED archive at the pending sibling; the only
+            // other pending cleanup lives in place_archive, which this path
+            // never reaches (#430). Remove the orphan now — the failure must
+            // leave nothing behind but its error.
+            let _ = remove_file_if_exists(&pending);
+            return Err(error);
+        }
+    };
+    // Durability: the pending sibling is the complete archive that
+    // place_archive then publishes. Without an fsync here a power loss
+    // after the zip finish and before the rename/hard_link can leave a
+    // torn zip at the user-chosen path. Mirror the journal writers:
+    // payload fsync before the publish step.
+    if let Err(error) = file.sync_all() {
+        drop(file);
+        let _ = remove_file_if_exists(&pending);
+        return Err(ExportError::Io(error));
+    }
+    drop(file);
     // Placement-time re-verification: destination_canonical was resolved
     // at VALIDATION time, and the archive build above leaves a
     // seconds-wide window in which a same-user ancestor swap (rename +
@@ -1723,10 +1843,8 @@ mod tests {
     #[test]
     fn destination_validation_rejects_directories_and_nameless_roots() {
         let user_data = temp_user_data("dest-dir");
-        let dir_destination = std::env::temp_dir().join(format!(
-            "mfd-dest-dir-{}",
-            crate::protocol::new_token()
-        ));
+        let dir_destination =
+            std::env::temp_dir().join(format!("mfd-dest-dir-{}", crate::protocol::new_token()));
         fs::create_dir_all(&dir_destination).unwrap();
         assert!(matches!(
             validate_destination(&user_data, &dir_destination, false),
@@ -1763,6 +1881,13 @@ mod tests {
             (ExportError::PendingIsSymlink, "符号链接"),
             (ExportError::DestinationInsideUserData, "用户数据"),
             (ExportError::LogsRootIsSymlink, "符号链接"),
+            (
+                ExportError::InsufficientSpace {
+                    needed: 10,
+                    available: 1,
+                },
+                "空间不足",
+            ),
         ];
         for (error, fragment) in &arms {
             let rendered = error.to_string();
@@ -2006,8 +2131,7 @@ mod tests {
         }
         drop(run_log); // close the active file before reading it back
 
-        let content =
-            std::fs::read_to_string(shell_log_path(&user_data, &token)).unwrap();
+        let content = std::fs::read_to_string(shell_log_path(&user_data, &token)).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(
             lines.len(),
@@ -2046,10 +2170,8 @@ mod tests {
 
         // Rotation must fail: the oversized base's rename target (.1)
         // is a DIRECTORY — rename over a non-empty dir always fails.
-        let block_dir = base.with_file_name(format!(
-            "{}.1",
-            base.file_name().unwrap().to_string_lossy()
-        ));
+        let block_dir =
+            base.with_file_name(format!("{}.1", base.file_name().unwrap().to_string_lossy()));
         fs::create_dir_all(block_dir.join("occupied")).unwrap();
 
         let result = run_log.record("after_block", &serde_json::json!({ "k": 1 }));
@@ -2060,7 +2182,10 @@ mod tests {
         // record() reports the rotation failure (rotation.and(written)):
         // the caller sees the error, but the WRITE still happened first —
         // the milestone is never lost to housekeeping.
-        assert!(result.is_err(), "the rotation failure must surface: {result:?}");
+        assert!(
+            result.is_err(),
+            "the rotation failure must surface: {result:?}"
+        );
         let log = fs::read_to_string(&base).unwrap();
         assert!(
             log.contains("after_block"),
@@ -2083,15 +2208,13 @@ mod tests {
             .unwrap();
 
         let log = fs::read_to_string(shell_log_path(&user_data, &token)).unwrap();
-        let value: serde_json::Value = serde_json::from_str(
-            log.lines().next().expect("one line written"),
-        )
-        .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(log.lines().next().expect("one line written")).unwrap();
+        assert_eq!(value["event"], "spawn", "the event name must be verbatim");
         assert_eq!(
-            value["event"], "spawn",
-            "the event name must be verbatim"
+            value["fields"]["pid"], 4242,
+            "fields nest verbatim: {value}"
         );
-        assert_eq!(value["fields"]["pid"], 4242, "fields nest verbatim: {value}");
         assert_eq!(value["fields"]["detail"], "x");
         assert!(
             value["ts"].as_u64().is_some(),
@@ -2102,7 +2225,10 @@ mod tests {
             3,
             "exactly ts/event/fields — an extra top-level key grows the contract: {value}"
         );
-        assert!(log.ends_with('\n'), "each record is one newline-terminated line");
+        assert!(
+            log.ends_with('\n'),
+            "each record is one newline-terminated line"
+        );
         let _ = fs::remove_dir_all(&user_data);
     }
 
@@ -2136,30 +2262,152 @@ mod tests {
     }
 
     /// The export stages the zip in a .pending sibling then publishes it.
-    /// The pending file must be fsynced after write_all and before
-    /// place_archive, or a crash publishes a torn archive. Structural pin
-    /// matching the journal writers.
+    /// The pending file must be fsynced after zip.finish_into (central+EOCD
+    /// on the sink) and before place_archive, or a crash publishes a torn
+    /// archive. Structural pin matching the journal writers. #813: the
+    /// archive is streamed into the pending file, not written from a second
+    /// in-RAM Vec.
     #[test]
     fn export_pending_write_fsyncs_the_archive_before_placement() {
         let source = include_str!("logs.rs");
         let after = source
-            .split("let archive = zip.finish();")
+            .split("fn export_logs_with(")
             .nth(1)
-            .expect("export stages zip.finish() into the pending sibling");
+            .expect("export_logs_with must exist");
         let body = after
-            .split("place_archive(")
+            .split("\nfn place_archive(")
             .next()
-            .expect("placement follows the pending write");
-        let write_at = body
-            .find("write_all(&archive)")
-            .expect("export must write the archive bytes");
+            .expect("placement follows export_logs_with");
+        let finish_at = body
+            .find("finish_into(")
+            .expect("export must finish the zip into the pending sink");
         let sync_at = body
             .find("sync_all()")
             .expect("export must fsync the pending archive before placement");
+        let place_at = body
+            .find("place_archive(")
+            .expect("placement follows the pending write");
         assert!(
-            write_at < sync_at,
-            "fsync must follow write_all on the pending archive: write@{write_at} sync@{sync_at}"
+            finish_at < sync_at && sync_at < place_at,
+            "fsync must follow zip finish and precede placement: finish@{finish_at} sync@{sync_at} place@{place_at}"
         );
+        assert!(
+            !body.contains("write_all(&archive)"),
+            "the archive must be streamed into the pending file, not written from a second in-RAM Vec"
+        );
+        assert!(
+            !body.contains("ZipWriter::new()"),
+            "export must stream into the pending file, not buffer a full-archive ZipWriter in RAM"
+        );
+    }
+
+    /// #813: free-space precheck runs after collect and before the pending
+    /// file is created or ZipWriter starts streaming. Reordering so a
+    /// short volume still creates `.pending` (or reads members first)
+    /// flips this red.
+    #[test]
+    fn export_prechecks_free_space_before_pending_create_or_zip() {
+        let source = include_str!("logs.rs");
+        let after = source
+            .split("fn export_logs_with(")
+            .nth(1)
+            .expect("export_logs_with must exist");
+        let body = after
+            .split("\nfn place_archive(")
+            .next()
+            .expect("placement follows export_logs_with");
+        let needed_at = body
+            .find("export_space_needed(")
+            .expect("export_logs_with must call the needed-bytes helper");
+        let insufficient_at = body
+            .find("ExportError::InsufficientSpace")
+            .expect("export_logs_with must return InsufficientSpace when short");
+        let pending_at = body
+            .find("create_new(true)")
+            .expect("pending create_new must exist");
+        let zip_at = body
+            .find("ZipWriter::from_writer(")
+            .expect("streaming ZipWriter must wrap the pending file");
+        assert!(
+            needed_at < insufficient_at && insufficient_at < pending_at && pending_at < zip_at,
+            "precheck must precede pending create and ZipWriter: needed@{needed_at} refuse@{insufficient_at} pending@{pending_at} zip@{zip_at}"
+        );
+    }
+
+    #[test]
+    fn export_space_needed_covers_payload_headers_manifest_and_slack() {
+        let members = vec![
+            ("a.log".into(), PathBuf::from("a.log"), 100u64),
+            ("bb.log".into(), PathBuf::from("bb.log"), 200u64),
+        ];
+        let needed = export_space_needed(&members, EXPORT_MAX_TOTAL_BYTES);
+        let payload = 300u64;
+        assert!(
+            needed >= payload + EXPORT_SPACE_SLACK_BYTES,
+            "needed must include payload + ≥1MiB slack: {needed}"
+        );
+        assert!(
+            needed >= payload + 22,
+            "needed must include the EOCD: {needed}"
+        );
+        let huge = vec![(
+            "big.log".into(),
+            PathBuf::from("big.log"),
+            EXPORT_MAX_TOTAL_BYTES + 1000,
+        )];
+        let capped = export_space_needed(&huge, EXPORT_MAX_TOTAL_BYTES);
+        assert!(
+            capped >= EXPORT_MAX_TOTAL_BYTES + EXPORT_SPACE_SLACK_BYTES,
+            "capped payload must still carry slack: {capped}"
+        );
+        assert!(
+            capped < EXPORT_MAX_TOTAL_BYTES.saturating_mul(2),
+            "needed must cap at max_total_bytes, not sum the uncapped sizes: {capped}"
+        );
+    }
+
+    /// Injected available-bytes=0 must refuse before creating the destination
+    /// or a `.pending` sibling.
+    #[test]
+    fn export_refuses_when_the_destination_has_insufficient_space() {
+        let user_data = temp_user_data("nospc");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("a.log"), "hello").unwrap();
+        let destination =
+            std::env::temp_dir().join(format!("mfd-nospc-{}.zip", crate::protocol::new_token()));
+        let pending = destination.with_file_name(format!(
+            "{}.pending",
+            destination.file_name().unwrap().to_string_lossy()
+        ));
+        let error = export_logs_with(
+            &user_data,
+            &destination,
+            false,
+            ExportLimits {
+                available_bytes: Some(0),
+                ..ExportLimits::default()
+            },
+        )
+        .unwrap_err();
+        match error {
+            ExportError::InsufficientSpace { needed, available } => {
+                assert_eq!(available, 0, "{needed} vs {available}");
+                assert!(needed > 0, "needed must be positive: {needed}");
+            }
+            other => panic!("expected InsufficientSpace, got {other:?}"),
+        }
+        assert!(
+            !destination.exists(),
+            "insufficient space must not create the destination"
+        );
+        assert!(
+            !pending.exists(),
+            "insufficient space must not create a pending sibling"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&destination);
+        let _ = fs::remove_file(&pending);
     }
 
     #[test]
@@ -2832,7 +3080,7 @@ mod tests {
             false,
             ExportLimits {
                 max_members: 2,
-                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+                ..ExportLimits::default()
             },
         )
         .unwrap();
@@ -2858,8 +3106,8 @@ mod tests {
             &destination_sizes,
             false,
             ExportLimits {
-                max_members: EXPORT_MAX_MEMBERS,
                 max_total_bytes: 25,
+                ..ExportLimits::default()
             },
         )
         .unwrap();
@@ -2884,8 +3132,10 @@ mod tests {
         assert_eq!(manifest["skipped"].as_array().unwrap().len(), 2);
 
         // With the real limits the same four files all fit.
-        let destination_full =
-            std::env::temp_dir().join(format!("mfd-caps-full-{}.zip", crate::protocol::new_token()));
+        let destination_full = std::env::temp_dir().join(format!(
+            "mfd-caps-full-{}.zip",
+            crate::protocol::new_token()
+        ));
         let report = export_logs_zip(&user_data, &destination_full).unwrap();
         assert_eq!(report.files.len(), 4, "{report:?}");
         assert!(report.skipped.is_empty(), "{report:?}");
@@ -2917,12 +3167,16 @@ mod tests {
             &destination,
             false,
             ExportLimits {
-                max_members: EXPORT_MAX_MEMBERS,
                 max_total_bytes: 25,
+                ..ExportLimits::default()
             },
         )
         .unwrap();
-        assert_eq!(report.files, vec!["a-first.log", "b-second.log"], "{report:?}");
+        assert_eq!(
+            report.files,
+            vec!["a-first.log", "b-second.log"],
+            "{report:?}"
+        );
         assert_eq!(report.total_bytes, 25, "{report:?}");
         assert_eq!(
             report
@@ -3221,10 +3475,8 @@ mod tests {
                     };
                     assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &limit), 0);
                 }
-                let destination = std::env::temp_dir().join(format!(
-                    "mfd-enospc-{}.zip",
-                    crate::protocol::new_token()
-                ));
+                let destination = std::env::temp_dir()
+                    .join(format!("mfd-enospc-{}.zip", crate::protocol::new_token()));
                 let result = export_logs_zip(&user_data, &destination);
                 assert!(result.is_err(), "the size-capped write must fail");
                 let pending = destination.with_file_name(format!(
@@ -3287,10 +3539,9 @@ mod tests {
         use std::ffi::CString;
 
         let user_data = temp_user_data("log-fifo");
-        let logs_root = user_data.join("runtime").join(format!(
-            "mangaflow-desktop-{}",
-            "b".repeat(32)
-        ));
+        let logs_root = user_data
+            .join("runtime")
+            .join(format!("mangaflow-desktop-{}", "b".repeat(32)));
         let log_path = logs_root.join("shell.log");
         std::fs::create_dir_all(&logs_root).unwrap();
         let cpath = CString::new(log_path.as_os_str().as_encoded_bytes()).unwrap();
@@ -3307,9 +3558,9 @@ mod tests {
             let log_path = log_path.clone();
             let logs_canonical = logs_canonical.clone();
             move || {
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                    || open_append_regular(&log_path, &logs_canonical),
-                ));
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    open_append_regular(&log_path, &logs_canonical)
+                }));
                 let _ = tx.send(());
                 // Unwrap HERE so the joined type is the plain io::Result —
                 // the refusal path is expect_err'd by the test body below.
@@ -3342,11 +3593,7 @@ mod tests {
     #[cfg(unix)]
     fn run_log_create_refuses_a_planted_logs_root_link() {
         let user_data = temp_user_data("rootlink-create");
-        std::os::unix::fs::symlink(
-            std::env::temp_dir(),
-            logs_dir(&user_data),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(std::env::temp_dir(), logs_dir(&user_data)).unwrap();
 
         let result = RunLog::create(&user_data, &"bf".repeat(16));
 
@@ -3381,18 +3628,12 @@ mod tests {
         fs::write(logs.join("real.log"), "0123456789").unwrap();
         fs::write(logs.join("manifest.json"), "{\"planted\": true}").unwrap();
 
-        let destination =
-            std::env::temp_dir().join(format!("mfd-manifest-dup-{}.zip", crate::protocol::new_token()));
-        let report = export_logs_with(
-            &user_data,
-            &destination,
-            false,
-            ExportLimits {
-                max_members: EXPORT_MAX_MEMBERS,
-                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
-            },
-        )
-        .unwrap();
+        let destination = std::env::temp_dir().join(format!(
+            "mfd-manifest-dup-{}.zip",
+            crate::protocol::new_token()
+        ));
+        let report =
+            export_logs_with(&user_data, &destination, false, ExportLimits::default()).unwrap();
 
         assert_eq!(report.files, vec!["real.log"], "{report:?}");
         assert!(
@@ -3499,8 +3740,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
-            let renamed = swapper_exports
-                .with_file_name(format!("exports-real-{swapper_unique}"));
+            let renamed = swapper_exports.with_file_name(format!("exports-real-{swapper_unique}"));
             let _ = fs::remove_dir_all(&renamed);
             fs::rename(&swapper_exports, &renamed).unwrap();
             std::os::unix::fs::symlink(&swapper_user_data, &swapper_exports).unwrap();
@@ -3510,15 +3750,7 @@ mod tests {
         // after the export, so the swap lands mid-call (the previous
         // recv-first ordering let the swap complete before validation and
         // passed vacuously through the validation-time refusal).
-        let result = export_logs_with(
-            &user_data,
-            &destination,
-            false,
-            ExportLimits {
-                max_members: EXPORT_MAX_MEMBERS,
-                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
-            },
-        );
+        let result = export_logs_with(&user_data, &destination, false, ExportLimits::default());
 
         worker.join().unwrap();
         rx.recv_timeout(Duration::from_secs(1))
@@ -3558,5 +3790,4 @@ mod tests {
             "the redirected staging/placement must leave nothing behind: {orphans:?}"
         );
     }
-
 }
