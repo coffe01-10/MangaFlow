@@ -164,9 +164,27 @@ def test_acceptance_entry_dry_run_does_not_load_app_or_dotenv(tmp_path, monkeypa
     (tmp_path / ".env").write_text("DATABASE_URL=not-a-database", encoding="utf-8")
     monkeypatch.setenv("MANGAFLOW_ACCEPTANCE_PG_URL", "")
     monkeypatch.setenv("MANGAFLOW_ACCEPTANCE_REDIS_URL", "")
-    assert module.main(["--dry-run", "--start-containers", "--run-live"]) == 0
+    assert module.main(["--dry-run"]) == 0
     assert "no connection" in capsys.readouterr().out
     assert sorted(path.name for path in tmp_path.iterdir()) == [".env"]
+
+
+def test_dry_run_does_not_suppress_live_or_container_blocked(monkeypatch, capsys):
+    """#827: --dry-run combined with --run-live/--start-containers must
+    still return the BLOCKED code. Shadowing those switches would
+    contradict the module docstring and hide an unimplemented action."""
+    import importlib.util
+
+    entry = Path(__file__).resolve().parents[1] / "scripts" / "run_phase2_acceptance.py"
+    spec = importlib.util.spec_from_file_location("review_dry_run_blocked", entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("MANGAFLOW_ACCEPTANCE_PG_URL", "")
+    monkeypatch.setenv("MANGAFLOW_ACCEPTANCE_REDIS_URL", "")
+    assert module.main(["--dry-run", "--start-containers", "--run-live"]) == 2
+    captured = capsys.readouterr()
+    assert "No service was connected" in captured.err
+    assert "--dry-run does not suppress" in captured.err
 
 
 def test_incomplete_live_entry_is_blocked_before_any_service_operation(monkeypatch, capsys):
