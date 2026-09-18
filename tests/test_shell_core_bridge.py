@@ -14,6 +14,7 @@ while making every Linux run — dev and CI — execute the Rust suite.
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 import subprocess
@@ -32,16 +33,29 @@ CRATE = Path(__file__).resolve().parents[1] / "apps" / "desktop" / "shell-core"
     shutil.which("cargo") is None,
     reason="cargo not installed",
 )
-def test_shell_core_lib_pins_pass():
+def test_shell_core_all_target_pins_pass():
+    # Full targets, not --lib: the integration suites (startup_protocol,
+    # log_export, log_rotation, picker_policy, delivery_contract — ~70
+    # tests) also carry pins and also ran in no gate before this bridge.
     result = subprocess.run(
-        ["cargo", "test", "--lib"],
+        ["cargo", "test"],
         cwd=CRATE,
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=900,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    # Guard against a vacuous pass: the bridge must have actually run the
-    # suite, not collected zero tests (a filter typo fails silently).
-    last = [line for line in result.stdout.splitlines() if line.startswith("test result")]
-    assert last and "0 passed" not in last[-1], result.stdout[-2000:]
+    # Guard against a vacuous pass: full targets print one result line per
+    # target (empty doc-test targets legitimately say "0 passed"), so the
+    # check sums the passed counts and demands the suite's real magnitude.
+    result_lines = [
+        line for line in result.stdout.splitlines() if line.startswith("test result")
+    ]
+    assert result_lines, "cargo produced no test result lines"
+    total = sum(
+        int(match)
+        for line in result_lines
+        for match in re.findall(r"(\d+) passed", line)
+    )
+    assert total >= 100, f"suspiciously few tests ran: {result_lines}"
+    assert not any("FAILED" in line for line in result_lines), result_lines
