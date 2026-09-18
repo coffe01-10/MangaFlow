@@ -533,6 +533,21 @@ mod tests {
     /// form the whole wait lands near the 300ms timeout; the fixed-2s
     /// regression overshoots to ~2s and fails the wall-clock bound.
     #[test]
+    fn wait_for_health_bounds_each_attempt_by_the_remaining_budget() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+
+        let started = std::time::Instant::now();
+        let result = wait_for_health(&origin, Duration::from_millis(300), || true);
+
+        assert!(result.is_err(), "a never-accepting peer must time out");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "the timeout must bound the ATTEMPTS, not trail them: {elapsed:?}"
+        );
+    }
+
     /// The dies-MID-POLL arm must fail FAST with BrokenPipe, not ride the
     /// budget out to TimedOut: first liveness check passes, the health
     /// attempt itself fails, and the loop-top recheck then observes the
@@ -577,21 +592,6 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(5),
             "the liveness arm must fail fast, not ride the budget: {elapsed:?}"
-        );
-    }
-
-    fn wait_for_health_bounds_each_attempt_by_the_remaining_budget() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-
-        let started = std::time::Instant::now();
-        let result = wait_for_health(&origin, Duration::from_millis(300), || true);
-
-        assert!(result.is_err(), "a never-accepting peer must time out");
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < Duration::from_millis(1500),
-            "the timeout must bound the ATTEMPTS, not trail them: {elapsed:?}"
         );
     }
 
