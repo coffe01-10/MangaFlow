@@ -154,6 +154,23 @@ def test_final_summary_keeps_body_and_stop_failures_without_deletion(
     monkeypatch.setattr(runtime.tree, "stop", original)
 
 
+def test_final_summary_survives_an_unwritable_report_path(runtime, tmp_path, capsys):
+    from run_e2e_owned import finish
+
+    # A directory at the report path makes write_text raise (#893): the
+    # acceptance record must still be delivered, not lost to an escaping
+    # exception out of run()'s finally.
+    report = tmp_path / "summary.json"
+    report.mkdir()
+    summary = {"errors": ["body failed"], "runtime_removed": False}
+    assert finish(runtime, summary, report) == 1
+    dumped = json.loads(capsys.readouterr().out)
+    assert dumped["errors"][0] == "body failed"
+    assert any(error.startswith("report: ") for error in dumped["errors"])
+    assert dumped["runtime_removed"] is True
+    assert runtime.cleaned
+
+
 def test_final_cleanup_failure_keeps_owner_and_recovers_after_file_unlock(runtime, tmp_path):
     import sqlite3
 
