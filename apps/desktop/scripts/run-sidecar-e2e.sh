@@ -72,10 +72,14 @@ _ensure_e2e_venv_locked() {
     # before any stamp write either way.
     # Windows python.org installs ship `python.exe`/`py.exe` without a
     # `python3` alias (start-desktop.cmd's audience): fall back before
-    # failing the documented bootstrap path (#831).
-    if command -v python3 >/dev/null 2>&1; then
+    # failing the documented bootstrap path (#831). Existence is not
+    # capability: the WindowsApps `python3` stub satisfies command -v but
+    # exits 49 on every invocation, failing the bootstrap with a bare 49
+    # before the python fallback could run — so each creator is probed
+    # with `-c ''` before it is trusted with the venv.
+    if command -v python3 >/dev/null 2>&1 && python3 -c '' >/dev/null 2>&1; then
       python3 -m venv "$venv" || return $?
-    elif command -v python >/dev/null 2>&1; then
+    elif command -v python >/dev/null 2>&1 && python -c '' >/dev/null 2>&1; then
       python -m venv "$venv" || return $?
     else
       echo "run-sidecar-e2e: no python3/python on PATH to create the venv" >&2

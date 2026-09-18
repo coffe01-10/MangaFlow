@@ -17,7 +17,12 @@ _GATE = Path(__file__).resolve().parent / "chunk-consistency-gate.sh"
 
 
 def _run_entry_smoke(frontend_dir: Path) -> subprocess.CompletedProcess:
-    script = f"source {_GATE} && check_static_entry_files \"{frontend_dir}\""
+    # Same as_posix + quoting rule as _run_gate below: the smoke arm embeds
+    # both the gate script and the frontend dir into the bash -c body.
+    script = (
+        f'source "{_GATE.as_posix()}" && '
+        f'check_static_entry_files "{frontend_dir.as_posix()}"'
+    )
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
 
 
