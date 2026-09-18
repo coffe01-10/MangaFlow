@@ -504,3 +504,15 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
     修复面需 lead 设计（注入缝或 clobberer 线程）。
 - 审查轮计数（本窗）：勘察×3 + PR 互审×2（含本轮 P1×2 返工）。
 - Windows 腿：NOT RUN。
+
+## 42. 夜窗 20260918→19（重录二：冲突解决再度吞节，按原文重附于尾）
+
+开跑：fetch + 新分支 night/n1-core-burn-20260918 自 origin/master c68423e
+（#900-#924 大波已入——昨夜 N3 立案的红队 findings 已被并行修复波吸收：
+流式导出+空闲空间预检、relay 空闲超时、umask/权限、SIGTERM 推迟、stub
+限连、grandchild env 剥离、journal 写时包含再验证、node 运行时校验、
+summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏等）。
+基线实测：cargo 全套件 197 绿。本窗策略：新波代码的未钉臂 + 回归面；
+已知候选 #891 亦已被修复（symlink 拒绝 + 4 测试）。
+（附注：#846/#898/#899/#927/#929/#931/#932/#936/#938 均已由 lead 合入；
+#846 的 CONFLICTING 已 rebase 解锁后合入。）
