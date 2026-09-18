@@ -3,10 +3,10 @@
 The offline harness runs by default. Live pytest execution is available through
 pytest itself with explicit isolated URLs (--run-live-integration --pg-url ...
 --redis-url ...); the owner-scoped container orchestration behind
---run-live/--start-containers is still not implemented: those switches stay
-a nonzero BLOCKED result whenever they are the requested action. The one
-exception is --dry-run, which previews endpoints only, ignores them, and
-returns 0 (pinned by test_acceptance_entry_dry_run_does_not_load_app_or_dotenv).
+--run-live/--start-containers/--stop-containers is still not implemented:
+those switches stay a nonzero BLOCKED result whenever they are requested,
+including when combined with --dry-run (#827). Bare --dry-run previews
+endpoints only and returns 0.
 """
 
 from __future__ import annotations
@@ -47,12 +47,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"INVALID_CONFIGURATION: {exc}", file=sys.stderr)
         return 2
 
-    if args.dry_run:
-        print(f"PostgreSQL: {mask_url(pg) if pg else 'NOT_CONFIGURED'}")
-        print(f"Redis: {mask_url(redis) if redis else 'NOT_CONFIGURED'}")
-        print("DRY_RUN: endpoint syntax only; no connection or ownership validation performed.")
-        return 0
-
     if args.run_live or args.start_containers or args.stop_containers:
         print(
             "BLOCKED: owner-scoped live orchestration is not implemented. Run pytest with "
@@ -60,7 +54,19 @@ def main(argv: list[str] | None = None) -> int:
             "connected, started, or stopped by this entry point.",
             file=sys.stderr,
         )
+        if args.dry_run:
+            print(
+                "BLOCKED: --dry-run does not suppress --run-live/"
+                "--start-containers/--stop-containers",
+                file=sys.stderr,
+            )
         return 2
+
+    if args.dry_run:
+        print(f"PostgreSQL: {mask_url(pg) if pg else 'NOT_CONFIGURED'}")
+        print(f"Redis: {mask_url(redis) if redis else 'NOT_CONFIGURED'}")
+        print("DRY_RUN: endpoint syntax only; no connection or ownership validation performed.")
+        return 0
 
     # The default preparation command is deliberately offline, regardless of
     # inherited opt-ins. It neither loads developer dotenv nor collects live tests.
