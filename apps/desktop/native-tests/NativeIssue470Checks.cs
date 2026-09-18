@@ -91,6 +91,7 @@ internal static class NativeIssue470Checks
                 await ClosedDrawerFailureReachesStatus();
                 await OpenDrawerFailureStaysInline();
                 await F5SurfacesDashboardFailure();
+                await ColdStartDoesNotAutoEnterProject();
             }
             catch (Exception error) { failure = error; }
             finally { frame.Continue = false; }
@@ -101,7 +102,11 @@ internal static class NativeIssue470Checks
         var main = ReadSource("native", "MainWindow.xaml.cs") ?? ReadSource("apps", "desktop", "native", "MainWindow.xaml.cs");
         Require(main != null && main.Contains("if (!await NavigateAsync(\"home\")) return;") && main.Contains("home.OpenCreationDrawer()"),
             "Ctrl+N / create must open the drawer only after NavigateAsync succeeds (#817)");
-        Console.WriteLine("PASS: #470 cancelled create surfaces unknown-outcome guidance; #471-2 closed-drawer failures reach the status line; #471-3 F5 failures surface an error and retry cue");
+        Require(main != null && main.Contains("RestoreWorkspaceAfterConnectAsync")
+            && !main.Contains("OpenProjectAsync(state.Projects.FirstOrDefault())")
+            && !main.Contains("OpenProjectAsync(state.CurrentProject ?? state.Projects.FirstOrDefault())"),
+            "cold start must not auto-open RecentProject or the first dashboard project");
+        Console.WriteLine("PASS: #470 cancelled create surfaces unknown-outcome guidance; #471-2 closed-drawer failures reach the status line; #471-3 F5 failures surface an error and retry cue; cold start stays on home");
     }
 
     // #470：POST 在途时 Deactivate 取消令牌（服务端可能已建项）。
@@ -209,6 +214,35 @@ internal static class NativeIssue470Checks
             ((CancellationTokenSource)shellType.GetField("lifetime", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .GetValue(shell)!).Cancel();
             Directory.Delete(dataRoot, true);
+        }
+    }
+
+    // 冷启动：window.json 里的 RecentProject 不得把用户推进工作区。
+    // 不往 Projects 里塞项——侧栏 ComboBox 会自动选中第一项并触发 SelectProject。
+    private static async Task ColdStartDoesNotAutoEnterProject()
+    {
+        var dataRoot = Path.Combine(Path.GetTempPath(), "mangaflow-no-auto-open-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dataRoot);
+        File.WriteAllText(Path.Combine(dataRoot, "window.json"), "{\"RecentProject\":\"proj-recent\"}");
+        var shellType = typeof(MainWindow);
+        var shell = new MainWindow("", dataRoot);
+        try
+        {
+            var state = (WorkspaceState)shell.DataContext;
+            Require(state.CurrentProject == null, "constructor must not select a project");
+            await (Task)shellType.GetMethod("RestoreWorkspaceAfterConnectAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(shell, null)!;
+            Require(state.CurrentProject == null, "cold start must not auto-enter RecentProject");
+            Require((string)shellType.GetField("page", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(shell)! == "home",
+                "cold start must stay on the home dashboard");
+            Require(((ContentControl)shell.FindName("ContentHost")).Content is HomeView,
+                "cold start must keep HomeView on screen");
+        }
+        finally
+        {
+            ((CancellationTokenSource)shellType.GetField("lifetime", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(shell)!).Cancel();
+            try { Directory.Delete(dataRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
     }
 
