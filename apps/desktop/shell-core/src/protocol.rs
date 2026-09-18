@@ -2028,6 +2028,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&outside);
     }
     #[test]
+    #[cfg(unix)]
     fn runtime_layout_refuses_a_same_leaf_target_outside_the_user_data_root() {
         use std::os::unix::fs::symlink;
 

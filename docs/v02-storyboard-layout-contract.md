@@ -107,7 +107,7 @@
 ## 6. 阅读顺序与 RTL
 
 - `reading_order` 是**逻辑阅读序**，`(page_id, reading_order)` 唯一约束保留。
-- **调整顺序**：新增 `PATCH /pages/{page_id}/reading-order`，载荷 `{ order: [panel_id, ...] }`（页内全部格子新序），服务端**单事务**内重排 `reading_order` 并处理唯一约束（临时 +1 偏移再落位，或先置负再落位——由实现按 SQLite/PostgreSQL 差异固化）。交换后 `mark_storyboard_changed`。
+- **调整顺序**：新增 `PATCH /pages/{page_id}/reading-order`，载荷 `{ storyboard_version, order: [panel_id, ...] }`（页内全部格子新序），服务端**单事务**内重排 `reading_order` 并处理唯一约束（临时 +1 偏移再落位，或先置负再落位——由实现按 SQLite/PostgreSQL 差异固化）。交换后 `mark_storyboard_changed`。`storyboard_version` 为必填版本锚点（与 §10.3 storyboard-geometry 同语义）：页行锁下不匹配即 409「分镜版本已变化，请刷新画布后重试」——整页重排会整体改写格子序号，陈旧客户端的载荷不得静默覆盖并发编辑。
 - **RTL 展示**：编辑器「阅读顺序编号覆盖层」（V02-31）在 `reading_direction=rtl` 时把编号 1 渲染在页面右侧；几何坐标不翻转（§3.2）。
 
 ---
@@ -169,7 +169,7 @@
 
 - 格子：`Panel.version`（既有乐观锁）。V02-30 实现时 `PanelUpdate` 增加 `bounds` 字段（当前无），走既有 `panel.version != payload.version → 409`。
 - 气泡：**沿用父格 `panel_version`**（既有 `DialogueCreate/Update/Delete` 的乐观锁，`schemas.py:544-564`），不单独给 `Dialogue` 加 version 列——气泡与所属格在同一画布会话内编辑，父格版本足够，避免 schema 复杂度与双版本漂移。
-- 页级一致性锚点：`MangaPage.storyboard_version`。**批量保存前校验**：客户端提交的 `storyboard_version` 必须等于服务端当前值，否则 409（并发画布会话检测）。
+- 页级一致性锚点：`MangaPage.storyboard_version`。**批量保存前校验**：客户端提交的 `storyboard_version` 必须等于服务端当前值，否则 409（并发画布会话检测）。该锚点同样必填于两条整页重写路由：layout 重建（`PATCH /pages/{page_id}/layout`）与阅读序重排（`PATCH /pages/{page_id}/reading-order`）——两者都会整页改写格子/对白，页行锁下锚点不匹配即 409。
 
 ### 10.2 命令幂等
 
@@ -178,7 +178,8 @@
 
 ### 10.3 保存接口
 
-- **单对象微调**：`PATCH /panels/{id}`（扩展 `bounds`）、`PATCH /dialogues/{id}`（扩展 `bubble`）、`PATCH /pages/{page_id}/reading-order`（重排顺序）。
+- **单对象微调**：`PATCH /panels/{id}`（扩展 `bounds`）、`PATCH /dialogues/{id}`（扩展 `bubble`）。
+- **整页重写**（携带必填 `storyboard_version` 锚点，见 §10.1）：`PATCH /pages/{page_id}/reading-order`（载荷 `{ storyboard_version, order }`，重排顺序）、`PATCH /pages/{page_id}/layout`（载荷 `{ storyboard_version, panel_count, layout_mode }`，整页重建，硬删全部格子与对白后按 beat 重排）。
 - **画布整包保存**：新增 `PUT /pages/{page_id}/storyboard-geometry`，载荷 `{ request_id, storyboard_version, panels: [{panel_id, bounds, geometry, reading_order}], dialogues: [{dialogue_id, bubble, reading_order}] }`，单事务原子落库。panel/dialogue ID 必须唯一、全部属于该页；载荷是完整快照，不得漏掉现存对象或夹带其他页对象。返回 `StoryboardRead`。
 
 ### 10.4 撤销/重做需要保存什么
@@ -252,10 +253,10 @@ downgrade:
 | --- | --- |
 | `PATCH /panels/{id}` | `PanelUpdate` 新增扁平 bounds 与可选 geometry；两者 rect 必须一致 |
 | `PATCH /dialogues/{id}` | `DialogueUpdate` 新增 `bubble`（§7） |
-| `PATCH /pages/{page_id}/reading-order` | 新增：整页 `reading_order` 重排 |
+| `PATCH /pages/{page_id}/reading-order` | 新增：整页 `reading_order` 重排；载荷必填 `storyboard_version` 锚点（§10.1，不匹配 409） |
 | `PUT /pages/{page_id}/storyboard-geometry` | 新增：整包几何保存（`storyboard_version` + panels + dialogues） |
 | `GET /pages/{id}/storyboard` | `PanelRead.bounds` 保持扁平并新增 geometry；DialogueRead 保留 region 并新增 bubble；PageRead 新增 canvas |
-| `PATCH /pages/{id}/layout` | `PageLayoutUpdate.panel_count` 上限 3–5 → **3–8**（对齐 V02-32「3–8 格」门禁）；`layout_mode` 保留 |
+| `PATCH /pages/{id}/layout` | `PageLayoutUpdate.panel_count` 上限 3–5 → **3–8**（对齐 V02-32「3–8 格」门禁）；`layout_mode` 保留；载荷必填 `storyboard_version` 锚点（§10.1，不匹配 409） |
 
 `PanelGeometry`/`BubbleGeometry`/`SoundEffect` 为新增 Pydantic schema，`extra="forbid"`。
 
