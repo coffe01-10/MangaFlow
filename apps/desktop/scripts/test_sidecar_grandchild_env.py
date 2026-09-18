@@ -81,3 +81,33 @@ def test_descendant_env_reuses_the_node_scrub_plus_python_hooks(monkeypatch):
     assert "DATABASE_URL" not in upper
     assert "PYTHONPATH" not in upper
     assert "PATH" in upper
+
+
+def test_descendant_env_scrubs_the_full_python_hook_tail(monkeypatch):
+    """The dropped set's PYTHON* tail is member- pinched: the existing pin
+    seeds only PYTHONPATH, so deleting PYTHONHOME/PYTHONSTARTUP/
+    PYTHONSAFEPATH/PYTHONUSERBASE/PYTHONEXECUTABLE from the set is green
+    — and each is a startup auto-load or interpreter-redirect hook
+    (sitecustomize was the original #871 vector)."""
+
+    for name in (
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "PYTHONSAFEPATH",
+        "PYTHONUSERBASE",
+        "PYTHONEXECUTABLE",
+    ):
+        monkeypatch.setenv(name, "/evil/anchor")
+
+    env = helper._descendant_env()
+    upper = {name.upper(): value for name, value in env.items()}
+    surviving = [name for name in (
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "PYTHONSAFEPATH",
+        "PYTHONUSERBASE",
+        "PYTHONEXECUTABLE",
+    ) if name in upper]
+    assert surviving == [], (
+        f"Python auto-load hooks survived the descendant scrub: {surviving}"
+    )
