@@ -11,21 +11,47 @@ $results = @()
 # Ctrl+C or a mid-sample throw. Cleared once a sample has been accounted for.
 $proc = $null
 function Stop-SampleTree {
-    param([int]$SamplePid)
-    # The client spawns a job-less child tree (native-host → python sidecar);
-    # Stop-Process would kill only the WPF root and orphan the children
-    # holding the API port. taskkill /T walks the whole descendant tree.
-    # Identity guard (round-6 review): Windows reuses pids aggressively - a
-    # Ctrl+C after the sample already exited can land this taskkill on an
-    # unrelated new process. Verify the pid still names MangaFlow.Native
-    # before killing; a recycled pid is skipped (its own owner reaps it).
-    $proc = Get-Process -Id $SamplePid -ErrorAction SilentlyContinue
-    if (-not $proc) { return }
-    if ($proc.ProcessName -ne 'MangaFlow.Native') {
-        Write-Warning ("Stop-SampleTree: pid {0} is now '{1}' (pid reuse) - skip" -f $SamplePid, $proc.ProcessName)
-        return
+    # #896: kill through the HELD [System.Diagnostics.Process] object — its
+    # identity is pinned by handle from Start() to Kill(). The old shape
+    # (Get-Process name check, then `taskkill /PID … /T /F`) re-resolved the
+    # pid a second time: a pid recycled in that window was tree-killed with
+    # no name check left. The client spawns a job-less child tree
+    # (native-host → python sidecar); killing only the WPF root would orphan
+    # the children holding the API port, so the kill must still cover the
+    # whole tree.
+    param([System.Diagnostics.Process]$Sample)
+    if ($null -eq $Sample) { return }
+    try {
+        $Sample.Refresh()
+        if (-not $Sample.HasExited) {
+            if ($PSVersionTable.PSVersion.Major -ge 7) {
+                # .NET Core: Kill(entireProcessTree) — handle-pinned tree kill,
+                # no pid re-resolution anywhere.
+                $Sample.Kill($true)
+            }
+            else {
+                # Windows PowerShell 5.1 (.NET Framework) has no Kill(bool):
+                # snapshot the descendants (pid → image name) while the root
+                # handle is still verifiably ours, kill the ROOT handle-pinned,
+                # then kill each child only while its live image still matches
+                # the snapshot — a mismatched image is a pid reuse, skipped
+                # (its own owner reaps it). Residual window (snapshot → child
+                # kill) is image-verified, unlike the old unchecked /T walk.
+                $kids = Get-DescendantPids -RootPid $Sample.Id
+                $Sample.Kill()
+                foreach ($childPid in $kids.Keys) {
+                    $still = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+                    if ($still -and (($still.ProcessName + '.exe') -eq $kids[$childPid])) {
+                        & taskkill /PID $childPid /F | Out-Null
+                    }
+                }
+            }
+        }
     }
-    & taskkill /PID $SamplePid /T /F | Out-Null
+    catch [InvalidOperationException] { }   # exited between HasExited and Kill — already gone
+    catch [System.ComponentModel.Win32Exception] {
+        Write-Warning ("Stop-SampleTree: root kill failed: {0}" -f $_.Exception.Message)
+    }
 }
 
 function Get-DescendantPids {
@@ -106,17 +132,17 @@ try {
         $results[-1] | Add-Member -NotePropertyName CleanClose -NotePropertyValue $cleanClose
         $results[-1] | Add-Member -NotePropertyName Exited -NotePropertyValue $exited
         $results[-1] | Add-Member -NotePropertyName LeftoverChildren -NotePropertyValue ($leftover -join ',')
-        if (-not $exited) { Stop-SampleTree $proc.Id }
+        if (-not $exited) { Stop-SampleTree $proc }
         $proc = $null
     }
 }
 finally {
     # Belt-and-braces: a Ctrl+C or a mid-sample throw during the 120 s sample
     # window would otherwise leak the whole tree (root + native-host + sidecar)
-    # holding its API port for the rest of the session.
-    if ($proc -and (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)) {
-        Stop-SampleTree $proc.Id
-    }
+    # holding its API port for the rest of the session. The held object pins
+    # the identity (#896) — no pid re-lookup here (HasExited inside covers the
+    # already-exited case).
+    if ($proc) { Stop-SampleTree $proc }
     $results | Format-Table -AutoSize | Out-String | Write-Output
     try { Remove-Item -Recurse -Force $dataRoot -ErrorAction SilentlyContinue } catch {}
 }
