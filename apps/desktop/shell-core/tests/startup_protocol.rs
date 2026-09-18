@@ -1236,16 +1236,22 @@ fn a_silent_helper_fails_with_ready_timeout_and_is_torn_down() {
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
-/// Regression (red team 2026-09-08): `stop()` called after the direct child
-/// was already reaped — the native-host self-exit path reaps via `try_wait`
-/// and then stops the tree — must not signal the freed pid. The fixture
-/// child is a session leader that leaves an orphaned group member behind:
-/// the group id stays allocated while the orphan lives, so the old
-/// signal-before-check order deterministically killed it (the exact
-/// "unrelated group" blast radius without needing pid reuse).
+/// Regression (red team 2026-09-08; inverted by #864): `stop()` called after
+/// the direct child was already reaped — the native-host self-exit path reaps
+/// via `try_wait` and then stops the tree — must never signal the FREED PID
+/// (a recycled pid would be an unrelated process). The fixture child is a
+/// session leader that leaves an orphaned group member behind: the group id
+/// stays allocated while the orphan lives, so a per-pid signal
+/// deterministically hit it (the original "unrelated group" blast radius
+/// without needing pid reuse). #864 narrowed but left a leak: the early
+/// return skipped EVERY signal, so the same orphan survived when the child
+/// self-exited in the window between Drop's `alive()` probe and stop's
+/// `try_wait`. The contract now: the leftover IN-GROUP orphan dies
+/// (group-only SIGKILL — the recycled-pid safety is about the per-pid form,
+/// not about sparing the group we own).
 #[test]
 #[cfg(unix)]
-fn stop_on_an_already_reaped_child_spares_the_leftover_group() {
+fn stop_on_an_already_reaped_child_clears_the_leftover_group() {
     let user_data = temp_user_data("reaped-stop");
     let child_code = "\
 import subprocess, sys, time
@@ -1323,23 +1329,18 @@ time.sleep(0.5)
         reaped.code(),
         "stop must report the already-cached exit status"
     );
-    // The stray group signal (old order) kills the orphan; give a delivered
-    // signal time to surface as an exit or zombie before asserting.
+    // #864: the in-group orphan must die — the early return's group-only
+    // SIGKILL covers the Drop race window (bounded wait so a delivered
+    // signal has time to surface as an exit before asserting).
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline && orphan_is_live(orphan_pid) {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        orphan_is_live(orphan_pid),
-        "stop() signalled the leftover process group of an already-reaped child"
+        !orphan_is_live(orphan_pid),
+        "stop() on a reaped child leaked the leftover process group member (#864)"
     );
 
-    // Clean up the fixture orphan out-of-band; it is outside the tree by
-    // construction (that is the point of the regression).
-    let _ = Command::new("kill")
-        .arg("-9")
-        .arg(orphan_pid.to_string())
-        .output();
     let _ = std::fs::remove_dir_all(&user_data);
 }
 

@@ -396,6 +396,53 @@ def test_oversize_journal_fail_open_and_publish(tmp_path: Path):
     assert published["state"] == "ready", published
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "symlink"),
+    reason="os.symlink (unprivileged) is Unix-only; the link-swap pin needs it",
+)
+def test_open_verified_pending_refuses_a_link_redirected_outside(tmp_path: Path):
+    """#863 (Rust twin parity): a pending name that resolves OUTSIDE the
+    runtime dir must refuse at the post-open verifier — and the refusal must
+    be zero-damage: the outside target's sentinel bytes survive (the old
+    truncating "wb" open zeroed them at open time)."""
+
+    helper = _load_helper()
+    runtime = tmp_path / "runtime" / f"mangaflow-desktop-{TOKEN}"
+    runtime.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "victim.log"
+    victim.write_bytes(b"SENTINEL-BYTES")
+    pending = runtime / "owner.json.helper.pending"
+    os.symlink(victim, pending)
+
+    with pytest.raises(RuntimeError, match="outside the runtime directory"):
+        helper._open_verified_pending(pending, runtime)
+    assert victim.read_bytes() == b"SENTINEL-BYTES", (
+        "the refusal must be zero-damage to the redirected target (#863)"
+    )
+
+
+def test_open_verified_pending_passes_a_regular_in_runtime_pending(tmp_path: Path):
+    """#863 green path: a regular pending inside the runtime dir gets a
+    verified, writable fd — and the guarded _write_journal still publishes."""
+
+    helper = _load_helper()
+    runtime = tmp_path / "runtime" / f"mangaflow-desktop-{TOKEN}"
+    runtime.mkdir(parents=True)
+    pending = runtime / "owner.json.helper.pending"
+    fd = helper._open_verified_pending(pending, runtime)
+    try:
+        os.write(fd, b"probe")
+    finally:
+        os.close(fd)
+    assert pending.read_bytes() == b"probe"
+    journal = runtime / "owner.json"
+    helper._write_journal(journal, _record("ready"))
+    published = json.loads(journal.read_text(encoding="utf-8"))
+    assert published["state"] == "ready", published
+
+
 def test_write_journal_fsyncs_payload_and_parent_dir(tmp_path, monkeypatch):
     """Durability parity with the Rust twin (#899): the payload fsync
     (#824) commits the bytes, and the post-rename parent-dir fsync
