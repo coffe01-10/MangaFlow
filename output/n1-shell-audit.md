@@ -550,3 +550,18 @@ summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏
   P1 + master E0061 红）、R5 五 PR 复审（全 PASS）、R6 返工验证。
   ≥6 ✓。B 计数：17 枚（≥16 ✓）。
 - Windows 腿：NOT RUN。
+
+- 第五批产出：
+  · #957：对话命令面的形状钉——picker 必须保持 SYNC（tauri 同步命令
+    跑主线程 = Windows rfd 对话框所需；export 转 async 后才需要
+    run_on_main_thread 舞步——picker 若同样转 async 而不加舞步会静默
+    破坏 Windows 对话框——该形状此前无钉）；三个开对话框命令必须先
+    claim DIALOG_OPEN 互斥；readback 命令永不弹对话框。红检：删
+    pick_file 的 claim → 钉红。
+  · #933 rebase 到 289d330（原等待 #944；#944 已合并）→ MERGEABLE。
+  · #940（并行会话 relay 首字节钉）轮审 PASS：unwind/slot-release
+    确定性、latency 臂 ~16x 余量、无重名；P2 反馈 FIN-before-release
+    窗口建议复用 exchange_after_release。
+  · 合入确认：#944/#946/#951/#952/#955/#956 全部入 master。
+  · 流程披露：账本提交两度误落 PR 分支（checkout 守卫绕过）——均已
+    分支搬运修复；改为 scratch-file 批量记账降低切换频率。
