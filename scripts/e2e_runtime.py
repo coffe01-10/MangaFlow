@@ -41,6 +41,12 @@ def new_runtime(parent: Path) -> BrowserRuntime:
         runtime.mkdir()
         with (runtime / "runtime-owner.json").open("x", encoding="utf-8") as file:
             json.dump({"version": 1, "run_id": tree.token}, file)
+            # #874 durability parity: assigned_runtime re-reads this marker as
+            # the runtime's ownership proof; a lost/torn write would fail every
+            # later assignment. Payload flush+fsync, create-new without rename
+            # (same shape as backup_restore's write_owner_marker).
+            file.flush()
+            os.fsync(file.fileno())
         (runtime / "storage").mkdir()
         (runtime / "uploads").mkdir()
         return BrowserRuntime(tree.token, runtime, tree)

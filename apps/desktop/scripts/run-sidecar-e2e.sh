@@ -198,6 +198,9 @@ pytest_exit=0
   "$DESKTOP_ROOT/scripts/test_run_sidecar_e2e.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_journal.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_journal_fsync_order.py" \
+  "$DESKTOP_ROOT/scripts/test_sidecar_grandchild_env.py" \
+  "$DESKTOP_ROOT/scripts/test_sidecar_stub_limit.py" \
+  "$DESKTOP_ROOT/scripts/test_sidecar_umask.py" \
   "$DESKTOP_ROOT/scripts/test_package_sidecar.py" \
   "$DESKTOP_ROOT/scripts/test_verify_static_origin.py" \
   "$DESKTOP_ROOT/scripts/test_mjs_no_undef.py" \

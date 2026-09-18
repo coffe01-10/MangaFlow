@@ -105,7 +105,16 @@ def finish(runtime, summary: dict, report: Path, *, log: Path | None = None) -> 
         summary["errors"].append(f"cleanup: {type(exc).__name__}: {exc}")
         summary["runtime_removed"] = False
     summary["finished_at"] = time.time()
-    report.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    try:
+        report.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    except BaseException as exc:
+        # The acceptance record must survive an unwritable report path (#893):
+        # record the failure beside the other errors and dump the summary to
+        # stdout so the evidence is not lost to an unhandled exception.
+        # json.dumps escapes non-ASCII (the repo path is not ASCII), so the
+        # print is safe on any console encoding.
+        summary["errors"].append(f"report: {type(exc).__name__}: {exc}")
+        print(json.dumps(summary, indent=2), flush=True)
     return 1 if summary["errors"] else 0
 
 

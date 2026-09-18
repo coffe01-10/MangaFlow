@@ -10,9 +10,57 @@ $nativeProject = Join-Path $nativeRepo 'apps/desktop/native/MangaFlow.Native.csp
 # API server there. Pointing the WPF client's -UserData inside that directory would
 # start a second server on the same SQLite database, so refuse the overlap up front,
 # before any build work.
+# #876: lexical GetFullPath resolves neither reparse points (junctions/
+# symlinks) nor 8.3 short names, so an alias of the shell data directory
+# compared unequal and slipped past the overlap guard — the exact #410/#600
+# double-writer the guard exists to refuse. Canonicalize through
+# GetFinalPathNameByHandle (resolves both; the .NET ResolveLinkTarget API is
+# .NET 6+ while this launcher documents Windows PowerShell 5.1). A -UserData
+# that does not exist yet (the client creates it) canonicalizes its deepest
+# existing ancestor and re-appends the missing tail.
+Add-Type -Namespace MangaFlowLauncher -Name PathCanonicalizer -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+public static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode, IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+public static extern uint GetFinalPathNameByHandleW(IntPtr hFile, System.Text.StringBuilder lpszFilePath, uint cchFilePath, uint dwFlags);
+[DllImport("kernel32.dll", SetLastError=true)]
+public static extern bool CloseHandle(IntPtr hObject);
+'@
+function Get-CanonicalPath {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        # Not created yet: canonicalize the deepest existing ancestor and
+        # re-append the missing tail (junctions cannot hide in a missing
+        # component — only in the existing prefix).
+        $parent = [IO.Path]::GetDirectoryName($Path)
+        $leaf = [IO.Path]::GetFileName($Path)
+        if ($parent -and $leaf -and (Test-Path -LiteralPath $parent)) {
+            return (Join-Path (Get-CanonicalPath $parent) $leaf)
+        }
+        return $Path
+    }
+    $handle = [MangaFlowLauncher.PathCanonicalizer]::CreateFileW(
+        $Path, 0, 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)   # FILE_FLAG_BACKUP_SEMANTICS for directories
+    if ($handle -eq -1 -or $handle -eq [IntPtr]::Zero) {
+        throw ("Get-CanonicalPath: cannot open '{0}' (Win32 error {1})." -f $Path, [Runtime.InteropServices.Marshal]::GetLastWin32Error())
+    }
+    try {
+        $builder = New-Object System.Text.StringBuilder 1024
+        $length = [MangaFlowLauncher.PathCanonicalizer]::GetFinalPathNameByHandleW($handle, $builder, 1024, 0)
+        if ($length -eq 0 -or $length -gt 1024) {
+            throw ("Get-CanonicalPath: GetFinalPathNameByHandle failed for '{0}'." -f $Path)
+        }
+        $final = $builder.ToString()
+        if ($final.StartsWith('\\?\')) { $final = $final.Substring(4) }
+        return $final
+    }
+    finally { [void][MangaFlowLauncher.PathCanonicalizer]::CloseHandle($handle) }
+}
 if ($UserData) {
-    $userDataFull = [IO.Path]::GetFullPath($UserData).TrimEnd('\')
-    $shellDataFull = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'com.mangaflow.desktop')).TrimEnd('\')
+    # Canonical on BOTH sides (#876): junction and 8.3 aliases of either path
+    # must not slip the both-directions nesting check below.
+    $userDataFull = (Get-CanonicalPath ([IO.Path]::GetFullPath($UserData))).TrimEnd('\')
+    $shellDataFull = (Get-CanonicalPath (Join-Path $env:LOCALAPPDATA 'com.mangaflow.desktop')).TrimEnd('\')
     # Both nesting directions are refused (#600): the WPF client's session
     # sweep rotates shell-named logs and enumerates runtime dirs, so a
     # -UserData that CONTAINS the shell directory hands the shell's

@@ -356,3 +356,67 @@ def test_forced_noclobber_branch_serializes_two_bash_writers(tmp_path: Path):
         tmp_path, first="bash", second="bash", env_extra=_NOCLOBBER_SEAM
     )
     _assert_mutually_exclusive(intervals)
+
+
+def test_acquire_refuses_a_symlinked_lock_path_without_truncating_target(
+    tmp_path: Path,
+):
+    """#891: a planted link at the lock name must be refused BEFORE any open.
+    The old flock arm's `exec 9>` is O_TRUNC and follows links — a victim
+    file behind the link was zeroed before flock ever ran. The python twin
+    (build-web-standalone.py) already refuses links; pin the bash twin's
+    refusal and that the victim's bytes survive the attempt."""
+
+    if os.name != "posix":
+        pytest.skip("os.symlink needs POSIX (unprivileged) semantics")
+    if not _have_bash():
+        pytest.skip("no bash available for the dist-build-lock.sh branch")
+    victim = tmp_path / "victim.conf"
+    victim.write_text("PRECIOUS-BYTES\n", encoding="utf-8")
+    lock = tmp_path / "dist" / ".build.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.symlink_to(victim)
+    probe = subprocess.run(
+        [BASH, "-c",
+         f'source "{LOCK_SH}"\n'
+         f'if acquire_dist_build_lock "{lock}" 2; then echo ACQUIRED; '
+         f'else echo REFUSED; fi\n'],
+        capture_output=True, text=True, timeout=CONTEND_TIMEOUT,
+    )
+    assert "REFUSED" in probe.stdout, probe.stdout + probe.stderr
+    assert "refusing a symlinked lock path" in probe.stderr, probe.stderr
+    assert victim.read_text(encoding="utf-8") == "PRECIOUS-BYTES\n", (
+        "the refusal must not truncate the link target (#891)"
+    )
+
+
+def test_flock_arm_does_not_truncate_a_preexisting_regular_lock_file(
+    tmp_path: Path,
+):
+    """#891: the flock arm opens with `<>` (O_RDWR|O_CREAT, the python twin's
+    os.open flags) — `>` would zero a pre-existing regular lock file. On
+    flock hosts pin that an acquire+release cycle preserves prior content."""
+
+    if os.name != "posix":
+        pytest.skip("the truncation divergence only exists on the flock arm")
+    probe = subprocess.run(
+        [BASH, "-c", "command -v flock >/dev/null 2>&1"],
+        capture_output=True,
+    )
+    if probe.returncode != 0:
+        pytest.skip("no flock(1) on this bash; the noclobber arm has no truncation")
+    lock = tmp_path / "dist" / ".build.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("PRIOR-CONTENT\n", encoding="utf-8")
+    done = subprocess.run(
+        [BASH, "-c",
+         f'source "{LOCK_SH}"\n'
+         f'acquire_dist_build_lock "{lock}" 2\n'
+         f'release_dist_build_lock "{lock}"\n'],
+        capture_output=True, text=True, timeout=CONTEND_TIMEOUT,
+    )
+    assert done.returncode == 0, done.stderr
+    assert lock.read_text(encoding="utf-8") == "PRIOR-CONTENT\n", (
+        "acquiring over a pre-existing regular lock file must not truncate it "
+        "(the python twin's O_RDWR|O_CREAT parity, #891)"
+    )

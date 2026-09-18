@@ -247,7 +247,7 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
     }
     try_record(&run_log, "go_sent", &serde_json::json!({}));
 
-    if wait_for_health(&ready.api_origin, config.health_timeout).is_err() {
+    if wait_for_health(&ready.api_origin, config.health_timeout, || tree.alive()).is_err() {
         // The helper already published state "ready" in its journal; without
         // this path the shell would kill it and leave owner.json claiming
         // "ready" for a dead run.
@@ -472,9 +472,22 @@ pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Resul
     Ok((status, response))
 }
 
-fn wait_for_health(origin: &str, timeout: Duration) -> std::io::Result<()> {
+fn wait_for_health(
+    origin: &str,
+    timeout: Duration,
+    mut alive: impl FnMut() -> bool,
+) -> std::io::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
+        // #816: a helper that dies after GO (import crash, freed announced
+        // port) must fail this gate instead of accepting a same-user
+        // squatter that answers 200 on /api/v1/health.
+        if !alive() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "owned helper died before the health gate",
+            ));
+        }
         // Each attempt draws from the REMAINING budget, never a fresh
         // fixed 2s: the deadline was otherwise only checked AFTER an
         // attempt, so a hung peer (full 2s connect/read each try)
@@ -488,6 +501,12 @@ fn wait_for_health(origin: &str, timeout: Duration) -> std::io::Result<()> {
             ));
         }
         if let Ok((200, _)) = get_status(origin, HEALTH_PATH, remaining.min(Duration::from_secs(2))) {
+            if !alive() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "owned helper died before the health gate",
+                ));
+            }
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
@@ -519,7 +538,7 @@ mod tests {
         let origin = format!("http://{}", listener.local_addr().unwrap());
 
         let started = std::time::Instant::now();
-        let result = wait_for_health(&origin, Duration::from_millis(300));
+        let result = wait_for_health(&origin, Duration::from_millis(300), || true);
 
         assert!(result.is_err(), "a never-accepting peer must time out");
         let elapsed = started.elapsed();
@@ -527,6 +546,61 @@ mod tests {
             elapsed < Duration::from_millis(1500),
             "the timeout must bound the ATTEMPTS, not trail them: {elapsed:?}"
         );
+    }
+
+    /// #816: a dead owned helper must fail the gate immediately, even if
+    /// a squatter already answers 200 on the announced origin.
+    #[test]
+    fn wait_for_health_fails_closed_when_the_helper_dies() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let _ = std::io::Write::write_all(
+                    &mut sock,
+                    b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok",
+                );
+            }
+        });
+        let origin = format!("http://127.0.0.1:{port}");
+        let started = std::time::Instant::now();
+        let error = wait_for_health(&origin, Duration::from_secs(5), || false)
+            .err()
+            .expect("a dead helper must fail the gate");
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(
+            error.to_string().contains("died"),
+            "the error must name helper death: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "death must not wait out the health timeout: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// #816 squatter shape: the first liveness check passes, a 200 lands
+    /// from whoever now owns the port, then liveness is false — refuse.
+    #[test]
+    fn wait_for_health_rejects_a_200_after_the_helper_dies() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let _ = sock.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            }
+        });
+        let origin = format!("http://127.0.0.1:{port}");
+        let mut checks = 0;
+        let error = wait_for_health(&origin, Duration::from_secs(5), || {
+            checks += 1;
+            checks == 1
+        })
+        .err()
+        .expect("a 200 from a dead helper's port must not pass the gate");
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(checks >= 2, "liveness must be re-checked after the 200: {checks}");
     }
 
     /// Red team 2026-09-08: the health response read is byte-capped. Only

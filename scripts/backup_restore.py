@@ -668,6 +668,21 @@ def update_owner_marker(destination: Path, report: Report, *, status: str) -> No
     try:
         _write_json(pending, payload)
         os.replace(pending, marker)
+        # Durability tail (#874 parity with the sidecar journal): the payload
+        # fsync inside _write_json commits the bytes, but the replace is
+        # directory metadata — without a parent-dir fsync a power loss can
+        # revert the rename to the prior/in-progress marker. POSIX-only and
+        # best-effort; it swallows its own OSError so it never converts a
+        # successful publish into OWNER_MARKER_UPDATE_FAILED.
+        if os.name == "posix":
+            try:
+                dir_fd = os.open(marker.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
         confirmed = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise BackupRestoreError("OWNER_MARKER_UPDATE_FAILED", str(exc)) from exc

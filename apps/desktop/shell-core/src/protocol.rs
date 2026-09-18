@@ -440,6 +440,41 @@ fn merge_stop_onto_current(
 /// helper stages its writes to ``owner.json.helper.pending`` — a shared
 /// pending name let the two writers rendezvous (publishing the other's
 /// payload or failing with the other's missing file).
+/// Post-open verification for the journal's staged write (#863): the handle
+/// must be a regular file (a swapped-in FIFO/device must refuse here instead
+/// of blocking forever) and the resolved pending path must stay inside the
+/// runtime directory (a link swapped between write_journal_atomic's lstat
+/// pre-check and the open redirects the write — without this check the
+/// payload, and under the old truncating open the zeroed target too, would
+/// land on an attacker-chosen file). Zero-damage by construction: callers
+/// open without truncating and only truncate after this passes.
+fn verify_opened_pending(
+    file: &std::fs::File,
+    pending: &Path,
+    runtime: &Path,
+) -> std::io::Result<()> {
+    let opened_regular = file.metadata().map(|meta| meta.is_file()).unwrap_or(false);
+    let contained = pending
+        .canonicalize()
+        .and_then(|canonical| {
+            runtime
+                .canonicalize()
+                .map(|runtime_canonical| canonical.starts_with(runtime_canonical))
+        })
+        .unwrap_or(false);
+    if !opened_regular || !contained {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "journal pending sibling failed post-open verification \
+                 (regular={opened_regular}, contained={contained}): {}",
+                pending.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::Result<()> {
     let pending = journal.with_file_name(format!(
         "{}.shell.pending",
@@ -486,11 +521,17 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
     // then keep) forever.
     {
         use std::io::Write as _;
+        // #863: the pre-check above is lstat-then-open — a link swapped in
+        // between is followed (create+truncate would ZERO the redirected
+        // target at open time). Open WITHOUT truncating (open_append_regular's
+        // zero-damage shape, logs.rs), re-verify through the HANDLE and the
+        // resolved path before any byte lands, and only then truncate.
         let mut file = std::fs::File::options()
             .write(true)
             .create(true)
-            .truncate(true)
             .open(&pending)?;
+        verify_opened_pending(&file, &pending, journal.parent().unwrap_or(journal))?;
+        file.set_len(0)?;
         file.write_all(&payload)?;
         file.sync_all()?;
     }
@@ -2119,6 +2160,127 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// #863: the post-open verifier, exercised directly (the lstat pre-check
+    /// in write_journal_atomic catches statically-planted links, so the swap
+    /// window itself is not deterministically constructible). A followed
+    /// link that resolves OUTSIDE the runtime dir must refuse — and the
+    /// refusal must be zero-damage: the outside target's sentinel bytes
+    /// survive (the old truncating open zeroed them at open time).
+    #[test]
+    #[cfg(unix)]
+    fn post_open_verify_refuses_a_followed_link_redirected_outside() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-p863-link-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let outside_root = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-p863-out-{}",
+            new_token()
+        ));
+        std::fs::create_dir_all(&outside_root).unwrap();
+        let victim = outside_root.join("victim.log");
+        std::fs::write(&victim, "SENTINEL-BYTES").unwrap();
+        let pending = dir.join("owner.json.shell.pending");
+        std::os::unix::fs::symlink(&victim, &pending).unwrap();
+
+        // Follow the link on purpose (the swapped-in-link shape) with the
+        // production non-truncating flags, then verify.
+        let file = std::fs::File::options()
+            .write(true)
+            .create(true)
+            .open(&pending)
+            .unwrap();
+        let error = verify_opened_pending(&file, &pending, &dir)
+            .err()
+            .expect("a pending resolving outside the runtime dir must refuse");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            error.to_string().contains("post-open verification"),
+            "the refusal must name the post-open contract: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"SENTINEL-BYTES",
+            "the refusal must be zero-damage to the redirected target (#863)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside_root);
+    }
+
+    /// #863: a FIFO behind the handle must refuse at the verifier (the fstat
+    /// layer) instead of blocking a later write. Opened O_RDWR so the open
+    /// itself is non-blocking on a writerless FIFO — deterministic.
+    #[test]
+    #[cfg(unix)]
+    fn post_open_verify_refuses_a_fifo_handle() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-p863-fifo-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pending = dir.join("owner.json.shell.pending");
+        let cpath = std::ffi::CString::new(
+            pending.as_os_str().to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+        use std::os::fd::IntoRawFd as _;
+        let raw = {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&pending)
+                .unwrap()
+                .into_raw_fd()
+        };
+        let file = {
+            use std::os::unix::io::FromRawFd as _;
+            unsafe { std::fs::File::from_raw_fd(raw) }
+        };
+        let error = verify_opened_pending(&file, &pending, &dir)
+            .err()
+            .expect("a FIFO handle must fail the regular-file layer");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        drop(file);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #863 green path: a regular pending inside the runtime dir passes the
+    /// verifier and write_journal_atomic still publishes byte-identically.
+    #[test]
+    fn post_open_verify_passes_a_regular_in_runtime_pending() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-p863-ok-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pending = dir.join("owner.json.shell.pending");
+        let file = std::fs::File::options()
+            .write(true)
+            .create(true)
+            .open(&pending)
+            .unwrap();
+        verify_opened_pending(&file, &pending, &dir)
+            .expect("a regular pending inside the runtime dir must pass");
+        drop(file);
+        let journal = dir.join("owner.json");
+        write_journal_atomic(&journal, &serde_json::json!({"state": "ready"}))
+            .expect("the guarded write must still publish");
+        let published: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&journal).unwrap()).unwrap();
+        assert_eq!(published["state"], "ready");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     /// The within-grace boundary: a terminal journal still INSIDE the
     /// production 24h grace window must be kept (fresh sessions must not
     /// be swept by a restarted shell), while one aged past the window is
@@ -2267,6 +2429,59 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&user_data);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// One un-removable candidate must not abort the sweep: the failure is
+    /// logged and the loop CONTINUES, so other stale directories still get
+    /// reclaimed, and the sweep still reports Ok (a stuck directory is a
+    /// housekeeping annoyance, never a session-start failure). POSIX-only:
+    /// the write-permission strip that makes remove_dir_all fail is a Unix
+    /// semantic (and root bypasses it, hence the guard).
+    #[test]
+    #[cfg(unix)]
+    fn sweep_survives_a_stuck_candidate_and_still_sweeps_the_rest() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("running as root: chmod-based removal barrier is void; skipping");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-stuck-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        std::fs::create_dir_all(&user_data).unwrap();
+        let stuck = runtime_fixture(
+            &user_data,
+            &"8".repeat(32),
+            &serde_json::json!({"version": 1, "token": "8".repeat(32), "state": "stopped"}).to_string(),
+        );
+        let removable = runtime_fixture(
+            &user_data,
+            &"9".repeat(32),
+            &serde_json::json!({"version": 1, "token": "9".repeat(32), "state": "stopped"}).to_string(),
+        );
+        // Strip the write bit on the STUCK candidate: remove_dir_all cannot
+        // unlink its own journal (EACCES) — the deterministic stand-in for
+        // any wedged directory.
+        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = sweep_runtime_dirs_with(&user_data, 0);
+
+        // Restore first so the cleanup below cannot fail for the same reason.
+        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o700)).unwrap();
+        result.expect("a stuck candidate must not fail the sweep");
+        assert!(
+            stuck.exists(),
+            "the un-removable candidate must still be present"
+        );
+        assert!(
+            !removable.exists(),
+            "the sweep must CONTINUE past the stuck candidate and reclaim the rest"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
     }
 
 }

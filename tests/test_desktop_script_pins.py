@@ -56,5 +56,6 @@ def test_desktop_script_contract_pins_pass():
         cwd=ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stdout + result.stderr

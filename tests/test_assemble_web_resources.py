@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -71,7 +72,7 @@ def test_failed_copy_leaves_previous_tree_byte_identical(tmp_path, monkeypatch):
     _make_previous(res)
     previous = _tree(res)
     node = tmp_path / "node.exe"
-    node.write_bytes(b"node-runtime")
+    node.write_bytes(b"MZnode-runtime")
 
     real_copytree = shutil.copytree
     copied = []
@@ -117,12 +118,12 @@ def test_successful_assemble_swaps_in_the_new_tree(tmp_path, capsys):
     res = tmp_path / "src-tauri" / "web"
     _make_previous(res)
     node = tmp_path / "node.exe"
-    node.write_bytes(b"node-runtime")
+    node.write_bytes(b"MZnode-runtime")
 
     module.assemble(src=src, res=res, node=node)
 
     assert _tree(res) == {
-        "node/node.exe": b"node-runtime",
+        "node/node.exe": b"MZnode-runtime",
         "standalone/server.js": b"server-entry",
         "standalone/nested/asset.txt": b"asset-bytes",
     }
@@ -140,7 +141,7 @@ def test_keyboardinterrupt_between_renames_rolls_back_old_tree(tmp_path, monkeyp
     _make_previous(res)
     previous = _tree(res)
     node = tmp_path / "node.exe"
-    node.write_bytes(b"node-runtime")
+    node.write_bytes(b"MZnode-runtime")
 
     real_rename = os.rename
     calls = []
@@ -181,7 +182,7 @@ def test_failed_rollback_keeps_retired_tree_with_recovery_guide(tmp_path, monkey
     _make_previous(res)
     previous = _tree(res)
     node = tmp_path / "node.exe"
-    node.write_bytes(b"node-runtime")
+    node.write_bytes(b"MZnode-runtime")
     retired = res.parent / f"{res.name}.old-{os.getpid()}"
 
     real_rename = os.rename
@@ -225,7 +226,7 @@ def test_rerun_with_stale_retired_tree_refuses_and_keeps_copy(tmp_path, monkeypa
     src = _make_source(tmp_path)
     res = tmp_path / "src-tauri" / "web"
     node = tmp_path / "node.exe"
-    node.write_bytes(b"node-runtime")
+    node.write_bytes(b"MZnode-runtime")
     # The #382 rollback-failure end state: res is gone and the retired
     # tree sits under a pid this new run reuses, so its startup cleanup
     # would rmtree the only copy of the old tree before staging anything.
@@ -329,6 +330,50 @@ def test_find_node_prefers_override_then_path_then_named_fallback(tmp_path, monk
     fallback_exe.write_bytes(b"fallback-node")
     monkeypatch.setattr(module, "NODE_FALLBACK", fallback_exe)
     assert module.find_node() == fallback_exe
+
+
+def test_find_node_rejects_a_pathtext_shim_on_windows(tmp_path, monkeypatch):
+    """On Windows, shutil.which honors PATHEXT: a node.cmd/node.bat shim
+    earlier on PATH resolves as "node" and used to be bundled verbatim
+    (#894). The rejection must be loud — naming the shim — and must NOT
+    fall through to the documented fallback, which would silently mask a
+    shadowed PATH."""
+    if sys.platform != "win32":
+        pytest.skip("PATHEXT shim rejection is Windows-only")
+
+    module = _load_module()
+    shim = tmp_path / "node.cmd"
+    shim.write_bytes(b"@echo off\r\nrem shadowing script shim\r\n")
+    # A REAL fallback file: proves the shim rejection does not fall through.
+    fallback_exe = tmp_path / "fallback-node.exe"
+    fallback_exe.write_bytes(b"fallback-node")
+
+    monkeypatch.delenv("NODE_EXE", raising=False)
+    monkeypatch.setattr(module.shutil, "which", lambda name: str(shim))
+    monkeypatch.setattr(module, "NODE_FALLBACK", fallback_exe)
+    with pytest.raises(SystemExit, match=re.escape(str(shim))):
+        module.find_node()
+
+
+def test_assemble_refuses_a_non_pe_node_and_swaps_nothing(tmp_path):
+    """Whatever source resolved the node (NODE_EXE, PATH, or the fallback),
+    the staged runtime is verified to be a Windows PE after the copy and
+    before the swap: a non-MZ node (a text shim, a corrupt download) is
+    refused and the previous tree stays byte-identical (#894)."""
+    module = _load_module()
+    src = _make_source(tmp_path)
+    res = tmp_path / "src-tauri" / "web"
+    _make_previous(res)
+    previous = _tree(res)
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"#!/usr/bin/env sh\necho shadowed shim\n")  # not a PE
+
+    with pytest.raises(SystemExit, match="MZ header"):
+        module.assemble(src=src, res=res, node=node)
+
+    # The shipped tree is untouched and no staging/retired tree remains.
+    assert _tree(res) == previous
+    assert [p.name for p in res.parent.iterdir()] == [res.name]
 
 
 def test_sweep_spares_the_recovery_copy_when_res_is_missing(tmp_path):

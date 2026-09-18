@@ -10,7 +10,8 @@
 //   4. asserts the exported app calls the API origin DIRECTLY (no /api path
 //      on the static server, no NEXT_PUBLIC dependency) and renders.
 import { createServer } from "node:http";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readFile, open as openFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { join, extname, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { connect } from "node:net";
@@ -262,9 +263,16 @@ if (!PLAN_B) {
       if (file !== root && !file.startsWith(root + sep)) {
         throw new Error("path escapes the static export root");
       }
-      // In-root symlinks are refused like escapes (#317): stat/readFile FOLLOW
-      // them, so a planted link (or one whose target swaps after validation)
-      // would serve content the resolve-only containment check never saw.
+      // In-root symlinks are refused like escapes (#317), and the READ goes
+      // through a handle opened with O_NOFOLLOW (#880): the lstat fence and
+      // the readFile below used to validate one inode and then re-resolve
+      // the PATH, so a link swapped in between was followed and served
+      // content the fence never saw. O_NOFOLLOW fences only the FINAL path
+      // component on POSIX (ELOOP → the catch below → 404); on Windows node
+      // the flag is undefined and degrades to a follow-open — the lstat
+      // fence remains the best-effort guard there. Intermediate symlinked
+      // directories are followed by both fences; per-component fencing is a
+      // larger design and out of scope.
       let info = await lstat(file);
       if (info.isSymbolicLink()) {
         throw new Error("symlink inside the static export root");
@@ -276,7 +284,15 @@ if (!PLAN_B) {
           throw new Error("symlink inside the static export root");
         }
       }
-      const body = await readFile(file);
+      const noFollow = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+      const fh = await openFile(file, noFollow);
+      let body;
+      try {
+        await fh.stat();
+        body = await fh.readFile();
+      } finally {
+        await fh.close();
+      }
       res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
       res.end(body);
     } catch {

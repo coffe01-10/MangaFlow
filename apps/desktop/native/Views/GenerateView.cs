@@ -95,6 +95,21 @@ public sealed partial class GenerateView : WorkspaceView
 
     public override async void Activate(WorkspaceContext context)
     {
+        // #847: 视图在缓存里跨项目复用，而 DirectorDraftActive 以 directorPane 的
+        // 草稿状态为准——上一项目残留的导演台草稿会让渲染门（Render 的
+        // DirectorDraftActive 抑制）、RefreshAsync、轮询和离开确认全部把新项目
+        // 当成"有未提交导演草稿"来守：工作台永久陈旧、幽灵离开提示、accept 后
+        // 冻结。项目切换必须连草稿状态一起清空（重连保草稿走的是
+        // ActivatePreservingDrafts，不经过这里，不受影响）。
+        var previousProject = ProjectId;
+        var projectSwitched = previousProject != "" && previousProject != context.ProjectId;
+        if (projectSwitched)
+        {
+            directorPane = null;
+            reviewCandidateId = null;
+            panelError = null;
+            pendingRows.Clear();
+        }
         base.Activate(context);
         referencesLoaded = false;
         try
@@ -132,6 +147,12 @@ public sealed partial class GenerateView : WorkspaceView
                 viewedBatchId = null;
                 historicalCandidates = null;
                 trackedInspectJobs.Clear();
+                // #847：无章节分支同样是项目边界，导演台草稿状态必须一并清空
+                // （否则渲染门与离开确认带着上一项目的草稿守新项目）。
+                directorPane = null;
+                reviewCandidateId = null;
+                panelError = null;
+                pendingRows.Clear();
                 RenderPageBar();
                 body.Children.Clear();
                 body.Children.Add(Kit.Caption("没有可抽卡页面。先完成动态分页。"));
@@ -1818,11 +1839,20 @@ internal sealed class DirectorPane : Border
         try
         {
             var commandId = previewGroup.Array("commands").FirstOrDefault().Text("command_id");
-            var groupId = previewGroup.Text("command_group_id");
-            previewGroup = await view.Api2().SendAsync(
+            await view.Api2().SendAsync(
                 $"projects/{view.ProjectId2}/director/commands/{commandId}/{action}", HttpMethod.Post);
+            // #847: accept/reject 已对预览组做出决定，草稿生命周期到此为止。旧实现
+            // 把应答组（同为 JSON 对象）赋回 previewGroup，HasDraft 从此永远为真：
+            // ReloadWorkbench 撞上渲染门被拦，工作台冻结在旧状态。按「改口令重发」
+            // 同款清理（指令/作用域/预览/重试链）后再重载。
+            commandInput.Text = "";
+            selection = null;
+            plan = null;
+            previewGroup = default;
+            retryOfCommandId = null;
+            preview.Children.Clear();
+            BuildScopes();
             await view.ReloadWorkbench();
-            RenderPreview();
             await LoadHistoryAsync();
         }
         catch (Exception error)

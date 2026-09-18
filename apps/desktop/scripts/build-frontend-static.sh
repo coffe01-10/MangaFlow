@@ -167,19 +167,42 @@ recreate_junction() {
   fi
 }
 
+# clone_deps_tree <tree_rel>: phase 1 of the dependency clone — hardlink
+# one tree into the worktree and print its skipped link entries as
+# "<tree_rel>\t<link_rel>" pairs for the phase-2 re-anchor below. Links are
+# deliberately NOT rebuilt per tree (the #878 ordering trap); the two-phase
+# comment at the entry owns the why.
 clone_deps_tree() {
   local tree_rel="$1" skipped link_rel
   skipped="$(clone_hardlink_tree "$REPO_ROOT/$tree_rel" "$WORKTREE/$tree_rel" "")"
   while IFS= read -r link_rel; do
     [ -n "$link_rel" ] || continue
-    recreate_junction "$tree_rel" "$link_rel"
+    printf '%s\t%s\n' "$tree_rel" "$link_rel"
   done <<< "$skipped"
 }
 
-clone_deps_tree node_modules
+# Two-phase dependency clone (#878). Phase 1 clones EVERY tree first: the
+# old per-tree order re-anchored the root node_modules links before the
+# worktree's apps/web/node_modules existed, so a root link pointing into
+# that tree (the non-hoisted npm-link/pnpm shape,
+# node_modules/x -> ../apps/web/node_modules/x) died at recreate_junction's
+# fail-closed "missing in worktree" check on a target that exists only
+# moments later — a build-availability bug on legitimate layouts. A plain
+# call swap does NOT fix it: the mirror layout
+# (apps/web/node_modules/next -> ../../node_modules/.pnpm) targets the ROOT
+# tree, so each direction needs the other tree complete first. Phase 1
+# therefore accumulates the skipped-link pairs from every tree, and only
+# then does phase 2 re-anchor all of them; recreate_junction's [ ! -e ]
+# check stays as the fail-closed backstop for genuinely missing targets.
+skipped_link_pairs=""
+skipped_link_pairs+="$(clone_deps_tree node_modules)"
 if [ -d "$REPO_ROOT/apps/web/node_modules" ]; then
-  clone_deps_tree apps/web/node_modules
+  skipped_link_pairs+=$'\n'"$(clone_deps_tree apps/web/node_modules)"
 fi
+while IFS=$'\t' read -r tree_rel link_rel; do
+  [ -n "$link_rel" ] || continue
+  recreate_junction "$tree_rel" "$link_rel"
+done <<< "$skipped_link_pairs"
 
 # The build log tee below writes into dist/, which may not exist yet on a
 # fresh checkout; the lock's own mkdir only runs at acquire time (#350),

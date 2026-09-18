@@ -1118,6 +1118,54 @@ def test_owner_marker_update_failure_fails_closed(tmp_path, fixture_root, monkey
     assert any(error["code"] == "OWNER_MARKER_FAILED" for error in payload["errors"])
 
 
+def test_owner_marker_update_fsyncs_payload_and_commits_the_rename_dir_entry(
+    tmp_path, monkeypatch
+):
+    """#874 durability parity with the sidecar journal twins: update_owner_marker
+    stages the marker, fsyncs the payload, then os.replace-publishes it. The
+    payload fsync must precede the replace, and (POSIX-only) a parent-dir
+    fsync after the replace commits the rename's directory entry — without it
+    a power loss reverts the marker to its prior status. Windows runs only the
+    payload fsync; the POSIX tail is pinned behaviorally there and
+    structurally here (Windows cannot execute it)."""
+    import inspect
+
+    report = backup_restore_mod.Report(action="backup", dry_run=False)
+    destination = tmp_path / "archive"
+    destination.mkdir()
+    backup_restore_mod.write_owner_marker(destination, report, status="in_progress")
+
+    real_fsync, real_replace = os.fsync, os.replace
+    calls: list[tuple[str, object]] = []
+
+    def fsync_spy(fd):
+        calls.append(("fsync", fd))
+        return real_fsync(fd)
+
+    def replace_spy(source_path, destination_path, **kwargs):
+        calls.append(("replace", str(source_path)))
+        return real_replace(source_path, destination_path, **kwargs)
+
+    monkeypatch.setattr(backup_restore_mod.os, "fsync", fsync_spy)
+    monkeypatch.setattr(backup_restore_mod.os, "replace", replace_spy)
+
+    backup_restore_mod.update_owner_marker(destination, report, status="complete")
+
+    fsyncs = [call for call in calls if call[0] == "fsync"]
+    replaces = [call for call in calls if call[0] == "replace"]
+    assert len(replaces) == 1, f"exactly one publish rename: {calls}"
+    assert len(fsyncs) == (2 if os.name == "posix" else 1), (
+        f"payload fsync plus the POSIX dir-entry tail: {calls}"
+    )
+    assert calls.index(fsyncs[0]) < calls.index(replaces[0]), (
+        f"the payload must be durable before the rename: {calls}"
+    )
+    assert replaces[0][1].endswith(OWNER_MARKER_NAME + ".pending"), calls
+    assert _owner(destination)["status"] == "complete"
+    source = inspect.getsource(backup_restore_mod.update_owner_marker)
+    assert 'os.name == "posix"' in source and "O_RDONLY" in source, source
+
+
 def test_failed_fixture_is_owned_and_cleanup_remains_available(tmp_path, monkeypatch):
     destination = tmp_path / "failed-fixture"
 

@@ -148,10 +148,10 @@ def _creation_time(api, handle) -> int:
     return (values[0].dwHighDateTime << 32) | values[0].dwLowDateTime
 
 
-def _controller_alive(api, record: dict) -> bool:
-    pid, created = record["controller_pid"], record["controller_created"]
+def _process_alive(api, pid, created) -> bool:
+    """Identity-safe liveness: a reused PID is not the recorded process."""
     if type(pid) is not int or pid <= 0 or type(created) is not int:
-        raise RuntimeError("Invalid controller identity")
+        raise RuntimeError("Invalid process identity")
     handle = api.OpenProcess(0x1000 | 0x100000, False, pid)
     if not handle:
         if ctypes.get_last_error() == 87:  # ERROR_INVALID_PARAMETER: no such PID.
@@ -159,13 +159,17 @@ def _controller_alive(api, record: dict) -> bool:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         if _creation_time(api, handle) != created:
-            return False  # Reused PID is not this controller; never signal it.
+            return False  # Reused PID is not this process; never signal it.
         state = api.WaitForSingleObject(handle, 0)
         if state not in (0, 258):
             raise ctypes.WinError(ctypes.get_last_error())
         return state == 258  # WAIT_TIMEOUT: process still alive.
     finally:
         _checked(api.CloseHandle(handle))
+
+
+def _controller_alive(api, record: dict) -> bool:
+    return _process_alive(api, record["controller_pid"], record["controller_created"])
 
 
 def _job_name(token: str) -> str:
@@ -183,6 +187,20 @@ def _write_record(path: Path, record: dict) -> None:
         file.flush()
         os.fsync(file.fileno())
     pending.replace(path)
+    # Durability tail (#874 parity with the sidecar journal): the fsync above
+    # commits the payload bytes, but the replace is directory metadata — without
+    # a parent-dir fsync a power loss can revert the rename to a missing/prior
+    # owner.json that recovery refuses to clean. POSIX-only; best-effort so an
+    # unopenable directory never masks the successful publish.
+    if os.name == "posix":
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
 
 
 def _validate_directory(directory: Path, token: str) -> tuple[Path, dict]:
@@ -358,9 +376,22 @@ class OwnedProcessTree:
         child = OwnedPythonProcess(self.api, handle, pid)
         self.processes.append(child)
         try:
+            # Journal the suspended child BEFORE assignment: a controller death
+            # between CreateProcess and AssignProcessToJobObject used to leave
+            # an unrecorded process outside the job, and recovery then deleted
+            # its live payload (#892). Recovery refuses while this entry lives.
+            entry = {
+                "label": label,
+                "pid": child.pid,
+                "created": _creation_time(self.api, child.handle),
+                "state": "attaching",
+            }
+            self.record["processes"].append(entry)
+            self.record["state"] = "attaching"
+            self._save()
             _checked(self.api.AssignProcessToJobObject(self.handle, child.handle))
             child.assigned_to_job = True
-            self.record["processes"].append({"label": label, "pid": child.pid})
+            entry["state"] = "running"
             self.record["state"] = "running"
             self._save()  # Durable ownership before executing even the venv launcher.
             if self.api.ResumeThread(thread) == 0xFFFFFFFF:
@@ -435,6 +466,19 @@ def recover_stopped_tree(directory: Path, token: str) -> None:
     api = _kernel()
     if _controller_alive(api, record):
         raise RuntimeError("Process controller is still active; recovery refused")
+    # A child journaled "attaching" never reached the Job Object, so
+    # KILL_ON_JOB_CLOSE does not cover it. With the controller dead it is a
+    # leaked suspended process holding the payload; recovery must not delete
+    # that payload while it lives (#892).
+    for item in record.get("processes", ()):
+        if item.get("state") == "attaching" and _process_alive(
+            api, item.get("pid"), item.get("created")
+        ):
+            raise RuntimeError(
+                f"Process {item.get('pid')} ({item.get('label', 'unknown')}) is "
+                "journaled 'attaching' and still alive outside the job; "
+                "recovery refused"
+            )
     handle = api.OpenJobObjectW(0x0004, False, _job_name(token))  # JOB_OBJECT_QUERY
     if handle:
         try:

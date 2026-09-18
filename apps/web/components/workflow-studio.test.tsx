@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, type MangaPage, type ModelCapability, type WorkflowDefinition, type WorkflowGraph, type WorkflowNodeRun, type WorkflowNodeType, type WorkflowRun } from "@/lib/api";
 
-import WorkflowStudio, { workflowRunsPollInterval } from "./workflow-studio";
+import WorkflowStudio, { parseConditionValue, workflowRunsPollInterval } from "./workflow-studio";
 
 vi.mock("@xyflow/react", () => ({
   ReactFlow: (props: {
@@ -1102,5 +1102,19 @@ describe("WorkflowStudio 默认工作流部分失败与错误面（#545-2 / #545
     catalogSpy.mockResolvedValueOnce([nodeType]);
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     expect(await screen.findByRole("button", { name: /解析原作/ })).toBeInTheDocument();
+  });
+});
+
+describe("parseConditionValue (#821 native parity)", () => {
+  it("stores decimal and exponent as numbers", () => {
+    expect(parseConditionValue("16", "eq")).toBe(16);
+    expect(parseConditionValue("1.5", "gt")).toBe(1.5);
+    expect(parseConditionValue("1e2", "eq")).toBe(100);
+  });
+
+  it("keeps hex and binary as strings so native NumberStyles.Float cannot flip the branch", () => {
+    expect(parseConditionValue("0x10", "eq")).toBe("0x10");
+    expect(parseConditionValue("0b10", "eq")).toBe("0b10");
+    expect(parseConditionValue("0o10", "eq")).toBe("0o10");
   });
 });

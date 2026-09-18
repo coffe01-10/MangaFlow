@@ -208,6 +208,72 @@ def test_relay_origin_is_single_sourced_with_the_helper():
     )
 
 
+def _write_routes_manifest(standalone: Path, rewrites) -> None:
+    (standalone / ".next").mkdir(parents=True, exist_ok=True)
+    (standalone / ".next" / "routes-manifest.json").write_text(
+        json.dumps({"rewrites": rewrites}), encoding="utf-8"
+    )
+
+
+def test_relay_gate_refuses_a_fallback_bucket_pointing_elsewhere(tmp_path):
+    """#877: the gate must check EVERY rewrite destination — the old
+    presence-in-blob check passed when ONE destination targeted the relay
+    while another bucket quietly pointed at a different absolute origin."""
+
+    standalone = tmp_path / "standalone"
+    _write_routes_manifest(
+        standalone,
+        {
+            "afterFiles": [
+                {"source": "/api/v1/:path*", "destination": f"{bw.RELAY_ORIGIN}/api/v1/:path*"}
+            ],
+            "fallback": [
+                {"source": "/other/:path*", "destination": "http://127.0.0.1:8000/other/:path*"}
+            ],
+        },
+    )
+    with pytest.raises(SystemExit, match="offending absolute destinations"):
+        bw.assert_rewrites_target_relay(standalone)
+
+
+def test_relay_gate_passes_all_buckets_on_relay_and_relative_futures(tmp_path):
+    """Green path: every bucket on the relay passes, a relative (same-origin)
+    destination is none of this gate's business, and the legacy top-level
+    array shape is handled."""
+
+    standalone = tmp_path / "standalone"
+    _write_routes_manifest(
+        standalone,
+        {
+            "beforeFiles": [
+                {"source": "/x/:path*", "destination": f"{bw.RELAY_ORIGIN}/x/:path*"}
+            ],
+            "afterFiles": [{"source": "/y", "destination": "/y-rewritten"}],
+            "fallback": [
+                {"source": "/z/:path*", "destination": f"{bw.RELAY_ORIGIN}/z/:path*"}
+            ],
+        },
+    )
+    bw.assert_rewrites_target_relay(standalone)
+
+    _write_routes_manifest(
+        standalone,
+        [{"source": "/api/v1/:path*", "destination": f"{bw.RELAY_ORIGIN}/api/v1/:path*"}],
+    )
+    bw.assert_rewrites_target_relay(standalone)
+
+
+def test_relay_gate_fails_closed_when_no_rewrites_exist(tmp_path):
+    """An empty rewrites set is NOT a pass: the bundle with no relay rewrite
+    is exactly the silently-broken plan-B the gate exists to catch (the old
+    blob check also failed closed here — keep it deliberate)."""
+
+    standalone = tmp_path / "standalone"
+    _write_routes_manifest(standalone, {})
+    with pytest.raises(SystemExit):
+        bw.assert_rewrites_target_relay(standalone)
+
+
 def test_static_export_flag_is_scrubbed_from_the_build_env(monkeypatch):
     """The BUILD-path guard for MANGAFLOW_STATIC_EXPORT (#447's runtime
     scrub, symmetric): layout.tsx skips connection() when the flag is
