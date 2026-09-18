@@ -527,4 +527,15 @@ fn dialog_commands_stay_sync_and_claim_the_dialog_mutex() {
         !read_body.contains("rfd::"),
         "the readback command must never open a dialog"
     );
+
+    // And it must stay ASYNC (#316): tauri runs async commands off the
+    // main thread — a sync readback put the up-to-20 MiB read + base64
+    // encode on the UI thread, freezing dialogs and the WebView loop for
+    // its whole duration. The pickers are pinned to the OPPOSITE shape
+    // (sync = main-thread rfd); this is the mirror half.
+    assert!(
+        source.contains("async fn desktop_read_picked_file("),
+        "the readback must stay async: a sync form puts the 20 MiB read + "
+        "base64 encode back on the UI thread (#316)"
+    );
 }
