@@ -494,7 +494,23 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
         file.write_all(&payload)?;
         file.sync_all()?;
     }
-    std::fs::rename(&pending, journal)
+    let renamed = std::fs::rename(&pending, journal);
+    // Durability tail (#874 residual): the payload fsync above commits the
+    // BYTES, but the RENAME itself is a metadata change — on a power loss
+    // after the rename and before the directory metadata commits, the
+    // journal can revert to missing/prior, and missing/non-terminal
+    // journals are exactly what the stale-runtime sweep does not reclaim
+    // (the runtime dir leaks). Commit the directory entry too: open the
+    // parent and sync it (POSIX; the Windows equivalent FlushFileBuffers
+    // on a directory handle is NOT RUN). Best-effort — a directory that
+    // cannot be opened must not mask the successful publish.
+    #[cfg(unix)]
+    if renamed.is_ok() {
+        if let Ok(dir) = std::fs::File::open(journal.parent().unwrap_or(journal)) {
+            let _ = dir.sync_all();
+        }
+    }
+    renamed
 }
 
 /// Session-start sweep of stale runtime directories (#264).
