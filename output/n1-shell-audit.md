@@ -537,3 +537,16 @@ summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏
   注册修复、#943 P2 边界收紧、#933 note、#938/#939 PASS）、#940
   （并行会话 PR）PASS+P2。轮次 ≥6 ✓。
 - Windows 腿：NOT RUN。
+
+- 第四批产出：
+  · #956：descendant scrub 的 PYTHON* 尾五员成员钉（原 pin 仅
+    seed PYTHONPATH——删任一尾员全绿；sitecustomize 系 #871 原始
+    载体）。红检：改签名成员名 → 红。开放中。
+  · #951/#952/#955 已被 lead 合入（含 #944/#946——本周批全数落 master）。
+  · 审查轮 R6（验证轮）：#941 返工 VERIFIED（四钉逐名唯一注册）、
+    #943 返工 VERIFIED（边界收紧 + 变异实证：只删 sync_all 臂清理
+    行即红——伪阴性已闭）。
+- 审查轮计数（本窗）：R1-R3 三路勘察、R4 六 PR 互审（截获 #936
+  P1 + master E0061 红）、R5 五 PR 复审（全 PASS）、R6 返工验证。
+  ≥6 ✓。B 计数：17 枚（≥16 ✓）。
+- Windows 腿：NOT RUN。
