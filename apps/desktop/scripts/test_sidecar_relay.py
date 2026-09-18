@@ -78,6 +78,11 @@ class StubApi:
     def _handle(self, conn: socket.socket) -> None:
         try:
             while True:
+                # 10s per-request read guard: an idle OPEN connection is
+                # closed by the STUB (not the relay) — this fallback can
+                # mask relay-side deadlines in outcome-only assertions (the
+                # #825 mutant measured that end at 10.5s); pins that must
+                # discriminate the RELAY deadline bound its latency (<5s).
                 conn.settimeout(10)
                 request = b""
                 while b"\r\n\r\n" not in request:
@@ -938,3 +943,129 @@ def test_relay_saturation_log_is_rate_limited(monkeypatch):
             client.close()
         stop()
         raise
+
+
+def test_relay_first_byte_timeout_unwinds_and_releases_the_slot(monkeypatch):
+    """The #825 first-byte deadline (client→API pump): an idle TCP client
+    that connects but never sends must be reaped after the deadline —
+    the client sees a definite end, the relay slot is released, and the
+    next client is served. Without the deadline the idle client would pin
+    a pump thread + slot forever.
+
+    The deadline is monkeypatched to 0.3s (the helper reads the module
+    global at pump start), keeping the pin fast; the production value is
+    30s. The budget policy note covers the read guards' shape."""
+    api = StubApi()
+    try:
+        monkeypatch.setattr(helper, "RELAY_FIRST_BYTE_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 1)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            idle = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                # An idle client sends NOTHING: the deadline fires on the
+                # client→API pump, its SHUT_WR unwinds the upstream leg,
+                # and the client sees a definite end (no response bytes —
+                # the API never saw a complete request). The end must also
+                # arrive PROMPTLY: a slow end would mean a fallback timeout
+                # (the stub's 10s read guard) is masking the relay deadline
+                # — the mutant measured 10.5s; the deadline here is 0.3s.
+                import time as _t
+                _started = _t.monotonic()
+                assert read_until_closed(idle, timeout_seconds=15) == b"", (
+                    "an idle client must see a definite end, not a hang"
+                )
+                _elapsed = _t.monotonic() - _started
+                assert _elapsed < 5, (
+                    f"the first-byte deadline must end the idle client "
+                    f"promptly, not via a slower fallback timeout: {_elapsed:.1f}s"
+                )
+            finally:
+                idle.close()
+
+            # The slot must be free again: with the cap at 1, the next
+            # client is served end-to-end (the unwind releases the slot —
+            # a leak here would strand this exchange as overflow).
+            served = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                served.sendall(REQUEST)
+                body = read_response(served, timeout_seconds=15)
+            finally:
+                served.close()
+            assert body.endswith(b"ok"), body
+        finally:
+            stop()
+    finally:
+        api.close()
+
+
+def test_relay_first_byte_deadline_clears_after_the_first_byte(monkeypatch):
+    """The deadline arms the FIRST byte only: once bytes flow, the timer is
+    cleared and the connection may idle longer than the deadline mid-
+    request (keep-alive/bidi shape). Deleting the clear cuts such a
+    transfer at the deadline — invisible to the slot-release pin, whose
+    client never sends."""
+
+    api = StubApi()
+    try:
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 1)
+        monkeypatch.setattr(helper, "RELAY_FIRST_BYTE_TIMEOUT_SECONDS", 0.3)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST[:1])  # first byte: arms, then clears
+                time.sleep(0.6)  # > 2x the deadline, mid-request idle
+                client.sendall(REQUEST[1:])
+                assert read_response(client, timeout_seconds=15).endswith(b"ok"), (
+                    "an established mid-request idle must survive the "
+                    "first-byte deadline (the timer is cleared after the "
+                    "first byte)"
+                )
+            finally:
+                client.close()
+        finally:
+            stop()
+    finally:
+        api.close()
+
+
+def test_relay_first_byte_deadline_default_is_the_documented_30s():
+    """The default deadline is a contract constant: the tests monkeypatch
+    it to 0.3 everywhere, so a regression to 3000.0 would reinstate the
+    #825 slot-pinning flood while every test stayed green. Pin the value
+    itself (30s: generous for a cold node import, finite for a flood)."""
+
+    import mangaflow_desktop_helper as helper_module
+
+    assert helper_module.RELAY_FIRST_BYTE_TIMEOUT_SECONDS == 30.0
+
+
+def test_relay_releases_the_slot_when_a_client_connects_then_closes(monkeypatch):
+    """A client that connects and closes WITHOUT sending must release its
+    slot (EOF is an exit, not a retry) — the `break`→`continue` mutant
+    spins on the closed socket and starves every later client of the
+    only slot."""
+
+    api = StubApi()
+    try:
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 1)
+        monkeypatch.setattr(helper, "RELAY_FIRST_BYTE_TIMEOUT_SECONDS", 0.3)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            ghost = socket.create_connection(("127.0.0.1", port), timeout=15)
+            ghost.close()  # connect-then-close: EOF, no bytes ever
+            time.sleep(0.5)  # > the deadline; let the pump observe the EOF
+
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST)
+                assert read_response(client, timeout_seconds=15).endswith(b"ok"), (
+                    "a connect-then-close ghost must not starve the only slot"
+                )
+            finally:
+                client.close()
+        finally:
+            stop()
+    finally:
+        api.close()

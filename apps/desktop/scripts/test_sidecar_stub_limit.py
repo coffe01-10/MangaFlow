@@ -163,3 +163,22 @@ def test_stub_server_process_request_uses_the_relay_limiter():
     assert "STUB_MAX_CONNECTIONS" in inspect.getsource(helper._StubServer.__init__), (
         inspect.getsource(helper._StubServer.__init__)
     )
+
+
+def test_stub_cap_tracks_the_relay_ceiling_and_daemon_threads():
+    """The cap's contract is LINKAGE (same generous ceiling as the relay)
+    plus daemon threads (a leaked handler thread must never block helper
+    exit). Both were unpinned: the behavioral tests monkeypatch the cap to
+    2, so a regression to any literal — or dropping daemon_threads — was
+    green. Structural pins at the seam the behavior tests don't cover."""
+
+    import mangaflow_desktop_helper as helper  # noqa: E402  (path set above)
+
+    assert helper.STUB_MAX_CONNECTIONS == helper.WEB_RELAY_MAX_CONNECTIONS, (
+        "the stub cap must track the relay ceiling (the #873 contract is "
+        "'same generous ceiling as the relay', not an independent number)"
+    )
+    assert helper._StubServer.daemon_threads is True, (
+        "handler threads must be daemons: a stuck handler must never "
+        "block helper exit"
+    )

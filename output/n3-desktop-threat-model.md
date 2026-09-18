@@ -765,3 +765,18 @@ reset 至 origin/master 1386570（含 ledger-39 谱系）；flock 时代 CI 红�
 ---
 
 **§41 补充二（08:10 段）**：**b8608f8 全量认证**——首跑 2 FAILED 为**新鲜度门正确工作**：web-standalone 构建于旧 apps/web 树（7777b13），#885 的 proxy.ts 清理推进树到 b3e1c22，门按 #461 契约拒绝陈旧包并指名重跑命令。重建 bundle 后 **180 passed, 2 skipped**（81s；含 #884-#887 全部新钉 + plan-B 全活跃）。shell-core **180/180**。负向探针：新鲜度门拒绝与 #734 的"内部不一致导出"互补——前者管陈旧、后者管半写；两者都需要 #736 提议的溯源戳/自检来在**构建期**拦截（D5/浏览器是运行期验收）。
+
+---
+
+## 42. 夜窗审计（20260918 夜，基线 c68423e → 9e7299d；10 提交：#926-#932）
+
+**E 轮（新批次交叉审，全部 RUN）：**
+- **#931**（free-space 预检查边界钉）：可用字节经 `available_bytes` seam 注入（无真实磁盘查询、确定性）；**精确等于**通过（`<` 拒绝只在低于时触发——拒绝恰好够用的导出是次序相关的猜测）；不足一时拒绝且 `InsufficientSpace` 双字段报告（needed=估算器输出、available=seam 值——操作员对话框陈述真实缺口）。另有 `export_space_needed` 覆盖 payload 头/manifest/余量。
+- **#932**（尺寸帽写失败的错误面钉升级）：从 `is_err` 升级为匹配 **Io 臂的原始码（EFBIG/ENOSPC）**——把该臂 map 成伪造 `InsufficientSpace` 的 mutation 会失败钉。流式写失败的错误面从此有守卫。
+- **#930 PATHEXT shim 拒绝全主机驱动**（跨平台化）+ **#926 已合**（fsync-order 钉作用域修正，见 #925）。
+
+**认证**：logs 家族 **45/45**；runner 全量 **207 passed, 2 skipped**（bundle 重建后）。
+
+**§42 补充（20260918 夜 06:30 段）**：基线 **ad0a841** 认证——runner **208 passed, 2 skipped**（+1 系 #946 的 N1 junction 钉入 master；该变更位于 N1-Core 工作树的测试文件，非本 Goal 审计面）；shell-core **201/201**。#945/#946 合入后 export_space_needed 三参形态 + collect_skips 计数三钉全绿（3/3 复验）。
+
+**§42 补充二（20260919 夜 02:19 段）**：`e2e_node_bootstrap.cjs`（14 行，NODE_OPTIONS 预载）全文审——**CLEAN**：run-ID 门（32-hex 精确）只在验收控制器下激活；@next/env require-cache 打桩**移除 dotenv 文件加载**（运行时环境仅来自控制器 allowlist——Next 的 ambient .env/.local 注入通道被封闭），combinedEnv=process.env、parsedEnv 空符合 Next 元组形状；缺失模块即 fail-closed 崩溃。Windows 验收栈审计延至第四文件，零发现维持。

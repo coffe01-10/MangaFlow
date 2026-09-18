@@ -946,3 +946,9 @@
   (exit=0) + cargo **181/0**（#898 测试基建唯一叶修复后）。跨窗族谱产出 PR 30+（绝大多数
   已并）；评审轮 22–31（10 轮，含 3 次 CRITICAL/REQUEST_CHANGES 实证抓错）。窗口 09:00
   前维持待命监控。
+
+- **§35 补遗二十五（#928 并行修复核验关闭）**：fsync 顺序钉的碰撞（#900 tail vs
+  exactly-one 计数）已由并行 positional 精修在 master 解决（9e7299d 谱系，含 fd 复用
+  nuance 文档）——我方 #928 重复精修放弃关闭（红/绿双向核验：master 上 fsync-order
+  套件 2 passed）。20260918 窗口分支按 lead 指令 reset 至 origin/master（9e7299d），
+  全量 **207 passed + 2 skipped**（exit=0）+ cargo **198/0**（171 基线 + N1 夜班增量）。

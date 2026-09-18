@@ -1148,3 +1148,34 @@ def test_node_child_env_strips_the_node_and_loader_injection_names(monkeypatch):
     assert surviving == [], (
         f"injection/wiring names survived the strip list: {surviving}"
     )
+
+
+def test_write_journal_uninterruptible_restores_the_previous_sigterm_handler(
+    tmp_path,
+):
+    """#935: the deferral must RESTORE the previous SIGTERM handler after
+    the deferred write — a `finally` that forgets the restore leaves
+    SIG_IGN installed permanently and the helper becomes un-terminatable
+    by the shell's cooperative stop. The write itself is asserted by the
+    race pin above; this pins the RESTORATION half with a sentinel
+    handler (identity-checked, so SIG_IGN cannot impersonate it)."""
+    import signal as signal_module
+
+    token = "0123456789abcdef0123456789abcdef"
+    journal = tmp_path / "runtime" / f"mangaflow-desktop-{token}" / "owner.json"
+    journal.parent.mkdir(parents=True)
+
+    def sentinel_handler(signum, frame):
+        raise AssertionError("the sentinel must never fire in this pin")
+
+    signal_module.signal(signal_module.SIGTERM, sentinel_handler)
+    try:
+        helper._write_journal_uninterruptible(
+            journal,
+            {"version": 1, "token": token, "role": "app", "state": "failed"},
+        )
+        assert (
+            signal_module.getsignal(signal_module.SIGTERM) is sentinel_handler
+        ), "the previous handler must be restored after the deferred write"
+    finally:
+        signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)

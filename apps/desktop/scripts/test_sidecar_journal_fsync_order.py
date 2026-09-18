@@ -76,16 +76,25 @@ def test_write_journal_fsyncs_the_payload_before_the_replace(
 
     helper._write_journal(journal, _record("ready"))
 
-    fsync_calls = [c for c in calls if c[0] == "fsync"]
     replace_calls = [c for c in calls if c[0] == "replace"]
-    assert len(fsync_calls) == 1, f"exactly one payload fsync: {calls}"
     assert len(replace_calls) == 1, f"exactly one publish: {calls}"
-    assert calls.index(fsync_calls[0]) < calls.index(replace_calls[0]), (
+    replace_index = calls.index(replace_calls[0])
+
+    # The payload fsync is the only fsync BEFORE the replace. The #899
+    # durability tail adds a SECOND fsync AFTER it (the parent directory's
+    # entry, POSIX-only) — its fd may even reuse the pending fd's number,
+    # so position, not identity, is what distinguishes them (#834's
+    # original form counted both and went red on every POSIX run).
+    fsync_before = [c for c in calls[:replace_index] if c[0] == "fsync"]
+    assert len(fsync_before) == 1, (
+        f"exactly one payload fsync before the replace: {calls}"
+    )
+    assert calls.index(fsync_before[0]) < replace_index, (
         f"fsync must precede the replace: {calls}"
     )
     # The fsynced fd is the pending payload's, and the publish renames the
     # pending sibling onto the journal (never a direct write).
-    assert isinstance(fsync_calls[0][1], int), f"fsync got a real fd: {calls}"
+    assert isinstance(fsync_before[0][1], int), f"fsync got a real fd: {calls}"
     assert replace_calls[0][1].endswith("owner.json.helper.pending"), (
         f"the pending sibling is what gets published: {calls}"
     )

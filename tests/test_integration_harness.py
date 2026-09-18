@@ -182,6 +182,10 @@ def test_dry_run_does_not_suppress_live_or_container_blocked(monkeypatch, capsys
     monkeypatch.setenv("MANGAFLOW_ACCEPTANCE_PG_URL", "")
     monkeypatch.setenv("MANGAFLOW_ACCEPTANCE_REDIS_URL", "")
     assert module.main(["--dry-run", "--start-containers", "--run-live"]) == 2
+    # The stop switch is part of the same owner-scoped refusal: dropping
+    # it from the BLOCKED condition would let `--dry-run --stop-containers`
+    # fall through to the 0 preview (red-team night 20260918).
+    assert module.main(["--dry-run", "--stop-containers"]) == 2
     captured = capsys.readouterr()
     assert "No service was connected" in captured.err
     assert "--dry-run does not suppress" in captured.err

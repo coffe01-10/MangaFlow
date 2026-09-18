@@ -366,6 +366,10 @@ def _make_posix_fixture(tmp_path: Path) -> tuple[Path, Path]:
     worktree = tmp_path / "wt"
     # Real payloads phase 1 must hardlink-clone in both trees.
     _write_file(repo / "node_modules" / "realpkg" / "package.json", b"realpkg")
+    # The .bin directory must exist before the fixture symlinks into it:
+    # os.symlink creates the link, not its parent — a missing parent turns
+    # the whole POSIX-arm fixture into FileNotFoundError.
+    (repo / "node_modules" / ".bin").mkdir(parents=True, exist_ok=True)
     _write_file(
         repo / "node_modules" / ".pnpm" / "next@15.0.0" / "node_modules" / "next" / "package.json",
         b"next-pkg",
