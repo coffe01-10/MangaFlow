@@ -503,3 +503,14 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
     红（#393 拒绝臂触发）——默认门红旗，独立立案。
   · Issue #934/#935：N2 面（relay 空闲超时三臂 / SIGTERM 恢复）
     未钉缺口转 N2 立案。
+
+## 42. 夜窗 20260918→19（重录：本节在冲突解决中一度丢失，按原文重附）
+
+开跑：fetch + 新分支 night/n1-core-burn-20260918 自 origin/master c68423e
+（#900-#924 大波已入——昨夜 N3 立案的整批红队 findings 已被并行修复波
+吸收：流式导出+空闲空间预检、relay 空闲超时、umask/权限、SIGTERM 推迟、
+stub 限连、grandchild env 剥离、journal 写时包含再验证、node 运行时校验、
+summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏等）。
+基线实测：cargo 全套件 197 绿。本窗策略：转向「新波代码的未钉臂 + 回归面」；
+已知候选 #891 亦已被修复（symlink 拒绝 + 4 测试）。
+（附注：#846/#898/#899 均已由 lead 合入；#846 的 CONFLICTING 已 rebase 解锁。）
