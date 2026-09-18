@@ -55,6 +55,13 @@ public abstract class WorkspaceView : UserControl, IWorkspaceView
         }
     }
 
+    /// <summary>
+    /// #808: 就地换绑重连新造的 ApiClient（不动生命周期令牌、不重载视图）。
+    /// 重连的同项目分支必须在离开确认之前调用：武装中的防抖冲刷走的是
+    /// Context.Api，旧实例已 Dispose，不换绑冲刷必然失败并弹假「保存失败」。
+    /// </summary>
+    internal void Rebind(WorkspaceContext context) => Context = context;
+
     public virtual void Deactivate()
     {
         // Navigation cancels in-flight reads so late responses cannot paint the next page.

@@ -351,7 +351,9 @@ public static class DirectorRules
             // Plain UUID strings: backend UUID() cannot parse "cmd-"/"grp-" prefixed ids.
             ["command_id"] = Guid.NewGuid().ToString(),
             ["command_group_id"] = Guid.NewGuid().ToString(),
-            ["created_at"] = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffzzz"),
+            ["created_at"] = DateTimeOffset.UtcNow.ToString(
+                "yyyy-MM-ddTHH:mm:ss.fffzzz",
+                System.Globalization.CultureInfo.InvariantCulture),
             ["target"] = target,
             ["expected_version"] = new Dictionary<string, object?> { ["scope"] = scope, ["value"] = version },
             ["retry_of_command_id"] = retryOfCommandId,

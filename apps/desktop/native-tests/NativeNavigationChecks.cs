@@ -114,6 +114,12 @@ internal static class NativeNavigationChecks
             "command_id is a 36-char UUID the backend can parse (no cmd- prefix)");
         Require(Guid.TryParse((string)envelope["command_group_id"], out _) && ((string)envelope["command_group_id"]).Length == 36,
             "command_group_id is a 36-char UUID (no grp- prefix)");
+        var createdAt = (string)envelope["created_at"]!;
+        Require(
+            createdAt.Length >= 19
+                && createdAt[4] == '-' && createdAt[7] == '-' && createdAt[10] == 'T'
+                && createdAt[13] == ':' && createdAt[16] == ':',
+            "created_at is invariant ISO (yyyy-MM-ddTHH:mm:ss…), not CurrentCulture");
         var target = (Dictionary<string, object?>)envelope["target"];
         Require((string?)target["project_id"] == ProjectId, "project_id comes from the caller, not the page row");
         Require((string?)target["page_id"] == "page-1", "envelope targets the page from the storyboard");
