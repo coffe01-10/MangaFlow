@@ -52,3 +52,6 @@ $env:QUEUE_ENABLED = "true"
 Write-Output "Starting MangaFlow: Web http://127.0.0.1:3000, API http://127.0.0.1:8000/api/docs"
 Write-Output "Without Redis, the concurrency-limited local worker is used. Press Ctrl+C to stop."
 npm run dev
+
+# powershell.exe -File would otherwise report 0 even when the dev process failed.
+exit $LASTEXITCODE

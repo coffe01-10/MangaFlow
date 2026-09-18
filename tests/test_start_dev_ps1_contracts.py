@@ -43,3 +43,12 @@ def test_queue_enabled_promotion_precedes_dev_start():
         "QUEUE_ENABLED must be promoted before `npm run dev` spawns the API, "
         "or the first boot runs with the runtime default instead of dev-local"
     )
+
+
+def test_script_exit_code_reflects_the_dev_process():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert source.rstrip().endswith("exit $LASTEXITCODE"), (
+        "the script must end with `exit $LASTEXITCODE` — powershell.exe -File "
+        "returns 0 after a failed native command, so callers (setup scripts, "
+        "CI) cannot detect a crashed dev session without it"
+    )

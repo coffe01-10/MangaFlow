@@ -212,6 +212,7 @@ def main() -> int:
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--token")
     parser.add_argument("--port", type=int)
+    parser.add_argument("--timeout", type=float, default=2400)
     args = parser.parse_args()
     if args.mode == "verify":
         runtime = assigned_runtime()
@@ -225,7 +226,7 @@ def main() -> int:
             parser.error("recover requires the exact owned directory and token")
         recover_stopped_tree(args.directory, args.token)
         return 0
-    return run(args.mode)
+    return run(args.mode, timeout=args.timeout)
 
 
 if __name__ == "__main__":
