@@ -3902,4 +3902,42 @@ mod tests {
         assert!(with >= without + 48 + 200, "{without} vs {with}");
     }
 
+
+    /// The free-space query must fail CLOSED: a statvfs error maps to
+    /// ExportError::Io (the export is refused) — never to a fabricated
+    /// "plenty available" (fail-open would silently skip the #813
+    /// guarantee on exactly the hosts where the query breaks). Two halves:
+    /// the query itself errors on an unresolvable path, and the call site
+    /// propagates (`?` + map_err) rather than defaulting.
+    #[test]
+    fn disk_available_query_errors_and_the_precheck_propagates() {
+        // Query half: an unresolvable path is an error, not a number.
+        let bogus = std::env::temp_dir()
+            .join(format!("mfd-absent-{}-{}", std::process::id(), crate::protocol::new_token()))
+            .join("deep")
+            .join("deeper");
+        assert!(
+            disk_available_bytes(&bogus).is_err(),
+            "an unresolvable path must error the query (fail-closed posture)"
+        );
+        // Propagation half: the precheck call site must not default the
+        // query result — a defaulted value would be fail-open.
+        let source = include_str!("logs.rs");
+        let site = source
+            .split("let available = match limits.available_bytes {")
+            .nth(1)
+            .expect("the precheck seam must exist")
+            .split("let needed")
+            .next()
+            .expect("the precheck must bound the query segment");
+        assert!(
+            site.contains("disk_available_bytes(parent).map_err(ExportError::Io)?"),
+            "a query error must propagate as ExportError::Io, not default"
+        );
+        assert!(
+            !site.contains("unwrap_or"),
+            "the query must not have a defaulting fallback"
+        );
+    }
+
 }
