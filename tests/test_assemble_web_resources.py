@@ -332,14 +332,16 @@ def test_find_node_prefers_override_then_path_then_named_fallback(tmp_path, monk
     assert module.find_node() == fallback_exe
 
 
-def test_find_node_rejects_a_pathtext_shim_on_windows(tmp_path, monkeypatch):
+def test_find_node_rejects_a_pathtext_shim(tmp_path, monkeypatch):
     """On Windows, shutil.which honors PATHEXT: a node.cmd/node.bat shim
     earlier on PATH resolves as "node" and used to be bundled verbatim
     (#894). The rejection must be loud — naming the shim — and must NOT
     fall through to the documented fallback, which would silently mask a
-    shadowed PATH."""
-    if sys.platform != "win32":
-        pytest.skip("PATHEXT shim rejection is Windows-only")
+    shadowed PATH.
+
+    The check is driven on EVERY host by pinning os.name to "nt" (the
+    production branch reads it at call time): the previous Windows-only
+    skip meant the #894 refusal executed on no Linux/dev run at all."""
 
     module = _load_module()
     shim = tmp_path / "node.cmd"
@@ -348,6 +350,7 @@ def test_find_node_rejects_a_pathtext_shim_on_windows(tmp_path, monkeypatch):
     fallback_exe = tmp_path / "fallback-node.exe"
     fallback_exe.write_bytes(b"fallback-node")
 
+    monkeypatch.setattr(module.os, "name", "nt")
     monkeypatch.delenv("NODE_EXE", raising=False)
     monkeypatch.setattr(module.shutil, "which", lambda name: str(shim))
     monkeypatch.setattr(module, "NODE_FALLBACK", fallback_exe)
