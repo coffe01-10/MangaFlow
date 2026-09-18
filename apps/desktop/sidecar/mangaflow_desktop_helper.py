@@ -204,6 +204,23 @@ def _write_journal(journal: Path, record: dict) -> None:
             pass
         return
     os.replace(pending, journal)
+    # Durability tail (the Rust twin's #899 form): the payload fsync
+    # above commits the BYTES; the rename itself is a metadata change —
+    # a power loss after the rename and before the directory entry
+    # commits reverts the journal to missing/prior, and missing/
+    # non-terminal journals are exactly what the stale-runtime sweep
+    # does not reclaim (the runtime dir leaks). Best-effort parent-dir
+    # fsync closes the residual (POSIX; a directory that cannot be
+    # opened must not mask the successful publish).
+    if os.name == "posix":
+        try:
+            dir_fd = os.open(journal.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
 
 
 def _write_journal_uninterruptible(journal: Path, record: dict) -> None:
