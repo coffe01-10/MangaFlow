@@ -124,17 +124,23 @@ def test_bind_relay_sets_the_platform_option(monkeypatch):
 
     observed = {}
     real_setsockopt = socket.socket.setsockopt
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    expected = exclusive if sys.platform == "win32" else socket.SO_REUSEADDR
 
     def spy_setsockopt(self, level, optname, value):
-        if optname in (socket.SO_REUSEADDR,):
-            observed["SO_REUSEADDR"] = value
+        if optname in (socket.SO_REUSEADDR, exclusive):
+            observed[optname] = value
         return real_setsockopt(self, level, optname, value)
 
     monkeypatch.setattr(socket.socket, "setsockopt", spy_setsockopt)
     relay = helper._bind_relay(1)
-    relay.close()
-    if sys.platform != "win32":
-        assert observed.get("SO_REUSEADDR") == 1
+    try:
+        assert relay is not None
+        assert observed.get(expected) == 1, (
+            f"relay bind must set the platform option (observed {observed})"
+        )
+    finally:
+        relay.close()
 
 
 @pytest.mark.parametrize("failing", ["bind", "listen"])
