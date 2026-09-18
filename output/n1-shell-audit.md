@@ -480,37 +480,27 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 新增 #509（night/pr-build-info-stamp-refusal）：_replace_dist 的
   stamp-write 失败拒绝钉（bundle 已就位时失败必须传播、无 stamp 无
   .tmp 残留，下次 e2e 拒绝未钉源树）（4 pass）。
-- 首批产出（覆盖勘察两路子代理：流式导出臂 / 十项修复覆盖缺口）：
-  · #927：BLOCKED 拒绝的 --stop-containers 臂钉（唯一缺口：删
-    args.stop_containers → --dry-run --stop-containers 退出 0 仍绿；
-    红检实证）。B1。
-  · #929：#894 PATHEXT shim 拒绝钉跨平台化（原 Windows-only skip =
-    该拒绝从未在 Linux/dev 执行；os.name 运行时可钉）——红检：删
-    endswith 条件 → DID NOT RAISE。B2。
-  · #931：#813 流式预检的等号边界钉（available==needed 必须通过；
-    <-1 拒绝且 InsufficientSpace 双字段如实——注入测试此前仅
-    Some(0)，< 误成 <= 全绿）。红检实证。B3。
-  · #932：流中写失败的错误面钉（rlimit 子进程原仅 is_err——伪报
-    InsufficientSpace 变异全绿；现断言 raw code ∈ {EFBIG, ENOSPC}）。
-    红检（子进程端到端）。B4。流程：本 PR 首次提交又遭 checkout 抹
-    未提交编辑（标记 grep 误用宽模式放过一次）——精确标记复核后重
-    应用，commit-first 恢复。
-  · #933：cargo test --lib 桥接入默认门（check.yml 仅 cargo build
-    ——Rust 钉从未在任何自动门执行）；POSIX 门控保 Windows 姿态。
-    B5。
-  · Issue #930：tests/test_assemble_web_resources.py 的
-    test_sweep_reclaims_cross_pid_crash_remnants 在干净 master 上即
-    红（#393 拒绝臂触发）——默认门红旗，独立立案。
-  · Issue #934/#935：N2 面（relay 空闲超时三臂 / SIGTERM 恢复）
-    未钉缺口转 N2 立案。
-
-## 42. 夜窗 20260918→19（重录：本节在冲突解决中一度丢失，按原文重附）
-
-开跑：fetch + 新分支 night/n1-core-burn-20260918 自 origin/master c68423e
-（#900-#924 大波已入——昨夜 N3 立案的整批红队 findings 已被并行修复波
-吸收：流式导出+空闲空间预检、relay 空闲超时、umask/权限、SIGTERM 推迟、
-stub 限连、grandchild env 剥离、journal 写时包含再验证、node 运行时校验、
-summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏等）。
-基线实测：cargo 全套件 197 绿。本窗策略：转向「新波代码的未钉臂 + 回归面」；
-已知候选 #891 亦已被修复（symlink 拒绝 + 4 测试）。
-（附注：#846/#898/#899 均已由 lead 合入；#846 的 CONFLICTING 已 rebase 解锁。）
+- 第二批产出（勘察三：handshake/picker/ownership/ziparch 变异验证；
+  勘察二：十项修复覆盖缺口排序）：
+  · #927-#932 五枚已被 lead 合入；#846/#899/#898 亦合入。
+  · **master 红灯截获**：#936 合并漏掉第二个 estimator 测试调用点
+    （logs.rs capped 测试）→ master cargo test 红（E0061）——cargo-
+    build-only 门不可见。#944 一行热修（130 lib 绿）。
+  · #933 桥接扩展为全 targets（integration ~70 测试同入默认门）；
+    sum 型防空转守卫（空 doc-test 目标合法 0 passed）。桥接在 master
+    红上正确变红（勘察与热修 PR 相互印证）。
+  · #938：干净 master 默认门红（cross-pid sweep 测试被 #894 MZ 门
+    拒绝真 Linux node）→ 供 PE 形 node 修复；已合入。#930 立案
+    （机制更正：非 #393 拒绝，系 MZ 门）。
+  · #936 返工（P1）：与 #931 合并钉冲突 → rebase 到 9e7299d 联合
+    保留（#931 调用点升 3 参 &[]），MERGEABLE。
+  · #941 返工（P1）：插入位移了 budget 钉的 #[test]（budget 停跑、
+    新钉三重注册跑三次）→ 区域重写，4/4 逐名验证。
+  · #939 PASS（轮审：臂序/前置条件/五钉全过）。
+  · #943：两条 source-split 耐久性钉（#899 目录 fsync 重构防护 +
+    export sync_all 失败臂孤儿清理——c106c43 先例）；P2 边界收紧
+    已返工。
+  · #942 立案：mark_stopped merge-retry 调用点零执行（变异实证），
+    修复面需 lead 设计（注入缝或 clobberer 线程）。
+- 审查轮计数（本窗）：勘察×3 + PR 互审×2（含本轮 P1×2 返工）。
+- Windows 腿：NOT RUN。
