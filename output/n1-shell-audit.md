@@ -584,3 +584,9 @@ summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏
   效，无需重跑。PickError Display 钉复核在位（pick_error_display_
   embeds_each_variants_data，13 臂含 Io 内嵌）。surface 全面饱和状态
   维持：三路勘察 + 两轮全量认证 + 19 PR 后无新缺口。
+- 第四批补：alembic 腿失败 journal 行为钉（#964，窗分支载体）——
+  种植升级中爆炸的 migrations/env.py，真子进程跑 _run_app：exit 1 +
+  journal failed + alembic:<Type> 前缀（alembic 归一化吞 payload 文本，
+  仅断言类型前缀）+ 无 READY。红检：删腿的 journal 调用 → 红。
+  45 passed/2 skipped。B 计数（PR 数）：#964 含账本载体，独立 PR
+  计 18（含 #943 MERGEABLE）。
