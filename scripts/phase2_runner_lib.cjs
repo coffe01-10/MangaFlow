@@ -25,8 +25,11 @@ async function assertPortFree(port, connect = net.connect) {
       resolve(true);
     });
     socket.once("error", (error) => {
-      if (error.code === "ECONNREFUSED") resolve(false);
-      else reject(error);
+      if (/** @type {NodeJS.ErrnoException} */ (error).code === "ECONNREFUSED") {
+        resolve(false);
+      } else {
+        reject(error);
+      }
     });
     socket.setTimeout?.(2000, () => { socket.destroy(); reject(new Error("port probe timeout")); });
   });
@@ -37,6 +40,7 @@ async function assertPortFree(port, connect = net.connect) {
 
 function spawnOwned(command, args, options = {}) {
   assertSupervised();
+  /** @type {import("node:child_process").ChildProcessWithoutNullStreams & { owned?: boolean, spawnError?: Error | null }} */
   const child = spawn(command, args, {
     stdio: options.stdio ?? "inherit",
     cwd: options.cwd,
