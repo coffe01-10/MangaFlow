@@ -6,6 +6,8 @@
 //! writer stays small enough to be verified by unit tests plus an external
 //! `python3 -m zipfile` check in the integration tests.
 
+use std::io::{self, Cursor, Write};
+
 /// IEEE CRC-32 (the ZIP polynomial, reflected, init/xor 0xffffffff).
 pub fn crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xffff_ffff;
@@ -43,17 +45,36 @@ pub fn dos_date_time(seconds: u64) -> (u16, u16) {
     (dos_date, dos_time)
 }
 
-/// Streaming store-only ZIP builder accumulating into memory.
-#[derive(Default)]
-pub struct ZipWriter {
-    body: Vec<u8>,
+/// Streaming store-only ZIP builder.
+///
+/// Local-file headers and member payloads are written to the sink as
+/// `add_file` / `try_add_file` runs; only the central directory (small
+/// per-member metadata) is buffered. `finish` / `finish_into` appends
+/// the central directory and EOCD. The in-memory convenience API
+/// (`ZipWriter::new()` + `finish() -> Vec<u8>`) wraps `Cursor<Vec<u8>>`
+/// so existing unit tests keep their shape.
+pub struct ZipWriter<W = Cursor<Vec<u8>>> {
+    sink: W,
+    /// Bytes written to the local-file section (ZIP offset of the next member).
+    written: u64,
     central: Vec<u8>,
     entries: u16,
 }
 
-impl ZipWriter {
-    pub fn new() -> ZipWriter {
-        ZipWriter::default()
+impl Default for ZipWriter<Cursor<Vec<u8>>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ZipWriter<Cursor<Vec<u8>>> {
+    pub fn new() -> ZipWriter<Cursor<Vec<u8>>> {
+        ZipWriter {
+            sink: Cursor::new(Vec::new()),
+            written: 0,
+            central: Vec::new(),
+            entries: 0,
+        }
     }
 
     /// Add one file (stored, UTF-8 name, no extra fields).
@@ -64,8 +85,40 @@ impl ZipWriter {
     /// every reader shows as truncated. The exporter keeps the count/total
     /// shapes reachable-but-guarded (`EXPORT_MAX_MEMBERS`,
     /// `EXPORT_MAX_TOTAL_BYTES`); this is the last-resort invariant for any
-    /// future caller.
+    /// future caller. Cursor writes cannot fail, so this stays the
+    /// panicking convenience the unit tests call.
     pub fn add_file(&mut self, name: &str, data: &[u8], dos_date: u16, dos_time: u16) {
+        self.try_add_file(name, data, dos_date, dos_time)
+            .expect("in-memory zip write cannot fail");
+    }
+
+    pub fn finish(self) -> Vec<u8> {
+        self.finish_into()
+            .expect("in-memory zip finish cannot fail")
+            .into_inner()
+    }
+}
+
+impl<W: Write> ZipWriter<W> {
+    pub fn from_writer(sink: W) -> ZipWriter<W> {
+        ZipWriter {
+            sink,
+            written: 0,
+            central: Vec::new(),
+            entries: 0,
+        }
+    }
+
+    /// Streaming add: invariant violations still panic (they would produce
+    /// a corrupt archive); IO errors (ENOSPC, EFBIG) propagate so the
+    /// exporter can clean up the `.pending` sibling.
+    pub fn try_add_file(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        dos_date: u16,
+        dos_time: u16,
+    ) -> io::Result<()> {
         let name = name.as_bytes();
         assert!(
             !name.contains(&b'\\') && !name.is_empty(),
@@ -80,24 +133,30 @@ impl ZipWriter {
             "zip: entry count would exceed the EOCD u16 field"
         );
         let crc = crc32(data);
-        let size = u32::try_from(data.len())
-            .expect("zip: member exceeds the u32 size field");
-        let offset = u32::try_from(self.body.len())
-            .expect("zip: archive exceeds the u32 offset field");
+        let size = u32::try_from(data.len()).expect("zip: member exceeds the u32 size field");
+        let offset =
+            u32::try_from(self.written).expect("zip: archive exceeds the u32 offset field");
 
-        put_u32(&mut self.body, 0x0403_4b50);
-        put_u16(&mut self.body, 20); // version needed
-        put_u16(&mut self.body, 0x0800); // flags: UTF-8 name
-        put_u16(&mut self.body, 0); // method: store
-        put_u16(&mut self.body, dos_time);
-        put_u16(&mut self.body, dos_date);
-        put_u32(&mut self.body, crc);
-        put_u32(&mut self.body, size);
-        put_u32(&mut self.body, size);
-        put_u16(&mut self.body, name.len() as u16);
-        put_u16(&mut self.body, 0); // extra length
-        self.body.extend_from_slice(name);
-        self.body.extend_from_slice(data);
+        let mut local = Vec::with_capacity(30 + name.len());
+        put_u32(&mut local, 0x0403_4b50);
+        put_u16(&mut local, 20); // version needed
+        put_u16(&mut local, 0x0800); // flags: UTF-8 name
+        put_u16(&mut local, 0); // method: store
+        put_u16(&mut local, dos_time);
+        put_u16(&mut local, dos_date);
+        put_u32(&mut local, crc);
+        put_u32(&mut local, size);
+        put_u32(&mut local, size);
+        put_u16(&mut local, name.len() as u16);
+        put_u16(&mut local, 0); // extra length
+        local.extend_from_slice(name);
+        self.sink.write_all(&local)?;
+        self.sink.write_all(data)?;
+        self.written = self
+            .written
+            .checked_add(local.len() as u64)
+            .and_then(|n| n.checked_add(data.len() as u64))
+            .expect("zip: archive exceeds the u32 offset field");
 
         put_u32(&mut self.central, 0x0201_4b50);
         put_u16(&mut self.central, 20); // version made by (MS-DOS)
@@ -119,23 +178,27 @@ impl ZipWriter {
         self.central.extend_from_slice(name);
 
         self.entries += 1;
+        Ok(())
     }
 
-    pub fn finish(mut self) -> Vec<u8> {
-        let central_offset = u32::try_from(self.body.len())
-            .expect("zip: archive exceeds the u32 offset field");
+    /// Write the central directory and EOCD to the sink and return it.
+    pub fn finish_into(mut self) -> io::Result<W> {
+        let central_offset =
+            u32::try_from(self.written).expect("zip: archive exceeds the u32 offset field");
         let central_size = u32::try_from(self.central.len())
             .expect("zip: central directory exceeds the u32 size field");
-        self.body.extend_from_slice(&self.central);
-        put_u32(&mut self.body, 0x0605_4b50);
-        put_u16(&mut self.body, 0);
-        put_u16(&mut self.body, 0);
-        put_u16(&mut self.body, self.entries);
-        put_u16(&mut self.body, self.entries);
-        put_u32(&mut self.body, central_size);
-        put_u32(&mut self.body, central_offset);
-        put_u16(&mut self.body, 0);
-        self.body
+        self.sink.write_all(&self.central)?;
+        let mut eocd = Vec::with_capacity(22);
+        put_u32(&mut eocd, 0x0605_4b50);
+        put_u16(&mut eocd, 0);
+        put_u16(&mut eocd, 0);
+        put_u16(&mut eocd, self.entries);
+        put_u16(&mut eocd, self.entries);
+        put_u32(&mut eocd, central_size);
+        put_u32(&mut eocd, central_offset);
+        put_u16(&mut eocd, 0);
+        self.sink.write_all(&eocd)?;
+        Ok(self.sink)
     }
 }
 
@@ -155,7 +218,10 @@ mod tests {
     fn crc32_matches_known_vectors() {
         assert_eq!(crc32(b""), 0);
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
-        assert_eq!(crc32(b"The quick brown fox jumps over the lazy dog"), 0x414f_a339);
+        assert_eq!(
+            crc32(b"The quick brown fox jumps over the lazy dog"),
+            0x414f_a339
+        );
     }
 
     #[test]
@@ -217,11 +283,22 @@ mod tests {
         assert_eq!(&bytes[eocd..eocd + 4], &0x0605_4b50u32.to_le_bytes());
         let entries = u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]);
         assert_eq!(entries, 2);
-        let central_size =
-            u32::from_le_bytes([bytes[eocd + 12], bytes[eocd + 13], bytes[eocd + 14], bytes[eocd + 15]]);
-        let central_offset =
-            u32::from_le_bytes([bytes[eocd + 16], bytes[eocd + 17], bytes[eocd + 18], bytes[eocd + 19]]);
-        assert_eq!(central_offset as usize + central_size as usize + 22, bytes.len());
+        let central_size = u32::from_le_bytes([
+            bytes[eocd + 12],
+            bytes[eocd + 13],
+            bytes[eocd + 14],
+            bytes[eocd + 15],
+        ]);
+        let central_offset = u32::from_le_bytes([
+            bytes[eocd + 16],
+            bytes[eocd + 17],
+            bytes[eocd + 18],
+            bytes[eocd + 19],
+        ]);
+        assert_eq!(
+            central_offset as usize + central_size as usize + 22,
+            bytes.len()
+        );
 
         let mut cursor = central_offset as usize;
         for expected in [("a/one.log", &b"hello"[..]), ("b/two.log", &[0u8; 5])] {
@@ -321,7 +398,10 @@ mod tests {
             zip.add_file(&"n".repeat(u16::MAX as usize + 1), b"x", 0, 0);
         }));
         std::panic::set_hook(default_hook);
-        assert!(overflowed.is_err(), "a name beyond the u16 field must fail loudly");
+        assert!(
+            overflowed.is_err(),
+            "a name beyond the u16 field must fail loudly"
+        );
     }
 
     /// Years beyond 2107 are not representable in the DOS date either; they
@@ -332,5 +412,72 @@ mod tests {
         // 2200-01-01 00:00:00 UTC.
         let (date, _) = dos_date_time(7_258_118_400);
         assert_eq!(date >> 9, 2107 - 1980);
+    }
+
+    /// #813: member payloads stream to the Write sink; only the central
+    /// directory stays in RAM. Reverting to a `body: Vec<u8>` that
+    /// `extend_from_slice`s each payload flips this red.
+    #[test]
+    fn zip_writer_streams_member_payloads_instead_of_buffering_a_body_vec() {
+        let source = include_str!("ziparch.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("ziparch production source is bounded by its tests");
+        assert!(
+            !production.contains("body: Vec<u8>"),
+            "ZipWriter must not keep a full-archive body Vec"
+        );
+        assert!(
+            !production.contains("self.body.extend_from_slice(data)"),
+            "ZipWriter must not accumulate member payloads in a body Vec"
+        );
+        assert!(
+            production.contains("self.sink.write_all(data)"),
+            "ZipWriter must stream member payloads to a Write sink"
+        );
+        assert!(
+            source.contains("fn from_writer"),
+            "the streaming constructor must wrap an arbitrary Write sink"
+        );
+        assert!(
+            source.contains("fn try_add_file"),
+            "the streaming add path must return io::Result so ENOSPC propagates"
+        );
+        assert!(
+            source.contains("fn finish_into"),
+            "finish must append central+EOCD to the sink, not concatenate in RAM"
+        );
+    }
+
+    /// A Write that fails mid-member must surface as Err, not panic.
+    #[test]
+    fn try_add_file_propagates_io_errors_instead_of_panicking() {
+        struct FailAfter {
+            written: usize,
+            fail_after: usize,
+        }
+        impl std::io::Write for FailAfter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.written >= self.fail_after {
+                    return Err(std::io::Error::new(std::io::ErrorKind::Other, "enospc"));
+                }
+                let n = buf.len().min(self.fail_after - self.written);
+                self.written += n;
+                Ok(n)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut zip = ZipWriter::from_writer(FailAfter {
+            written: 0,
+            fail_after: 10,
+        });
+        let error = zip
+            .try_add_file("a.log", b"hello world this is data", 0, 0)
+            .expect_err("a failing sink must surface as io::Error");
+        assert_eq!(error.to_string(), "enospc", "{error}");
     }
 }

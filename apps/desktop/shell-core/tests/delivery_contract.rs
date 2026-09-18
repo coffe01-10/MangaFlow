@@ -106,7 +106,10 @@ fn bundle_identity_and_targets_stay_pinned() {
     );
     let targets = config["bundle"]["targets"].as_array().expect("targets");
     let names: Vec<&str> = targets.iter().filter_map(|v| v.as_str()).collect();
-    assert!(names.contains(&"msi") && names.contains(&"nsis"), "{names:?}");
+    assert!(
+        names.contains(&"msi") && names.contains(&"nsis"),
+        "{names:?}"
+    );
 }
 
 /// Issue #623 (static-export form's non-CSP security headers): apps/web's
@@ -276,9 +279,7 @@ fn plan_b_web_csp_script_src_is_nonce_based() {
         );
     }
     assert!(
-        script_src_lines
-            .iter()
-            .any(|line| line.contains("'nonce-")),
+        script_src_lines.iter().any(|line| line.contains("'nonce-")),
         "plan-B script-src must be nonce-based: {script_src_lines:?}"
     );
 
@@ -302,7 +303,10 @@ fn capability_files() -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 walk(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "json" || ext == "toml") {
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext == "json" || ext == "toml")
+            {
                 out.push(path);
             }
         }
@@ -328,13 +332,14 @@ fn capability_surface_stays_the_pinned_default() {
         "exactly one capability file is expected (default.json): {files:?}"
     );
     assert!(
-        files[0].file_name().is_some_and(|name| name == "default.json"),
+        files[0]
+            .file_name()
+            .is_some_and(|name| name == "default.json"),
         "the capability file must stay default.json"
     );
-    let value: Value = serde_json::from_str(
-        &std::fs::read_to_string(&files[0]).expect("capability readable"),
-    )
-    .expect("capability json parses");
+    let value: Value =
+        serde_json::from_str(&std::fs::read_to_string(&files[0]).expect("capability readable"))
+            .expect("capability json parses");
     let expected_keys = ["identifier", "windows", "permissions"];
     for key in expected_keys {
         assert!(value.get(key).is_some(), "capability key {key} missing");
@@ -420,4 +425,37 @@ fn no_capability_may_grant_a_remote_ipc_context() {
             path
         );
     }
+}
+
+/// #813: `desktop_export_logs` must be async so the archive build does not
+/// freeze the UI thread. The rfd save dialog stays on the GUI thread;
+/// only the export is `spawn_blocking`.
+#[test]
+fn desktop_export_logs_is_an_async_command() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/src/main.rs");
+    let source = std::fs::read_to_string(&path).expect("src-tauri main.rs readable");
+    assert!(
+        source.contains("async fn desktop_export_logs("),
+        "desktop_export_logs must be async so the zip does not occupy the UI thread"
+    );
+    let after = source
+        .split("async fn desktop_export_logs(")
+        .nth(1)
+        .expect("desktop_export_logs must exist");
+    let body = after
+        .split("\nfn ")
+        .next()
+        .expect("command body is bounded by the next fn");
+    assert!(
+        body.contains("spawn_blocking"),
+        "the archive build must run on spawn_blocking, not the UI thread"
+    );
+    assert!(
+        body.contains("run_on_main_thread"),
+        "the rfd save dialog must run on the GUI thread (Windows COM)"
+    );
+    assert!(
+        body.contains("save_file()"),
+        "the rfd save dialog must stay in this command"
+    );
 }
