@@ -218,6 +218,44 @@ def assert_no_static_prerender(standalone: Path) -> None:
         )
 
 
+def assert_rewrites_target_relay(standalone: Path) -> None:
+    """#877: EVERY rewrite destination must target the helper's fixed relay
+    origin — the old presence-in-blob check (`RELAY_ORIGIN in json.dumps`)
+    was satisfied by one matching destination while a fallback/beforeFiles
+    bucket quietly proxied to another absolute origin (the module header's
+    documented intent is per-destination). Relative destinations are allowed:
+    a future same-origin rewrite is none of this gate's business."""
+
+    manifest = standalone / ".next" / "routes-manifest.json"
+    destinations = json.loads(manifest.read_text(encoding="utf-8"))
+    rewrites = destinations.get("rewrites", {})
+    # Both manifest shapes: the legacy top-level array and the bucketed
+    # object (beforeFiles/afterFiles/fallback).
+    entries = rewrites if isinstance(rewrites, list) else [
+        entry
+        for bucket in (
+            rewrites.get("beforeFiles", []),
+            rewrites.get("afterFiles", []),
+            rewrites.get("fallback", []),
+        )
+        for entry in bucket
+    ]
+    offenders = [
+        entry.get("destination", "")
+        for entry in entries
+        if "://" in entry.get("destination", "")
+        and not entry.get("destination", "").startswith(RELAY_ORIGIN)
+    ]
+    if offenders or not entries:
+        raise SystemExit(
+            "standalone rewrites do not target the helper relay "
+            f"{RELAY_ORIGIN} (offending absolute destinations: "
+            f"{offenders or 'none — no rewrites at all'}); rebuild without "
+            "MANGAFLOW_API_ORIGIN set (the relay origin is the documented "
+            "build-time constant)"
+        )
+
+
 def main() -> int:
     # MANGAFLOW_STATIC_EXPORT must NOT ride into this build: layout.tsx
     # skips connection() when it is "1" (#300-era nonce architecture) —
@@ -250,17 +288,7 @@ def main() -> int:
     if not server_js.is_file():
         raise SystemExit(f"standalone build did not produce {server_js}")
     assert_no_static_prerender(standalone)
-
-    manifest = standalone / ".next" / "routes-manifest.json"
-    destinations = json.loads(manifest.read_text(encoding="utf-8"))
-    rewrites = destinations.get("rewrites", {})
-    flat = json.dumps(rewrites)
-    if RELAY_ORIGIN not in flat:
-        raise SystemExit(
-            "standalone rewrites do not target the helper relay "
-            f"{RELAY_ORIGIN}; rebuild without MANGAFLOW_API_ORIGIN set "
-            "(the relay origin is the documented build-time constant)"
-        )
+    assert_rewrites_target_relay(standalone)
 
     static_dst = standalone / ".next" / "static"
     _best_effort_clear(static_dst, "the fresh static copy")

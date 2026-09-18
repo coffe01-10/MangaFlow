@@ -251,3 +251,31 @@ def test_static_api_evidence_requires_origin_equality_not_prefix():
     assert "new URL(url).origin === new URL(ready.api_origin).origin" in code, (
         "static API evidence must require exact origin equality"
     )
+
+
+def test_static_reads_go_through_a_nofollow_handle_not_a_repath_read():
+    """#880: the lstat fence validated one inode and `readFile(file)`
+    re-resolved the PATH — a link swapped in between was followed. The read
+    must go through a handle opened with O_NOFOLLOW (with the `?? 0`
+    fallback: the flag is undefined on Windows node and a bare undefined
+    flag silently degrades), and no bare path-read may remain on the
+    validated path. The lstat refusal stays as the Windows best-effort
+    fence."""
+    code = _code_text(_source())
+    # The span needs the raw source (the marker itself is a comment that
+    # _code_text strips); the in-span assertions match code, not comments.
+    handler = _span(_source(), "// In-root symlinks are refused", "res.writeHead(200")
+    handler_code = _code_text(handler)
+    assert "O_NOFOLLOW" in handler_code and "?? 0" in handler_code, (
+        "the read must be opened with O_NOFOLLOW and the Windows-undefined "
+        "fallback — a bare undefined flag is a silent follow-open (#880)"
+    )
+    assert "await fh.readFile()" in handler_code, (
+        "content must be read through the verified handle (#880)"
+    )
+    assert "await readFile(file)" not in handler_code, (
+        "no path-re resolving read may remain after the fence (#880)"
+    )
+    assert 'throw new Error("symlink inside the static export root")' in handler_code, (
+        "the lstat symlink refusal must stay (the Windows best-effort fence)"
+    )
