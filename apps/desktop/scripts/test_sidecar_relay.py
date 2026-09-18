@@ -476,6 +476,45 @@ def test_relay_caps_concurrent_connections(monkeypatch):
         api.close()
 
 
+def test_relay_idle_first_byte_timeout_releases_the_slot(monkeypatch):
+    """#825: a client that connects and sends nothing must not pin a
+    limiter slot for the rest of the session. After the first-byte
+    deadline the slot is released and a healthy request still relays.
+    Established transfers (first byte already seen) keep no read
+    deadline — that contract is the cap test's keep-alive pinned
+    connection above."""
+
+    api = StubApi()
+    try:
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 1)
+        monkeypatch.setattr(helper, "RELAY_FIRST_BYTE_TIMEOUT_SECONDS", 0.3)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            idle = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                deadline = time.monotonic() + 5.0
+                served = None
+                while served is None and time.monotonic() < deadline:
+                    client = socket.create_connection(("127.0.0.1", port), timeout=15)
+                    try:
+                        client.sendall(REQUEST)
+                        served = read_response(client, timeout_seconds=2)
+                    except (pytest.fail.Exception, OSError):
+                        client.close()
+                        time.sleep(0.1)
+                    else:
+                        client.close()
+                assert served is not None and served.endswith(b"ok"), (
+                    f"an idle client must not keep the only slot: {served!r}"
+                )
+            finally:
+                idle.close()
+        finally:
+            stop()
+    finally:
+        api.close()
+
+
 class _FlakyAcceptListener:
     """Hand ``_serve_relay`` a listener whose accept() fails on demand.
 

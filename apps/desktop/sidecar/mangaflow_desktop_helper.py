@@ -192,6 +192,12 @@ def _write_journal(journal: Path, record: dict) -> None:
     fd = _open_verified_pending(pending, journal.parent)
     try:
         os.ftruncate(fd, 0)
+        # #870: tighten the pending mode before the payload is written.
+        # umask in main() covers POSIX mkdir/create; fchmod pins the
+        # journal itself to 0600 even if umask was looser at open.
+        # Windows ACL tightening is NOT RUN (no fchmod).
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb", closefd=False) as handle:
             handle.write(payload)
             handle.flush()
@@ -251,6 +257,28 @@ def _write_journal(journal: Path, record: dict) -> None:
             pass
 
 
+def _write_journal_uninterruptible(journal: Path, record: dict) -> None:
+    """Publish ``record`` with SIGTERM deferred until after the write (#869).
+
+    The cooperative-stop handler is ``sys.exit(0)``. SystemExit is a
+    BaseException, so it is not caught by ``except (OSError, RuntimeError)``
+    around the last-resort write, and it also aborts the alembic failure
+    write before ``raise``. Either way the journal stays non-terminal
+    (created/ready) and the stale-runtime sweep never reclaims the
+    directory. SIGTERM is ignored for the duration of this write; a
+    terminal failure record is more important than the cooperative-stop
+    exit-0. The caller then exits 1 (failure) or re-raises; the shell's
+    ``mark_stopped`` can still overlay stopped (terminal→terminal is
+    allowed).
+    """
+    previous = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        _write_journal(journal, record)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def _bind_loopback() -> socket.socket:
     """Atomically claim an ephemeral loopback port for the API server.
 
@@ -283,6 +311,16 @@ WEB_RELAY_PORT = 39443
 # client is the local Next standalone server; 128 is two orders of magnitude
 # above anything it pools while bounding the helper's thread count.
 WEB_RELAY_MAX_CONNECTIONS = 128
+# First-byte deadline on the client→API pump (#825). An idle TCP client
+# that never sends would otherwise hold a limiter slot until session
+# restart. After the first byte, the timeout is cleared — keep-alive
+# transfers stay unbounded, matching the historical "liveness is the
+# peers' business" contract for established pipes.
+RELAY_FIRST_BYTE_TIMEOUT_SECONDS = 30.0
+# Stub-mode health server (#873): ThreadingHTTPServer is thread-per-accept
+# with no cap. Reuse the relay limiter so a local flood cannot grow the
+# helper without bound; 128 is the same generous ceiling as the relay.
+STUB_MAX_CONNECTIONS = WEB_RELAY_MAX_CONNECTIONS
 
 
 class _RelayLimiter:
@@ -421,23 +459,33 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
             client.close()
             limiter.release()
             continue
-        # The 5s timeout above bounds the CONNECT only; the byte pipe itself
-        # must never time out. With the timeout left armed on the upstream
-        # socket, a response whose first byte took longer than 5s to produce
-        # was dropped mid-flight (the client saw a bare FIN), and every
-        # keep-alive connection was severed after 5s of silence. The accepted
-        # client side is already blocking (a timeout-mode listener accepts in
-        # blocking mode), so the pump below runs without any read deadline on
-        # both directions; liveness is the peers' business (HTTP closes,
-        # process teardown closes the sockets).
+        # The 5s timeout above bounds the CONNECT only. After the first
+        # client byte the pipe itself must never time out: a leftover
+        # connect timeout on the upstream socket dropped slow responses
+        # and severed keep-alive after 5s of silence. The client→API
+        # direction DOES arm a first-byte deadline (#825) so idle TCP
+        # flooders cannot pin limiter slots for the session; once bytes
+        # flow, that timeout is cleared and liveness is the peers'
+        # business again (HTTP closes, process teardown closes sockets).
         upstream.settimeout(None)
 
-        def _pipe(src: socket.socket, dst: socket.socket) -> None:
+        def _pipe(
+            src: socket.socket,
+            dst: socket.socket,
+            *,
+            first_byte_timeout: float | None = None,
+        ) -> None:
+            armed = first_byte_timeout is not None
+            if armed:
+                src.settimeout(first_byte_timeout)
             try:
                 while True:
                     data = src.recv(65536)
                     if not data:
                         break
+                    if armed:
+                        src.settimeout(None)
+                        armed = False
                     dst.sendall(data)
             except OSError:
                 pass
@@ -460,7 +508,12 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
                 # the whole lifecycle sits inside the guard.
                 pumps = [
                     threading.Thread(
-                        target=_pipe, args=(pair_client, pair_upstream), daemon=True
+                        target=_pipe,
+                        args=(pair_client, pair_upstream),
+                        kwargs={
+                            "first_byte_timeout": RELAY_FIRST_BYTE_TIMEOUT_SECONDS,
+                        },
+                        daemon=True,
                     ),
                     threading.Thread(
                         target=_pipe, args=(pair_upstream, pair_client), daemon=True
@@ -590,22 +643,52 @@ def _spawn_grandchild() -> subprocess.Popen[str] | None:
     return subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(3600)"],
         preexec_fn=_preexec,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=_descendant_env(),
     )
 
 
 class _StubServer(ThreadingHTTPServer):
     """stub 模式的健康服务器，绑定策略与 ``_bind_loopback`` 一致：
     Windows 上不设 SO_REUSEADDR（``allow_reuse_address``），改设
-    SO_EXCLUSIVEADDRUSE，避免同端口二次绑定劫持；Unix 行为不变。"""
+    SO_EXCLUSIVEADDRUSE，避免同端口二次绑定劫持；Unix 行为不变。
+
+    Live connections are bounded by :class:`_RelayLimiter` (#873): overflow
+    is closed immediately instead of spawning another handler thread.
+    """
 
     allow_reuse_address = sys.platform != "win32"
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._limiter = _RelayLimiter(STUB_MAX_CONNECTIONS)
+        super().__init__(*args, **kwargs)
 
     def server_bind(self) -> None:
         if sys.platform == "win32":
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+    def process_request(self, request, client_address) -> None:
+        if not self._limiter.try_acquire():
+            try:
+                request.close()
+            except OSError:
+                pass
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._limiter.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._limiter.release()
 
 
 class _StubHandler(BaseHTTPRequestHandler):
@@ -805,7 +888,7 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             command.upgrade(alembic_config, "head")
         except BaseException as error:  # noqa: BLE001 - journal the failure, then exit
             record.update(state="failed", error=f"alembic:{type(error).__name__}")
-            _write_journal(journal, record)
+            _write_journal_uninterruptible(journal, record)
             raise
 
         if args.fake_channel:
@@ -969,6 +1052,32 @@ def _node_child_env() -> dict[str, str]:
     }
     return {
         name: value for name, value in os.environ.items() if name.upper() not in dropped
+    }
+
+
+def _descendant_env() -> dict[str, str]:
+    """Env for the test grandchild (#871).
+
+    Starts from :func:`_node_child_env` (handshake secrets, app wiring,
+    LD_PRELOAD) and also drops Python auto-load hooks. A PYTHONPATH-planted
+    ``sitecustomize`` in the descendant used to run at startup and could
+    consume the GO line on the inherited protocol stdin. Combined with
+    ``stdin=DEVNULL`` at the Popen site, the grandchild cannot see the
+    handshake pipe.
+    """
+
+    dropped = {
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "PYTHONSAFEPATH",
+        "PYTHONUSERBASE",
+        "PYTHONEXECUTABLE",
+    }
+    return {
+        name: value
+        for name, value in _node_child_env().items()
+        if name.upper() not in dropped
     }
 
 
@@ -1384,6 +1493,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # #870: files and directories created from here inherit 077 (owner-only).
+    # Windows ACLs are NOT RUN — umask is a no-op for NTFS permissions.
+    if sys.platform != "win32":
+        os.umask(0o077)
+
     token, journal = _read_context()
     record = {
         "version": 1,
@@ -1418,7 +1532,7 @@ def main() -> int:
     except BaseException as error:  # noqa: BLE001 - last-resort failure journal
         _merge_last_resort_failure(record, error)
         try:
-            _write_journal(journal, record)
+            _write_journal_uninterruptible(journal, record)
         except (OSError, RuntimeError):
             # OSError: the write itself failed. RuntimeError: the #686/#692
             # guards (planted link/FIFO at the journal or pending names)
