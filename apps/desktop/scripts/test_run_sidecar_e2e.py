@@ -18,8 +18,22 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from _bash_resolve import resolve_posix_bash
+
 _SCRIPT = Path(__file__).with_name("run-sidecar-e2e.sh").resolve()
 _REQ = Path(__file__).resolve().parents[2] / "api" / "requirements.txt"
+
+# Every pin here shells a bash script; a PATH-order `bash` that is the WSL
+# stub (no distro installed) fails every one of them for an environment
+# reason — run them only through a probe-verified POSIX bash (#839).
+BASH = resolve_posix_bash()
+pytestmark = pytest.mark.skipif(
+    BASH is None,
+    reason="no POSIX-capable bash on this host (the PATH-order bash may be "
+    "the WSL stub); the runner-script pins need a real bash",
+)
 _REQ_DEV = Path(__file__).resolve().parents[2] / "api" / "requirements-dev.txt"
 
 
@@ -33,7 +47,7 @@ def _bash(p: Path) -> str:
 
 def _requirements_hash() -> str:
     hashed = subprocess.run(
-        ["bash", "-c", f"cat {_bash(_REQ)} {_bash(_REQ_DEV)} | md5sum | cut -d' ' -f1"],
+        [BASH, "-c",f"cat {_bash(_REQ)} {_bash(_REQ_DEV)} | md5sum | cut -d' ' -f1"],
         capture_output=True,
         text=True,
         check=True,
@@ -63,7 +77,7 @@ echo "PIP_CALLS=$(cat "$CNT" 2>/dev/null || echo 0)"
 echo "STAMP=$(cat "$VENV/.mangaflow-bootstrap" 2>/dev/null || echo MISSING)"
 """
     done = subprocess.run(
-        ["bash", "-c", harness, "harness", (workdir / "venv").as_posix()],
+        [BASH, "-c",harness, "harness", (workdir / "venv").as_posix()],
         capture_output=True,
         text=True,
         env={**os.environ, **(env or {})},
@@ -154,7 +168,7 @@ def test_install_builds_one_r_flag_per_requirements_file(tmp_path):
     req_b.write_text("b==2\n", encoding="utf-8")
     done = subprocess.run(
         [
-            "bash", "-c",
+            BASH, "-c",
             "source {script}\n"
             "install_e2e_requirements {venv} {a} {b}\n".format(
                 script=_bash(_SCRIPT), venv=_bash(stub_venv.parent),
@@ -194,7 +208,7 @@ def test_ensure_e2e_venv_refuses_zero_requirement_files(tmp_path):
     # `cat "$@"` would read STDIN and hang the harness/CI forever. The
     # guard must return a DISTINCT rc=2 with a named diagnosis instead.
     done = subprocess.run(
-        ["bash", "-c",
+        [BASH, "-c",
          f"source {_bash(_SCRIPT)} && "
          "if ensure_e2e_venv venv; then echo ENSURE_RC=0; "
          "else echo ENSURE_RC=$?; fi"],
@@ -215,7 +229,7 @@ def test_sourcing_the_runner_runs_nothing(tmp_path):
     # ran its whole body on source, which is exactly what made it
     # untestable.
     done = subprocess.run(
-        ["bash", "-c", f"source {_bash(_SCRIPT)} && echo SOURCED_OK"],
+        [BASH, "-c",f"source {_bash(_SCRIPT)} && echo SOURCED_OK"],
         capture_output=True,
         text=True,
         env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
@@ -290,13 +304,13 @@ else
 fi
 """
     first = subprocess.Popen(
-        ["bash", "-c", harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        [BASH, "-c",harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     import time
 
     time.sleep(0.5)  # let the first runner take the lock and start installing
     second = subprocess.Popen(
-        ["bash", "-c", harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        [BASH, "-c",harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     o1, e1 = first.communicate()
     o2, e2 = second.communicate()
@@ -320,7 +334,7 @@ def test_stale_bootstrap_lock_is_broken_and_install_proceeds(tmp_path):
     # No touch.exe on Windows: the mtime probe rides the same bash as the
     # harness (and the lock path gets the forward-slash spelling).
     subprocess.run(
-        ["bash", "-c", f"touch -d '31 minutes ago' {_bash(lock)}"], check=True
+        [BASH, "-c",f"touch -d '31 minutes ago' {_bash(lock)}"], check=True
     )
 
     rc, out = _run_harness_in(tmp_path, "true")
@@ -423,18 +437,24 @@ def test_runner_rejects_pytest_selection_flags():
     """The trailing "$@" on the pytest invocation must never carry
     selection flags: `-k relay` would run a subset of the pinned contract
     files, pipefail+tee would preserve pytest's 0, and the last-run log
-    would record a green full-contract run that never happened."""
+    would record a green full-contract run that never happened. Both the
+    spaced and the ATTACHED spellings pytest accepts must be covered."""
     script = _SCRIPT.read_text(encoding="utf-8")
-    for flag in ("-k", "-m", "--deselect", "--ignore", "-p", "--collect-only", "-x", "--maxfail", "--lf", "--ff"):
-        assert f"'{flag}'" in script or f'"{flag}"' in script, (
-            f"the selection-flag guard must refuse {flag!r}"
+    for flag in ("-k", "-m", "--deselect", "--ignore", "-p",
+                 "--collect-only", "-x", "--maxfail", "--lf", "--ff"):
+        assert flag in script, f"the selection-flag guard must refuse {flag!r}"
+    # argparse accepts `--opt=value`; a bare-token case lets those through.
+    for attached in ("-k*", "-m*", "-p*", "--deselect=*", "--ignore=*", "--maxfail=*"):
+        assert attached in script, (
+            f"the guard must also refuse the attached form {attached!r}"
         )
-    assert 'exit 2' in script, "the guard must fail loudly, not filter silently"
+    assert "exit 2" in script, "the guard must fail loudly, not filter silently"
 
 
 def test_runner_rejects_a_selection_flag_end_to_end(tmp_path):
-    """Behavioral form: invoking the runner body's arg check with -k must
-    exit 2 with the diagnosis before pytest is ever spawned."""
+    """Behavioral form: invoking the runner body's arg check with each
+    shape — spaced and attached — must exit 2 with the diagnosis before
+    pytest is ever spawned."""
     probe = tmp_path / "argcheck.sh"
     # Extract the guard loop verbatim from the shipped script so the pin
     # tracks the real implementation instead of a copy.
@@ -446,18 +466,30 @@ def test_runner_rejects_a_selection_flag_end_to_end(tmp_path):
         + "\n".join(lines[start : end + 1])
         + '\necho PYREACHED\n',
         encoding="utf-8",
+        newline="\n",
     )
-    done = subprocess.run(
-        ["bash", str(probe), "-k", "relay"],
-        capture_output=True,
-        text=True,
-    )
-    assert done.returncode == 2, done.stdout + done.stderr
-    assert "would silently shrink the contract run" in done.stderr, done.stderr
-    assert "PYREACHED" not in done.stdout, done.stdout
+    refused = [
+        ["-k", "relay"],
+        ["--ignore=apps/desktop/scripts/test_sidecar_e2e.py"],
+        ["-kexpr"],
+        ["--deselect=tests::test_x"],
+        ["--maxfail=1"],
+        ["--lf"],
+    ]
+    for argv in refused:
+        done = subprocess.run(
+            [BASH, str(probe), *argv],
+            capture_output=True,
+            text=True,
+        )
+        assert done.returncode == 2, f"{argv}: {done.stdout + done.stderr}"
+        assert "would silently shrink the contract run" in done.stderr, (
+            f"{argv}: {done.stderr}"
+        )
+        assert "PYREACHED" not in done.stdout, f"{argv}: {done.stdout}"
     # A non-selection argument passes the guard untouched.
     done = subprocess.run(
-        ["bash", str(probe), "--verbose-ok"],
+        [BASH, str(probe), "--verbose-ok"],
         capture_output=True,
         text=True,
     )

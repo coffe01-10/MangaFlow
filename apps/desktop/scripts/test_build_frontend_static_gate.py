@@ -13,7 +13,21 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from _bash_resolve import resolve_posix_bash
+
 _GATE = Path(__file__).resolve().parent / "chunk-consistency-gate.sh"
+
+# The gate is a bash contract exercised through bash subprocesses; a
+# PATH-order `bash` that is the WSL stub fails every pin for an environment
+# reason — run them only through a probe-verified POSIX bash (#839).
+BASH = resolve_posix_bash()
+pytestmark = pytest.mark.skipif(
+    BASH is None,
+    reason="no POSIX-capable bash on this host (the PATH-order bash may be "
+    "the WSL stub); the gate pins need a real bash",
+)
 
 
 def _run_entry_smoke(frontend_dir: Path) -> subprocess.CompletedProcess:
@@ -23,7 +37,7 @@ def _run_entry_smoke(frontend_dir: Path) -> subprocess.CompletedProcess:
         f'source "{_GATE.as_posix()}" && '
         f'check_static_entry_files "{frontend_dir.as_posix()}"'
     )
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    return subprocess.run([BASH, "-c", script], capture_output=True, text=True)
 
 
 def _run_gate(frontend_dir: Path, index_html: Path) -> subprocess.CompletedProcess:
@@ -35,7 +49,7 @@ def _run_gate(frontend_dir: Path, index_html: Path) -> subprocess.CompletedProce
         f'source "{_GATE.as_posix()}" && '
         f'check_referenced_chunks "{frontend_dir.as_posix()}" "{index_html.as_posix()}"'
     )
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    return subprocess.run([BASH, "-c", script], capture_output=True, text=True)
 
 
 def _make_frontend(root: Path, chunks: dict[str, bool]) -> tuple[Path, Path]:
