@@ -952,3 +952,11 @@
   nuance 文档）——我方 #928 重复精修放弃关闭（红/绿双向核验：master 上 fsync-order
   套件 2 passed）。20260918 窗口分支按 lead 指令 reset 至 origin/master（9e7299d），
   全量 **207 passed + 2 skipped**（exit=0）+ cargo **198/0**（171 基线 + N1 夜班增量）。
+
+- **§35 补遗二十四（master f8f518c 同步证据）**：night-watch-2b 批（shell-core 四文件
+  +420 行测试钉：SIGTERM restore、stub cap relay linkage、descendant scrub tail、
+  first-byte deadline 三臂）并入后——真 runner **214 passed + 2 skipped**（exit=0）+
+  cargo **205/0**。与我方钉族（#825 延迟界、#900 tail 分段计数、#709 mkfifo 门）无冲突。
+
+- **§35 补遗二十七（master da2cac4 同步）**：#960（他组 night-watch-2b 的账本投递，
+  n3 谱系 +2 行）并入；夜分支同步无冲突。open = #959/#954（我方）待 lead。
