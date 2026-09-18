@@ -2022,7 +2022,9 @@ mod tests {
         // record triggers rotate_if_large.
         run_log.record("seed", &serde_json::json!({})).unwrap();
         let base = shell_log_path(&user_data, &token);
-        let f = fs::OpenOptions::new().append(true).open(&base).unwrap();
+        // write(true), not append(true): set_len needs FILE_WRITE_DATA on
+        // Windows, and an append-only handle is granted just FILE_APPEND_DATA.
+        let f = fs::OpenOptions::new().write(true).open(&base).unwrap();
         f.set_len(ROTATION_THRESHOLD_BYTES + 1).unwrap();
         drop(f);
 
