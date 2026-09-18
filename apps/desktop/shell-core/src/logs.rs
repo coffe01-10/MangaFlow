@@ -2371,7 +2371,7 @@ mod tests {
             PathBuf::from("big.log"),
             EXPORT_MAX_TOTAL_BYTES + 1000,
         )];
-        let capped = export_space_needed(&huge, EXPORT_MAX_TOTAL_BYTES);
+        let capped = export_space_needed(&huge, &[], EXPORT_MAX_TOTAL_BYTES);
         assert!(
             capped >= EXPORT_MAX_TOTAL_BYTES + EXPORT_SPACE_SLACK_BYTES,
             "capped payload must still carry slack: {capped}"
