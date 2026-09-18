@@ -997,3 +997,33 @@ def test_relay_first_byte_timeout_unwinds_and_releases_the_slot(monkeypatch):
             stop()
     finally:
         api.close()
+
+
+def test_relay_survives_scan_probes_and_serves_the_next_client(monkeypatch):
+    """A port-scan probe (connect + immediate close, ZERO bytes) must
+    unwind its pump deterministically and leave the relay serving: the
+    relay's accept loop tolerates ECONNABORTED-style client deaths
+    (transient accept errors), each pump ends on the first recv (EOF or
+    RST → the same OSError guard), and the slot is released — the NEXT
+    client gets the full exchange. A crash here would take the loop (and
+    the announced port) down for the session."""
+
+    api = StubApi()
+    try:
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            for _ in range(3):
+                probe = socket.create_connection(("127.0.0.1", port), timeout=15)
+                probe.close()  # close WITHOUT sending: the scanner pattern
+
+            served = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                served.sendall(REQUEST)
+                body = read_response(served, timeout_seconds=15)
+            finally:
+                served.close()
+            assert body.endswith(b"ok"), body
+        finally:
+            stop()
+    finally:
+        api.close()
