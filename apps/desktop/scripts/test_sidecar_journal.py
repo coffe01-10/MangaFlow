@@ -394,3 +394,31 @@ def test_oversize_journal_fail_open_and_publish(tmp_path: Path):
     helper._write_journal(journal, _record("ready"))
     published = json.loads(journal.read_text(encoding="utf-8"))
     assert published["state"] == "ready", published
+
+
+def test_write_journal_fsyncs_payload_and_parent_dir(tmp_path, monkeypatch):
+    """Durability parity with the Rust twin (#899): the payload fsync
+    (#824) commits the bytes, and the post-rename parent-dir fsync
+    commits the directory entry — a power loss between them reverts the
+    journal to missing/prior (which the sweep does not reclaim). Pin
+    that a normal publish performs BOTH fsyncs."""
+
+    import os as os_module
+
+    real_fsync = os_module.fsync
+    fsynced_fds: list[int] = []
+    monkeypatch.setattr(
+        os_module, "fsync", lambda fd: (fsynced_fds.append(fd), real_fsync(fd))
+    )
+
+    helper = _load_helper()
+    journal = _journal_path(tmp_path)
+    helper._write_journal(journal, _record("ready"))
+
+    # The pending staging write fsyncs once (the payload); the directory
+    # entry fsync after os.replace is the durability tail under parity.
+    assert len(fsynced_fds) >= 2, (
+        f"expected the payload fsync AND the parent-dir durability tail, "
+        f"got {len(fsynced_fds)} fsync call(s)"
+    )
+    assert journal.read_text(encoding="utf-8") != ""
