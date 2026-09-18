@@ -260,6 +260,12 @@ WEB_RELAY_PORT = 39443
 # client is the local Next standalone server; 128 is two orders of magnitude
 # above anything it pools while bounding the helper's thread count.
 WEB_RELAY_MAX_CONNECTIONS = 128
+# First-byte deadline on the client→API pump (#825). An idle TCP client
+# that never sends would otherwise hold a limiter slot until session
+# restart. After the first byte, the timeout is cleared — keep-alive
+# transfers stay unbounded, matching the historical "liveness is the
+# peers' business" contract for established pipes.
+RELAY_FIRST_BYTE_TIMEOUT_SECONDS = 30.0
 # Stub-mode health server (#873): ThreadingHTTPServer is thread-per-accept
 # with no cap. Reuse the relay limiter so a local flood cannot grow the
 # helper without bound; 128 is the same generous ceiling as the relay.
@@ -402,23 +408,33 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
             client.close()
             limiter.release()
             continue
-        # The 5s timeout above bounds the CONNECT only; the byte pipe itself
-        # must never time out. With the timeout left armed on the upstream
-        # socket, a response whose first byte took longer than 5s to produce
-        # was dropped mid-flight (the client saw a bare FIN), and every
-        # keep-alive connection was severed after 5s of silence. The accepted
-        # client side is already blocking (a timeout-mode listener accepts in
-        # blocking mode), so the pump below runs without any read deadline on
-        # both directions; liveness is the peers' business (HTTP closes,
-        # process teardown closes the sockets).
+        # The 5s timeout above bounds the CONNECT only. After the first
+        # client byte the pipe itself must never time out: a leftover
+        # connect timeout on the upstream socket dropped slow responses
+        # and severed keep-alive after 5s of silence. The client→API
+        # direction DOES arm a first-byte deadline (#825) so idle TCP
+        # flooders cannot pin limiter slots for the session; once bytes
+        # flow, that timeout is cleared and liveness is the peers'
+        # business again (HTTP closes, process teardown closes sockets).
         upstream.settimeout(None)
 
-        def _pipe(src: socket.socket, dst: socket.socket) -> None:
+        def _pipe(
+            src: socket.socket,
+            dst: socket.socket,
+            *,
+            first_byte_timeout: float | None = None,
+        ) -> None:
+            armed = first_byte_timeout is not None
+            if armed:
+                src.settimeout(first_byte_timeout)
             try:
                 while True:
                     data = src.recv(65536)
                     if not data:
                         break
+                    if armed:
+                        src.settimeout(None)
+                        armed = False
                     dst.sendall(data)
             except OSError:
                 pass
@@ -441,7 +457,12 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
                 # the whole lifecycle sits inside the guard.
                 pumps = [
                     threading.Thread(
-                        target=_pipe, args=(pair_client, pair_upstream), daemon=True
+                        target=_pipe,
+                        args=(pair_client, pair_upstream),
+                        kwargs={
+                            "first_byte_timeout": RELAY_FIRST_BYTE_TIMEOUT_SECONDS,
+                        },
+                        daemon=True,
                     ),
                     threading.Thread(
                         target=_pipe, args=(pair_upstream, pair_client), daemon=True
