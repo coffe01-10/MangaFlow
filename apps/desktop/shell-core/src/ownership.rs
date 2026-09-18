@@ -233,6 +233,16 @@ impl OwnedTree {
             Err(error) => return Err(OwnershipError::StopFailed(error.to_string())),
         };
         if let Some(status) = already_reaped {
+            // #864: the early return skips every later signal site, so a child
+            // that self-exited between Drop's `alive()` probe and this
+            // `try_wait` leaked its whole group (plan-B crash shape: the
+            // helper dies, its node server lives on). The shell owns the
+            // group until its last member exits — kill the leftovers here
+            // too. Group-only for the same recycled-pid reason as the grace
+            // loop's escalation: the child pid is reaped, a per-pid signal
+            // could hit a recycled pid.
+            #[cfg(unix)]
+            signal_group_only(self.pid(), libc::SIGKILL);
             return Ok(status.code());
         }
         // Cooperative phase: dropping the piped stdin closes the pipe's write

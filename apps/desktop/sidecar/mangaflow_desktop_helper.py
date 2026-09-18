@@ -45,6 +45,7 @@ import os
 import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -112,6 +113,37 @@ def _read_context() -> tuple[str, Path]:
     return token, journal
 
 
+def _open_verified_pending(pending: Path, runtime: Path) -> int:
+    """#863 (Rust twin parity, write_journal_atomic): the lstat pre-checks in
+    _write_journal are check-then-open — a link swapped in between would be
+    FOLLOWED, and the old ``"wb"`` open (O_TRUNC) zeroed the redirected target
+    at open time. Open WITHOUT truncating, verify through the handle (fstat
+    regular) and the resolved path (realpath must stay inside the runtime
+    dir) before any byte lands, and only then truncate. Zero-damage by
+    construction: the caller truncates only after this returns a verified fd.
+    """
+    fd = os.open(pending, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RuntimeError("journal pending sibling must be a regular file")
+        runtime_real = os.path.realpath(runtime)
+        pending_real = os.path.realpath(pending)
+        try:
+            inside_runtime = (
+                os.path.commonpath([runtime_real, pending_real]) == runtime_real
+            )
+        except ValueError:
+            inside_runtime = False  # mixed drives/roots can never be contained
+        if not inside_runtime:
+            raise RuntimeError(
+                "journal pending sibling resolves outside the runtime directory"
+            )
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _write_journal(journal: Path, record: dict) -> None:
     """Atomically publish ``record`` to the ownership journal (#602).
 
@@ -151,19 +183,21 @@ def _write_journal(journal: Path, record: dict) -> None:
     # The pending name gets the same refusal: write_text would block
     # forever on a planted FIFO (open for writing with no reader never
     # returns) — the #685 parity extends to both staged names.
-    # Best-effort like every guard here: an attacker can swap in a FIFO
-    # between this check and write_text (the airtight form is
-    # open(O_NOFOLLOW|O_CREAT) + fstat, beyond this parity's scope).
     if pending.exists() and not pending.is_file():
         raise RuntimeError("journal pending sibling must be a regular file")
     payload = json.dumps(record, sort_keys=True).encode("utf-8")
     # Red team #824: fsync the payload before the replace so a power loss
     # cannot leave a zero-length/torn journal (which mark_stopped-style
     # readers and the sweep would then treat as unreadable forever).
-    with pending.open("wb") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
+    fd = _open_verified_pending(pending, journal.parent)
+    try:
+        os.ftruncate(fd, 0)
+        with os.fdopen(fd, "wb", closefd=False) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        os.close(fd)
     current_state: str | None = None
     try:
         # Bounded like the Rust read_journal_bounded (64 KiB + 1): a planted
