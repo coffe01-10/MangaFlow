@@ -1782,3 +1782,65 @@ fn owned_tree_alive_tracks_the_lifecycle_accurately() {
 
     let _ = fs::remove_dir_all(&user_data);
 }
+
+
+/// The RunLog-create failure arm: when the session-start sweep cannot
+/// finish (a file parked at the logs path blocks rotation), the helper
+/// must still finalize the ownership journal as "stopped" so the
+/// session-start sweep can reclaim the directory later — never leave it
+/// claiming "created" forever. Driven with a real file parked at the
+/// logs path (the deterministic blocker from the rotation pins).
+#[test]
+fn runlog_create_failure_finalizes_the_ownership_journal() {
+    let user_data = temp_user_data("runlog-create-fail");
+    // Block the logs path with a regular FILE at <user_data>/logs so
+    // RunLog::create's session-start sweep fails during create_dir_all.
+    let logs_blocker = user_data.join("logs");
+    fs::create_dir_all(&user_data).unwrap();
+    fs::write(&logs_blocker, b"not a directory").unwrap();
+
+    let config = HelperConfig::stub(&python(), &helper_script());
+    let error = spawn_helper(&config, &user_data).err();
+
+    // With logs/ blocked as a FILE, create_dir_all fails — the arm must
+    // surface Io.
+    assert!(
+        matches!(error, Some(SpawnError::Io(_))),
+        "the failure must surface as SpawnError::Io: {error:?}"
+    );
+    // The stray file stays (the shell must not delete user-supplied files).
+    assert!(logs_blocker.is_file(), "the blocker file must stay");
+
+    // #836: the whole point of the fix (spawn_helper's mark_stopped on
+    // RunLog::create failure) is that the layout's OWN runtime journal
+    // reaches a terminal state the sweep can reclaim. Read the journal
+    // spawn_helper actually wrote — RuntimeLayout::create mints a random
+    // 32-hex token — and require "stopped".
+    let runtime_root = user_data.join("runtime");
+    let mut journals = Vec::new();
+    for entry in fs::read_dir(&runtime_root)
+        .expect("runtime root must exist after a failed spawn")
+    {
+        let journal = entry.unwrap().path().join("owner.json");
+        let text = fs::read_to_string(&journal)
+            .expect("the failed run's owner.json must exist and be readable");
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .expect("the failed run's owner.json must be valid JSON");
+        assert_ne!(
+            value["state"].as_str(),
+            Some("created"),
+            "the failed run's journal must not stay in the non-terminal 'created' state"
+        );
+        journals.push(value);
+    }
+    assert_eq!(
+        journals.len(),
+        1,
+        "exactly one runtime journal (the failed run's) must exist"
+    );
+    assert_eq!(
+        journals[0]["state"].as_str(),
+        Some("stopped"),
+        "RunLog::create failure must finalize the ownership journal as stopped"
+    );
+}

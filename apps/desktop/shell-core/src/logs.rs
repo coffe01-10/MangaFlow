@@ -695,9 +695,25 @@ impl RunLog {
                 "mangaflow-desktop: stale runtime-directory sweep failed: {error}"
             );
         }
-        fs::create_dir_all(logs_dir(user_data))?;
+        let logs = logs_dir(user_data);
+        fs::create_dir_all(&logs)?;
+        // #610 family: a planted root link must not redirect the session
+        // log tree — canonicalize would follow it and open_append_regular's
+        // containment check would compare the target against itself, so
+        // every session log lands in the attacker-chosen tree. rotate_logs
+        // and export_logs_with already refuse; the create path now does
+        // too.
+        if logs
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.is_symlink())
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "logs root is a symlink; refusing to redirect the session log tree",
+            ));
+        }
         let base = shell_log_path(user_data, token);
-        let logs_canonical = logs_dir(user_data).canonicalize()?;
+        let logs_canonical = logs.canonicalize()?;
         let file = open_append_regular(&base, &logs_canonical)?;
         Ok(RunLog {
             inner: std::sync::Mutex::new(RunLogFile {
@@ -1127,7 +1143,23 @@ fn export_logs_with(
     let (dos_date, dos_time) = dos_date_time(unix_now());
     let mut zip = ZipWriter::new();
 
+    // (kept adjacent to the guard that uses it)
+    const EXPORT_MANIFEST_NAME: &str = "manifest.json";
+    const EXPORT_MANIFEST_SKIP_REASON: &str = "reserved_manifest_name";
     for (member, path, size) in &members {
+        // The exporter appends its own manifest.json after the loop: a
+        // log-tree member of that name would produce TWO central-directory
+        // entries with one name (readers resolve to the last, and the
+        // manifest would advertise a member the archive cannot deliver
+        // under it). Skip the colliding name up front — it is the
+        // exporter's own artifact, not a forensics member.
+        if member == EXPORT_MANIFEST_NAME {
+            skipped.push(SkippedEntry {
+                name: member.clone(),
+                reason: EXPORT_MANIFEST_SKIP_REASON.into(),
+            });
+            continue;
+        }
         // Archive-shape caps first (metadata only, before any read): the
         // member count must stay inside the EOCD's u16 entry field and the
         // running total inside the u32 offset field's safe range — beyond
@@ -1246,6 +1278,30 @@ fn export_logs_with(
                 ExportError::Io(error)
             }
         })?;
+    // Placement-time re-verification: destination_canonical was resolved
+    // at VALIDATION time, and the archive build above leaves a
+    // seconds-wide window in which a same-user ancestor swap (rename +
+    // same-leaf symlink) can redirect the staged pending file — and the
+    // rename that follows — INSIDE the user-data root, defeating the
+    // DestinationInsideUserData exclusion computed at validation. Resolve
+    // the pending file's CURRENT location and re-apply the exclusion
+    // before anything is placed.
+    let placement_root = pending
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .ok_or_else(|| {
+            ExportError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "export staging parent vanished during the archive build",
+            ))
+        })?;
+    let user_data_now = user_data.canonicalize().map_err(ExportError::Io)?;
+    if placement_root.starts_with(&user_data_now) {
+        // Remove the staged orphan at the redirected location — the
+        // failure must leave nothing behind but its error.
+        let _ = remove_file_if_exists(&pending);
+        return Err(ExportError::DestinationInsideUserData);
+    }
     place_archive(&pending, &destination_canonical, overwrite_confirmed)?;
 
     Ok(ExportReport {
@@ -1675,8 +1731,36 @@ mod tests {
         ));
         // The Display arms render the refusal reason (user-visible in the
         // export dialog path).
-        assert!(!ExportError::DestinationIsDirectory.to_string().is_empty());
-        assert!(!ExportError::DestinationNoFileName.to_string().is_empty());
+        // Every arm's refusal text must name the operator action or the
+        // offending shape: DestinationExists and PendingIsSymlink carry
+        // distinct remediation wording, and the whole family stays
+        // non-empty. A regression that collapses two arms into one
+        // message (or drops the interpolation) goes red here.
+        let arms = [
+            (ExportError::DestinationNotAbsolute, "绝对路径"),
+            (ExportError::DestinationNoFileName, "文件名"),
+            (ExportError::DestinationParentMissing, "上级目录"),
+            (ExportError::DestinationHasDotComponents, ".."),
+            (ExportError::DestinationIsSymlink, "符号链接"),
+            (ExportError::DestinationIsDirectory, "目录"),
+            (ExportError::DestinationExists, "已存在"),
+            (ExportError::PendingIsSymlink, "符号链接"),
+            (ExportError::DestinationInsideUserData, "用户数据"),
+            (ExportError::LogsRootIsSymlink, "符号链接"),
+        ];
+        for (error, fragment) in &arms {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains(fragment),
+                "{error:?} lost its distinguishing text: {rendered}"
+            );
+        }
+        // The Io arm must embed the inner error (source chain parity).
+        let io = ExportError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "inner detail",
+        ));
+        assert!(io.to_string().contains("inner detail"), "{io}");
         let _ = fs::remove_dir_all(&user_data);
         let _ = fs::remove_dir_all(&dir_destination);
     }
@@ -1967,7 +2051,6 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
-    #[test]
     /// The record line's exact shape: ts/event/fields in one JSONL line —
     /// the export manifest and every forensics reader parse THIS shape.
     /// Pins the three keys (no extras that would grow the contract), the
@@ -1996,10 +2079,16 @@ mod tests {
             value["ts"].as_u64().is_some(),
             "ts must be a number (unix seconds): {value}"
         );
+        assert_eq!(
+            value.as_object().expect("the line is a JSON object").len(),
+            3,
+            "exactly ts/event/fields — an extra top-level key grows the contract: {value}"
+        );
         assert!(log.ends_with('\n'), "each record is one newline-terminated line");
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    #[test]
     fn run_log_record_survives_mutex_poisoning() {
         let user_data = temp_user_data("poison");
         let token = "cd".repeat(16);
@@ -3111,5 +3200,289 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
-}
+    /// A FIFO planted at the shell log path must be REFUSED, never opened:
+    /// an open-for-append on a writer-less FIFO blocks forever, so a
+    /// regression that lets a non-regular entry reach OpenOptions would
+    /// hang spawn_helper instead of failing fast. The symlink half of this
+    /// guard has pins; the plain non-regular (FIFO) half did not — the
+    /// Python journal side pins the same posture
+    /// (test_non_regular_journal_is_refused_not_hung).
+    #[test]
+    #[cfg(unix)]
+    fn open_append_regular_refuses_a_planted_fifo_at_the_log_path() {
+        use std::ffi::CString;
 
+        let user_data = temp_user_data("log-fifo");
+        let logs_root = user_data.join("runtime").join(format!(
+            "mangaflow-desktop-{}",
+            "b".repeat(32)
+        ));
+        let log_path = logs_root.join("shell.log");
+        std::fs::create_dir_all(&logs_root).unwrap();
+        let cpath = CString::new(log_path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+
+        let logs_canonical = logs_root.canonicalize().unwrap();
+        // The wait is bounded by a channel: the regression this pins (a
+        // non-regular entry reaching OpenOptions) manifests as a BLOCKING
+        // open on the writer-less FIFO — a hang must surface as a test
+        // failure, not wedge the suite (same harness as the sweep's FIFO
+        // journal pin).
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let log_path = log_path.clone();
+            let logs_canonical = logs_canonical.clone();
+            move || {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || open_append_regular(&log_path, &logs_canonical),
+                ));
+                let _ = tx.send(());
+                // Unwrap HERE so the joined type is the plain io::Result —
+                // the refusal path is expect_err'd by the test body below.
+                outcome.expect("open_append_regular must not panic on a FIFO")
+            }
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the open hung on the writer-less FIFO — non-regular-refusal regression");
+        let result = worker
+            .join()
+            .unwrap_or_else(|payload| panic!("the refusal worker panicked: {payload:?}"));
+
+        let error = result.expect_err("a FIFO at the log path must be refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "the refusal must name the non-regular entry: {error}"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// A link planted at the LOGS ROOT must fail `RunLog::create` instead
+    /// of redirecting the session log tree: canonicalize followed the link
+    /// and `open_append_regular`'s containment check compared the target
+    /// against itself, so `shell-<token>.log` (and the helper stderr log)
+    /// landed in an attacker-chosen directory. rotate_logs and export
+    /// already refuse their walks; this pins the create path to the same
+    /// posture. POSIX-only fixture (Unix symlink).
+    #[test]
+    #[cfg(unix)]
+    fn run_log_create_refuses_a_planted_logs_root_link() {
+        let user_data = temp_user_data("rootlink-create");
+        std::os::unix::fs::symlink(
+            std::env::temp_dir(),
+            logs_dir(&user_data),
+        )
+        .unwrap();
+
+        let result = RunLog::create(&user_data, &"bf".repeat(16));
+
+        // RunLog deliberately carries no Debug impl; match instead of
+        // expect_err.
+        let error = match result {
+            Ok(_) => panic!("a logs-root link must fail the create"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(
+            error.to_string().contains("symlink"),
+            "the refusal must name the link: {error}"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// A log-tree member named manifest.json must be SKIPPED (reported as
+    /// reserved_manifest_name), never archived: the exporter appends its
+    /// own manifest.json, so archiving the planted one yields two
+    /// central-directory entries under one name — readers resolve to the
+    /// last and the manifest advertises a member the archive cannot
+    /// deliver under it. Byte-level duplicate detection counts the name
+    /// inside the CENTRAL DIRECTORY only (located via the EOCD): the
+    /// exported manifest's own skipped list also mentions the name, so a
+    /// whole-file count would count content, not members.
+    #[test]
+    fn export_skips_a_planted_manifest_json_instead_of_duplicating_the_member() {
+        let user_data = temp_user_data("manifest-dup");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("real.log"), "0123456789").unwrap();
+        fs::write(logs.join("manifest.json"), "{\"planted\": true}").unwrap();
+
+        let destination =
+            std::env::temp_dir().join(format!("mfd-manifest-dup-{}.zip", crate::protocol::new_token()));
+        let report = export_logs_with(
+            &user_data,
+            &destination,
+            false,
+            ExportLimits {
+                max_members: EXPORT_MAX_MEMBERS,
+                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.files, vec!["real.log"], "{report:?}");
+        assert!(
+            report.skipped.iter().any(|entry| {
+                entry.name == "manifest.json" && entry.reason == "reserved_manifest_name"
+            }),
+            "the reserved name must be reported as skipped: {report:?}"
+        );
+
+        let archive = fs::read(&destination).unwrap();
+        let eocd = archive
+            .windows(4)
+            .rposition(|w| w == [0x50, 0x4b, 0x05, 0x06])
+            .expect("EOCD must exist");
+        let cd_size = u32::from_le_bytes([
+            archive[eocd + 12],
+            archive[eocd + 13],
+            archive[eocd + 14],
+            archive[eocd + 15],
+        ]) as usize;
+        let cd_offset = u32::from_le_bytes([
+            archive[eocd + 16],
+            archive[eocd + 17],
+            archive[eocd + 18],
+            archive[eocd + 19],
+        ]) as usize;
+        let central = &archive[cd_offset..cd_offset + cd_size];
+        assert_eq!(
+            central
+                .windows("manifest.json".len())
+                .filter(|w| w == b"manifest.json")
+                .count(),
+            1,
+            "exactly ONE central-directory entry may carry the manifest.json name"
+        );
+        // The exporter's own manifest must describe only the real member.
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&zip_member_bytes(&archive, "manifest.json")).unwrap();
+        let included: Vec<&str> = manifest["included"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(included, vec!["real.log"], "{manifest}");
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&destination);
+    }
+
+    /// The ancestor-swap TOCTOU on the export placement: the destination
+    /// was validated OUTSIDE the user-data root, but a same-user swap
+    /// (rename the parent + same-leaf symlink INTO the user-data root)
+    /// during the seconds-wide archive build redirects the staged pending
+    /// file — the placement-time re-verification must catch it, refuse
+    /// with DestinationInsideUserData, and remove the staged orphan.
+    /// The swapper fires 150ms in; the 300MB member set keeps the build
+    /// comfortably past that, so the hit is deterministic in practice.
+    #[test]
+    #[cfg(unix)]
+    fn export_refuses_a_mid_build_ancestor_swap_into_user_data() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let user_data = temp_user_data("ancestor-swap");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        // 150 × 1MB: enough staging work that the swap (which fires the
+        // moment the pending file APPEARS — a poll, not a timer) lands
+        // mid-write instead of after the placement re-verification.
+        let big = vec![b'x'; 1024 * 1024];
+        for i in 0..150 {
+            fs::write(logs.join(format!("member-{i:03}.log")), &big).unwrap();
+        }
+
+        let unique = format!("{}-{}", std::process::id(), crate::protocol::new_token());
+        let exports = std::env::temp_dir().join(format!("mfd-exports-{unique}"));
+        // Unique rename leaf: a fixed "exports-real" collides across
+        // concurrent test processes on one machine — one swapper's
+        // cleanup would rmtree another's staged-orphan home (round-11
+        // review P2).
+        let exports_real = exports.with_file_name(format!("exports-real-{unique}"));
+        fs::create_dir_all(&exports).unwrap();
+        let destination = exports.join("out.zip");
+
+        let (tx, rx) = mpsc::channel();
+        let swapper_exports = exports.clone();
+        let swapper_user_data = user_data.clone();
+        let swapper_unique = unique.clone();
+        let worker = std::thread::spawn(move || {
+            // Swap the parent the moment the staged pending file APPEARS
+            // (create_new runs before the archive write, so this is
+            // deterministically mid-call): rename away + same-leaf
+            // symlink into the user-data root. A hard 30s escape keeps a
+            // pathological stall a loud failure instead of a hang.
+            let pending_path = swapper_exports.join("out.zip.pending");
+            let started = std::time::Instant::now();
+            loop {
+                if pending_path.exists() {
+                    break;
+                }
+                if started.elapsed() > Duration::from_secs(30) {
+                    let _ = tx.send(());
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let renamed = swapper_exports
+                .with_file_name(format!("exports-real-{swapper_unique}"));
+            let _ = fs::remove_dir_all(&renamed);
+            fs::rename(&swapper_exports, &renamed).unwrap();
+            std::os::unix::fs::symlink(&swapper_user_data, &swapper_exports).unwrap();
+            let _ = tx.send(());
+        });
+        // The export runs CONCURRENTLY with the swapper: recv waits below,
+        // after the export, so the swap lands mid-call (the previous
+        // recv-first ordering let the swap complete before validation and
+        // passed vacuously through the validation-time refusal).
+        let result = export_logs_with(
+            &user_data,
+            &destination,
+            false,
+            ExportLimits {
+                max_members: EXPORT_MAX_MEMBERS,
+                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+            },
+        );
+
+        worker.join().unwrap();
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("the swapper must have signaled");
+        match result {
+            Err(ExportError::DestinationInsideUserData) => {}
+            other => panic!(
+                "the mid-build ancestor swap must be caught by the placement re-verification: {other:?}"
+            ),
+        }
+        // Panic-safe teardown of all three locations (the symlink form
+        // needs remove_file; remove_dir_all alone refuses links).
+        struct CleanupAll(Vec<std::path::PathBuf>);
+        impl Drop for CleanupAll {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = fs::remove_dir_all(path);
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+        let _cleanup = CleanupAll(vec![
+            user_data.clone(),
+            exports.clone(),
+            exports_real.clone(),
+        ]);
+
+        // The staged orphan inside the user-data root must be gone.
+        let orphans: Vec<_> = fs::read_dir(&user_data)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".pending") || name.ends_with(".zip"))
+            .collect();
+        assert!(
+            orphans.is_empty(),
+            "the redirected staging/placement must leave nothing behind: {orphans:?}"
+        );
+    }
+
+}

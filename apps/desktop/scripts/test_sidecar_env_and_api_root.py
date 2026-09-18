@@ -1028,3 +1028,40 @@ def test_node_child_env_strips_the_embedded_flag(monkeypatch):
     assert "mangaflow_desktop_embedded" not in env, (
         "a lowercase variant must be stripped with the same force"
     )
+
+
+def test_node_child_env_strips_the_node_and_loader_injection_names(monkeypatch):
+    """Beyond NODE_OPTIONS/NODE_PATH, node natively honors several more env
+    names at startup (TLS verify off, attacker CA, coverage file writes,
+    proxy semantics), and ld.so applies LD_PRELOAD/LD_AUDIT to the node
+    binary itself — all ride into the long-lived web child unless the
+    strip list names them. App wiring promoted by _apply_app_environment
+    (DATABASE_URL/STORAGE_ROOT/UPLOAD_ROOT/WEB_ORIGIN/MANGAFLOW_DISABLE_
+    DOTENV) is likewise a ride-along class (#800's EMBEDDED precedent)."""
+
+    import mangaflow_desktop_helper as helper  # noqa: E402  (sys.path set above)
+
+    seeded = [
+        "NODE_TLS_REJECT_UNAUTHORIZED",
+        "NODE_EXTRA_CA_CERTS",
+        "NODE_V8_COVERAGE",
+        "NODE_USE_ENV_PROXY",
+        "LD_PRELOAD",
+        "LD_AUDIT",
+        "DATABASE_URL",
+        "STORAGE_ROOT",
+        "UPLOAD_ROOT",
+        "WEB_ORIGIN",
+        "MANGAFLOW_DISABLE_DOTENV",
+        # lowercase variants must die through the case normalization too
+        "ld_preload",
+        "node_tls_reject_unauthorized",
+    ]
+    for name in seeded:
+        monkeypatch.setenv(name, "/evil/anchor")
+
+    scrubbed = helper._node_child_env()
+    surviving = [name for name in seeded if name in scrubbed]
+    assert surviving == [], (
+        f"injection/wiring names survived the strip list: {surviving}"
+    )

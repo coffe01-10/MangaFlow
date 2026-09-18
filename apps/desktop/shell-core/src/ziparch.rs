@@ -310,12 +310,17 @@ mod tests {
             &u16::MAX.to_le_bytes()
         );
 
+        // Silence the expected panic, but save the hook FIRST: restoring
+        // with take_hook() at the end would re-install the just-set silent
+        // hook and permanently silence every later panic's diagnostics in
+        // this process (found in adversarial review of #837).
+        let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let overflowed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut zip = ZipWriter::new();
             zip.add_file(&"n".repeat(u16::MAX as usize + 1), b"x", 0, 0);
         }));
-        std::panic::set_hook(std::panic::take_hook());
+        std::panic::set_hook(default_hook);
         assert!(overflowed.is_err(), "a name beyond the u16 field must fail loudly");
     }
 

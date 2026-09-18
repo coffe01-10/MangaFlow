@@ -172,6 +172,25 @@ def test_failed_venv_creation_propagates_before_the_stamp(tmp_path):
     assert "ENSURE_RC=3" in out, out
 
 
+def test_ensure_e2e_venv_refuses_zero_requirement_files(tmp_path):
+    # The misuse guard: with no requirement files the stamp computation's
+    # `cat "$@"` would read STDIN and hang the harness/CI forever. The
+    # guard must return a DISTINCT rc=2 with a named diagnosis instead.
+    done = subprocess.run(
+        ["bash", "-c",
+         f"source {_SCRIPT} && "
+         "if ensure_e2e_venv venv; then echo ENSURE_RC=0; "
+         "else echo ENSURE_RC=$?; fi"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert "ENSURE_RC=2" in done.stdout, done.stdout + done.stderr
+    assert "no requirement files given" in done.stderr, done.stderr
+
+
 def test_sourcing_the_runner_runs_nothing(tmp_path):
     # The source-guard: sourcing (as these tests do) must not run the main
     # body — a guard regression would exec pytest (this harness never
@@ -323,3 +342,96 @@ def test_runner_tees_the_last_run_log():
     assert "\nexec " not in script, (
         "the exec form would bypass the tee and lose the log on failure"
     )
+
+
+def test_venv_creation_falls_back_to_python_when_python3_is_absent(tmp_path):
+    # Windows python.org installs ship python.exe without a python3 alias:
+    # with python3 genuinely ABSENT from PATH (not merely failing), the
+    # creator must be `python` — a restricted-PATH harness plus a marker
+    # shim proves the fallback ran and the flow continued past creation.
+    rc, out = _run_harness_in(
+        tmp_path,
+        'mkdir -p shim bin && '
+        # The shim emulates `python -m venv <dir>` (argv: -m venv dir): it
+        # must actually create the directory, or the post-create stamp
+        # write fails for an unrelated reason. The printf format is shell-
+        # single-quoted so $3/$PWD reach the shim literally — the harness
+        # itself runs set -u and would expand (or reject) them first.
+        "printf '#!/bin/sh\\nmkdir -p \"$3\"\\n: > \"$PWD/python.used\"\\nexit 0\\n' > shim/python && "
+        'chmod +x shim/python && '
+        'for t in cat md5sum cut mkdir rm mv; do '
+        'ln -s "$(command -v $t)" "bin/$t"; done && '
+        'PATH="$PWD/shim:$PWD/bin"',
+        fake_pip_rc=0,
+    )
+    assert rc == 0, out
+    assert "ENSURE_RC=0" in out, out
+    assert (tmp_path / "python.used").exists(), (
+        f"the python fallback must have been the creator: {out}"
+    )
+    assert "PIP_CALLS=1" in out, (
+        f"the bootstrap must continue into the install after the fallback: {out}"
+    )
+
+
+def test_venv_creation_reports_127_when_neither_creator_exists(tmp_path):
+    # No python3 AND no python on a restricted PATH: the documented loud
+    # failure — a distinct 127, the remedy on stderr, and no stamp write
+    # (the next run must retry, not accept a half state).
+    rc, out = _run_harness_in(
+        tmp_path,
+        'mkdir -p bin && '
+        'for t in cat md5sum cut mkdir rm mv; do '
+        'ln -s "$(command -v $t)" "bin/$t"; done && '
+        'PATH="$PWD/bin"',
+        fake_pip_rc=0,
+    )
+    assert "ENSURE_RC=127" in out, out
+    assert "no python3/python on PATH" in out, out
+    assert "STAMP=MISSING" in out, out
+    assert rc == 0  # the harness itself reports via ENSURE_RC, exits 0
+
+
+def test_runner_rejects_pytest_selection_flags():
+    """The trailing "$@" on the pytest invocation must never carry
+    selection flags: `-k relay` would run a subset of the pinned contract
+    files, pipefail+tee would preserve pytest's 0, and the last-run log
+    would record a green full-contract run that never happened."""
+    script = _SCRIPT.read_text(encoding="utf-8")
+    for flag in ("-k", "-m", "--deselect", "--ignore", "-p", "--collect-only", "-x", "--maxfail", "--lf", "--ff"):
+        assert f"'{flag}'" in script or f'"{flag}"' in script, (
+            f"the selection-flag guard must refuse {flag!r}"
+        )
+    assert 'exit 2' in script, "the guard must fail loudly, not filter silently"
+
+
+def test_runner_rejects_a_selection_flag_end_to_end(tmp_path):
+    """Behavioral form: invoking the runner body's arg check with -k must
+    exit 2 with the diagnosis before pytest is ever spawned."""
+    probe = tmp_path / "argcheck.sh"
+    # Extract the guard loop verbatim from the shipped script so the pin
+    # tracks the real implementation instead of a copy.
+    lines = _SCRIPT.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("for arg in"))
+    end = next(i for i in range(start, len(lines)) if lines[i] == "done")
+    probe.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        + "\n".join(lines[start : end + 1])
+        + '\necho PYREACHED\n',
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        ["bash", str(probe), "-k", "relay"],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 2, done.stdout + done.stderr
+    assert "would silently shrink the contract run" in done.stderr, done.stderr
+    assert "PYREACHED" not in done.stdout, done.stdout
+    # A non-selection argument passes the guard untouched.
+    done = subprocess.run(
+        ["bash", str(probe), "--verbose-ok"],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0 and "PYREACHED" in done.stdout, done.stdout + done.stderr

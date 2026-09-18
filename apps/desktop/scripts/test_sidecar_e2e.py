@@ -1267,6 +1267,12 @@ def test_web_spawn_env_additions_are_exact():
         "HOSTNAME": "127.0.0.1",
         "MANGAFLOW_API_ORIGIN": f"http://127.0.0.1:{helper.WEB_RELAY_PORT}",
         "NODE_ENV": "production",
+        # The child's only legitimate egress is loopback: without an
+        # explicit NO_PROXY an ambient HTTPS_PROXY would route the baked
+        # rewrite target and API-origin fetches (cookies included)
+        # through a foreign proxy.
+        "NO_PROXY": "127.0.0.1,localhost",
+        "no_proxy": "127.0.0.1,localhost",
     }
 
     # Composed with the strip list: a MANGAFLOW_DESKTOP_* key surviving
@@ -1670,3 +1676,46 @@ def test_web_spawn_relay_thread_failure_sweeps_both_sockets(monkeypatch, tmp_pat
     assert web_sock.closed and relay.closed, (
         "both sockets must be closed in the downgrade arm"
     )
+
+
+def test_bind_web_port_sets_the_platform_option_and_listen_backlog(monkeypatch):
+    """The announced web port bind: loopback-only, ephemeral, listening
+    with a 128 backlog, and the platform-correct socket option
+    (SO_EXCLUSIVEADDRUSE on win32 — a SO_REUSEADDR binder could share the
+    WebView's port; SO_REUSEADDR on POSIX covers the session-relaunch
+    TIME_WAIT case). Pin via setsockopt/getsockopt observation on a real
+    socket."""
+
+    import importlib.util
+    import socket as socket_module
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_webport", str(HELPER)
+    )
+    helper_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper_module)
+
+    observed = {}
+    real_setsockopt = socket_module.socket.setsockopt
+
+    def spy_setsockopt(self, level, optname, value):
+        observed[optname] = value
+        return real_setsockopt(self, level, optname, value)
+
+    monkeypatch.setattr(socket_module.socket, "setsockopt", spy_setsockopt)
+
+    sock = helper_module._bind_web_port()
+    try:
+        host, port = sock.getsockname()
+        assert host == "127.0.0.1", "the announced port must bind loopback only"
+        assert port > 0, "the announced port must be ephemeral"
+        assert sock.getsockopt(
+            socket_module.SOL_SOCKET, socket_module.SO_ACCEPTCONN
+        ) != 0, "the socket must be listening with a backlog"
+    finally:
+        sock.close()
+
+    if sys.platform == "win32":
+        assert observed.get(socket_module.SO_EXCLUSIVEADDRUSE) == 1
+    else:
+        assert observed.get(socket_module.SO_REUSEADDR) == 1

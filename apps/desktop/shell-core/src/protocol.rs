@@ -479,8 +479,38 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
     let payload = serde_json::to_vec(record).map_err(|error| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
     })?;
-    std::fs::write(&pending, payload)?;
-    std::fs::rename(&pending, journal)
+    // Red team #824: the ownership journal is the durable record the
+    // teardown hotline depends on — mirror owned_processes.py and fsync the
+    // payload before the rename so a power loss cannot leave a zero-length
+    // or torn journal that mark_stopped would refuse (and the sweep would
+    // then keep) forever.
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&pending)?;
+        file.write_all(&payload)?;
+        file.sync_all()?;
+    }
+    let renamed = std::fs::rename(&pending, journal);
+    // Durability tail (#874 residual): the payload fsync above commits the
+    // BYTES, but the RENAME itself is a metadata change — on a power loss
+    // after the rename and before the directory metadata commits, the
+    // journal can revert to missing/prior, and missing/non-terminal
+    // journals are exactly what the stale-runtime sweep does not reclaim
+    // (the runtime dir leaks). Commit the directory entry too: open the
+    // parent and sync it (POSIX; the Windows equivalent FlushFileBuffers
+    // on a directory handle is NOT RUN). Best-effort — a directory that
+    // cannot be opened must not mask the successful publish.
+    #[cfg(unix)]
+    if renamed.is_ok() {
+        if let Ok(dir) = std::fs::File::open(journal.parent().unwrap_or(journal)) {
+            let _ = dir.sync_all();
+        }
+    }
+    renamed
 }
 
 /// Session-start sweep of stale runtime directories (#264).
@@ -2139,6 +2169,103 @@ mod tests {
         assert!(!stale.exists(), "a journal past the grace window must be swept");
 
         let _ = std::fs::remove_dir_all(&user_data);
+    }
+
+    /// A candidate runtime directory with NO journal at all must be kept:
+    /// read_journal_bounded returns None (the journal path does not exist),
+    /// and without a parsable terminal state the directory may belong to a
+    /// live session — the sweep has no evidence it is dead. Pins the
+    /// read-failure keep arm for the plain-missing case (the FIFO /
+    /// directory / symlink journal shapes have their own pins above).
+    #[test]
+    fn sweep_keeps_a_candidate_with_no_journal_at_all() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-nojournal-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        std::fs::create_dir_all(&user_data).unwrap();
+        let journalless = {
+            let dir = user_data
+                .join("runtime")
+                .join(format!("{RUNTIME_DIR_PREFIX}{}", "7".repeat(32)));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        assert!(!journalless.join(JOURNAL_NAME).exists());
+
+        // grace = 0: even without the age gate, a journal-less candidate
+        // is kept because its terminal state is unknown.
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+        assert!(
+            journalless.exists(),
+            "a candidate with no journal must be kept: it may be live"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
+    /// A link planted at the RUNTIME ROOT itself must short-circuit the
+    /// whole sweep (the #610 arm): the guard refuses the symlinked root
+    /// before any candidate is inspected, so nothing behind the link is
+    /// ever removed. The candidate-level planted-links pin
+    /// (sweep_never_removes_through_planted_links) covers links at
+    /// candidate names; this pins the root-level refusal they both
+    /// predate. POSIX-only (Unix symlink; the Windows junction form is
+    /// exercised by the candidate-level pin).
+    ///
+    /// NOT runtime_fixture: the fixture nests under a `runtime/` layer,
+    /// which would leave the sweep (iterating the link target's top
+    /// level) seeing only a non-candidate directory named "runtime" —
+    /// the pin would pass even with the root guard disabled. The
+    /// candidate sits at the TARGET TOP LEVEL so the only thing keeping
+    /// it alive is the root-link refusal itself.
+    #[test]
+    #[cfg(unix)]
+    fn sweep_skips_entirely_when_the_runtime_root_is_a_link() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-rootlink-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        // The real runtime content lives OUTSIDE user_data, linked in.
+        let outside = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-rootlink-target-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        let stale = {
+            let dir = outside.join(format!("{RUNTIME_DIR_PREFIX}{}", "a".repeat(32)));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(JOURNAL_NAME),
+                serde_json::json!({"version": 1, "token": "a".repeat(32), "state": "stopped"}).to_string(),
+            )
+            .unwrap();
+            dir
+        };
+        std::fs::create_dir_all(user_data.join("runtime").parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, user_data.join("runtime")).unwrap();
+
+        let result = sweep_runtime_dirs_with(&user_data, 0);
+
+        result.expect("the root-link refusal must not error");
+        assert!(
+            std::fs::symlink_metadata(user_data.join("runtime"))
+                .map(|m| m.is_symlink())
+                .unwrap_or(false),
+            "the planted root link must be left in place"
+        );
+        assert!(
+            stale.exists(),
+            "nothing behind the root link may be swept: the link is foreign media"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
 }
