@@ -86,7 +86,10 @@ public sealed class NativeBackend(string repository, string userData)
         }
         catch (Exception error)
         {
-            await StopAsync();
+            // #811: the host never reached READY. The default 40s graceful
+            // window is for a live session; a wedged boot that ignores stdin
+            // would freeze reconnect ~75-85s. Use a short grace then escalate.
+            await StopAsync(BootFailureGrace);
             throw WrapStartupFailure(error);
         }
     }
@@ -97,6 +100,11 @@ public sealed class NativeBackend(string repository, string userData)
     /// messages through verbatim, so the wrap reaches the UI as-is.</summary>
     internal const string StartupTimeoutText =
         "本地服务启动超时：等待服务就绪超过 35 秒。请点击重新连接；若反复出现请导出诊断日志排查。";
+
+    /// <summary>#811: graceful window used when StartAsync fails before READY.
+    /// Short enough that a wedged host is killed promptly; long enough for a
+    /// cooperative stdin-EOF exit on a host that did start.</summary>
+    internal static readonly TimeSpan BootFailureGrace = TimeSpan.FromSeconds(3);
 
     // Pure wrap so off-process checks can pin the mapping: only the startup
     // timeout gets the dedicated copy, every other startup failure keeps its
