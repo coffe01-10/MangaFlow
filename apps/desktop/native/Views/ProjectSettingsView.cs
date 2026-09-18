@@ -63,6 +63,18 @@ public sealed partial class ProjectSettingsView : WorkspaceView
         catch (OperationCanceledException) { }
     }
 
+    /// <summary>
+    /// #808: 重连拒绝弃稿时的保真激活——项目设置表单的草稿在控件里，只重绑
+    /// 上下文（新 ApiClient），不做全量 LoadAsync（其首行 body.Children.Clear()
+    /// 会把拒绝弃稿的表单静默清空）。
+    /// </summary>
+    internal void ActivatePreservingDrafts(WorkspaceContext context)
+    {
+        base.Activate(context);
+        saveButton.Click -= Save;
+        saveButton.Click += Save;
+    }
+
     private async Task LoadAsync()
     {
         body.Children.Clear();

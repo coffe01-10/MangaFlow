@@ -82,6 +82,11 @@ if (args.Contains("--issue441"))
     NativeIssue441Checks.Run();
     return 0;
 }
+if (args.Contains("--p2cluster"))
+{
+    NativeIssueP2ClusterChecks.Run();
+    return 0;
+}
 if (args.Contains("--issue426"))
 {
     NativeIssue426Checks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-issue426"));
