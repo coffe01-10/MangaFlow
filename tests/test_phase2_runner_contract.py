@@ -56,6 +56,26 @@ def test_controller_forwards_mixed_encoding_log_as_raw_bytes():
     assert target.buffer.flushed
 
 
+def test_controller_cli_timeout_argument_reaches_the_runner(monkeypatch):
+    """`run(mode, timeout=...)` already accepts a timeout (default 2400s), but
+    the CLI never exposed it — a hung acceptance run could only be cut down by
+    editing the script. The argument must parse as float and reach run()."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import run_e2e_owned as controller
+
+    captured = {}
+
+    def fake_run(mode, timeout=2400):
+        captured["mode"] = mode
+        captured["timeout"] = timeout
+        return 0
+
+    monkeypatch.setattr(controller, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["run_e2e_owned.py", "playwright", "--timeout", "600"])
+    assert controller.main() == 0
+    assert captured == {"mode": "playwright", "timeout": 600.0}
+
+
 def test_phase2_runner_failure_paths_use_the_documented_node_resolver():
     """The subprocess must resolve node exactly like run_e2e_owned.py does:
     MANGAFLOW_NODE first, then PATH (`shutil.which`). A resolution drift

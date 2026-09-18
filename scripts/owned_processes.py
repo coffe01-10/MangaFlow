@@ -363,7 +363,14 @@ class OwnedProcessTree:
             if self.api.ResumeThread(thread) == 0xFFFFFFFF:
                 raise ctypes.WinError(ctypes.get_last_error())
         except BaseException:
-            child.terminate()
+            # The cleanup must never mask WHY we got here: if the child
+            # died on its own in the failure window, terminate() raises
+            # ERROR_ACCESS_DENIED and would replace the original
+            # AssignProcessToJobObject/ResumeThread error instead of it.
+            try:
+                child.terminate()
+            except OSError:
+                pass
             child.wait(timeout=5)
             raise
         finally:

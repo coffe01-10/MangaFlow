@@ -115,7 +115,7 @@ ProviderUsageReconciliation
 
 ### 2.8 幂等、唯一键、并发与旧 Worker
 
-- 幂等：`dispatch_no=MAX+1` 只是序号分配，不是业务幂等。begin 必须接收稳定 `dispatch_request_id` 并建立唯一约束；相同派发重放返回既有 attempt。对账 POST 必须携带 idempotency_key。SQLite 使用 `ON CONFLICT DO NOTHING`/显式查询，PostgreSQL 使用对应 dialect；禁止把 `INSERT OR IGNORE` 写成跨库契约。
+- 幂等：`dispatch_no=MAX+1` 只是序号分配，不是业务幂等。begin 必须接收稳定 `dispatch_request_id` 并建立唯一约束；相同派发重放返回既有 attempt（派发身份 = `(job_id, attempt_count, dispatch 序号, lease_owner, connection/provider, 模型, 主/备路)` 哈希——`lease_owner` 按认领唯一，手动重试把 `attempt_count` 归零后新派发不得命中原运行的审计行；重放去重只匹配 `outcome=NULL` 的未终态行）。对账 POST 必须携带 idempotency_key。SQLite 使用 `ON CONFLICT DO NOTHING`/显式查询，PostgreSQL 使用对应 dialect；禁止把 `INSERT OR IGNORE` 写成跨库契约。
 - 并发：begin/finalize 的独立会话事务（`model_call_audit.py:47,93`）保持；finalize 是**按 attempt_id 的单行 UPDATE**，无读改写竞态；dispatch_no 分配依赖唯一约束失败重取（现状注释 :42-44）。
 - 旧 Worker：全部新增列可空，旧 finalize 不写新列 → `usage_status` 由回填/读取端推导，行为向后兼容（docstring :87-91 已定义"未提供不写入"语义）。
 

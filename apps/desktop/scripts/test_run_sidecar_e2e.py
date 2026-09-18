@@ -18,14 +18,36 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from _bash_resolve import resolve_posix_bash
+
 _SCRIPT = Path(__file__).with_name("run-sidecar-e2e.sh").resolve()
 _REQ = Path(__file__).resolve().parents[2] / "api" / "requirements.txt"
+
+# Every pin here shells a bash script; a PATH-order `bash` that is the WSL
+# stub (no distro installed) fails every one of them for an environment
+# reason — run them only through a probe-verified POSIX bash (#839).
+BASH = resolve_posix_bash()
+pytestmark = pytest.mark.skipif(
+    BASH is None,
+    reason="no POSIX-capable bash on this host (the PATH-order bash may be "
+    "the WSL stub); the runner-script pins need a real bash",
+)
 _REQ_DEV = Path(__file__).resolve().parents[2] / "api" / "requirements-dev.txt"
+
+
+def _bash(p: Path) -> str:
+    """Quoted forward-slash spelling for paths embedded in a bash -c body:
+    on a Windows-hosted venv the bare str(path) hands bash backslash paths
+    whose escapes get eaten before cd/source resolve them (the same pitfall
+    as test_build_frontend_static_gate._run_gate; POSIX is unchanged)."""
+    return f'"{p.as_posix()}"'
 
 
 def _requirements_hash() -> str:
     hashed = subprocess.run(
-        ["bash", "-c", f"cat {_REQ} {_REQ_DEV} | md5sum | cut -d' ' -f1"],
+        [BASH, "-c",f"cat {_bash(_REQ)} {_bash(_REQ_DEV)} | md5sum | cut -d' ' -f1"],
         capture_output=True,
         text=True,
         check=True,
@@ -37,8 +59,8 @@ def _run_harness_in(workdir: Path, setup: str, fake_pip_rc: int = 0,
                     env: dict[str, str] | None = None) -> tuple[int, str]:
     harness = f"""
 set -euo pipefail
-cd {workdir}
-source {_SCRIPT}
+cd {_bash(workdir)}
+source {_bash(_SCRIPT)}
 VENV="$1"
 CNT="pip.calls.$$"
 install_e2e_requirements() {{
@@ -46,7 +68,7 @@ install_e2e_requirements() {{
   return {fake_pip_rc}
 }}
 {setup}
-if ensure_e2e_venv "$VENV" {_REQ} {_REQ_DEV}; then
+if ensure_e2e_venv "$VENV" {_bash(_REQ)} {_bash(_REQ_DEV)}; then
   echo "ENSURE_RC=0"
 else
   echo "ENSURE_RC=$?"
@@ -55,7 +77,7 @@ echo "PIP_CALLS=$(cat "$CNT" 2>/dev/null || echo 0)"
 echo "STAMP=$(cat "$VENV/.mangaflow-bootstrap" 2>/dev/null || echo MISSING)"
 """
     done = subprocess.run(
-        ["bash", "-c", harness, "harness", str(workdir / "venv")],
+        [BASH, "-c",harness, "harness", (workdir / "venv").as_posix()],
         capture_output=True,
         text=True,
         env={**os.environ, **(env or {})},
@@ -65,11 +87,16 @@ echo "STAMP=$(cat "$VENV/.mangaflow-bootstrap" 2>/dev/null || echo MISSING)"
 
 def test_fresh_venv_installs_and_stamps(tmp_path):
     rc, out = _run_harness_in(tmp_path, "true")
+    venv = tmp_path / "venv"
     assert rc == 0, out
     assert "ENSURE_RC=0" in out, out
     assert "PIP_CALLS=1" in out, out
-    assert f"STAMP={_requirements_hash()}" in out, out
-    assert (tmp_path / "venv" / "bin" / "python").exists(), out
+    assert f"STAMP={_requirements_hash()}" in out
+    # Layout-agnostic like resolve_venv_python: POSIX creators build
+    # bin/python, Windows creators build Scripts/python.exe.
+    assert (venv / "bin" / "python").exists() or (
+        venv / "Scripts" / "python.exe"
+    ).exists(), out
 
 
 def test_stamped_venv_skips_the_install(tmp_path):
@@ -141,10 +168,11 @@ def test_install_builds_one_r_flag_per_requirements_file(tmp_path):
     req_b.write_text("b==2\n", encoding="utf-8")
     done = subprocess.run(
         [
-            "bash", "-c",
+            BASH, "-c",
             "source {script}\n"
             "install_e2e_requirements {venv} {a} {b}\n".format(
-                script=_SCRIPT, venv=stub_venv.parent, a=req_a, b=req_b
+                script=_bash(_SCRIPT), venv=_bash(stub_venv.parent),
+                a=_bash(req_a), b=_bash(req_b)
             ),
         ],
         capture_output=True,
@@ -152,7 +180,7 @@ def test_install_builds_one_r_flag_per_requirements_file(tmp_path):
         check=True,
     )
     assert "install -q -r" in done.stdout, done.stdout
-    assert f"-r {req_a} -r {req_b}" in done.stdout, done.stdout
+    assert f"-r {req_a.as_posix()} -r {req_b.as_posix()}" in done.stdout, done.stdout
 
 
 def test_failed_venv_creation_propagates_before_the_stamp(tmp_path):
@@ -163,8 +191,11 @@ def test_failed_venv_creation_propagates_before_the_stamp(tmp_path):
     rc, out = _run_harness_in(
         tmp_path,
         # A failing venv creator earlier in PATH (coreutils stay reachable
-        # so the harness itself still runs): `python3 -m venv` exits 3.
-        'mkdir -p shim && printf "#!/bin/sh\\nexit 3\\n" > shim/python3 '
+        # so the harness itself still runs): it must pass the `-c ''`
+        # capability probe like a real interpreter, then fail the actual
+        # `python3 -m venv` with exit 3.
+        'mkdir -p shim && '
+        "printf '#!/bin/sh\\n[ \"$1\" = -m ] && exit 3\\nexit 0\\n' > shim/python3 "
         '&& chmod +x shim/python3 && PATH="$PWD/shim:$PATH"',
         fake_pip_rc=0,
     )
@@ -177,8 +208,8 @@ def test_ensure_e2e_venv_refuses_zero_requirement_files(tmp_path):
     # `cat "$@"` would read STDIN and hang the harness/CI forever. The
     # guard must return a DISTINCT rc=2 with a named diagnosis instead.
     done = subprocess.run(
-        ["bash", "-c",
-         f"source {_SCRIPT} && "
+        [BASH, "-c",
+         f"source {_bash(_SCRIPT)} && "
          "if ensure_e2e_venv venv; then echo ENSURE_RC=0; "
          "else echo ENSURE_RC=$?; fi"],
         capture_output=True,
@@ -198,7 +229,7 @@ def test_sourcing_the_runner_runs_nothing(tmp_path):
     # ran its whole body on source, which is exactly what made it
     # untestable.
     done = subprocess.run(
-        ["bash", "-c", f"source {_SCRIPT} && echo SOURCED_OK"],
+        [BASH, "-c",f"source {_bash(_SCRIPT)} && echo SOURCED_OK"],
         capture_output=True,
         text=True,
         env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
@@ -260,26 +291,26 @@ def test_concurrent_bootstraps_install_exactly_once(tmp_path):
     cnt = tmp_path / "pip.calls"
     harness = f"""
 set -euo pipefail
-cd {tmp_path}
-source {_SCRIPT}
+cd {_bash(tmp_path)}
+source {_bash(_SCRIPT)}
 install_e2e_requirements() {{
   sleep 2
-  echo $(( $(cat {cnt} 2>/dev/null || echo 0) + 1 )) > {cnt}
+  echo $(( $(cat {_bash(cnt)} 2>/dev/null || echo 0) + 1 )) > {_bash(cnt)}
 }}
-if ensure_e2e_venv {venv} {_REQ} {_REQ_DEV}; then
+if ensure_e2e_venv {_bash(venv)} {_bash(_REQ)} {_bash(_REQ_DEV)}; then
   echo "ENSURE_RC=0"
 else
   echo "ENSURE_RC=$?"
 fi
 """
     first = subprocess.Popen(
-        ["bash", "-c", harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        [BASH, "-c",harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     import time
 
     time.sleep(0.5)  # let the first runner take the lock and start installing
     second = subprocess.Popen(
-        ["bash", "-c", harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        [BASH, "-c",harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     o1, e1 = first.communicate()
     o2, e2 = second.communicate()
@@ -300,7 +331,11 @@ def test_stale_bootstrap_lock_is_broken_and_install_proceeds(tmp_path):
 
     lock = tmp_path / "venv.bootstrap-lock"
     lock.mkdir(parents=True)
-    subprocess.run(["touch", "-d", "31 minutes ago", str(lock)], check=True)
+    # No touch.exe on Windows: the mtime probe rides the same bash as the
+    # harness (and the lock path gets the forward-slash spelling).
+    subprocess.run(
+        [BASH, "-c",f"touch -d '31 minutes ago' {_bash(lock)}"], check=True
+    )
 
     rc, out = _run_harness_in(tmp_path, "true")
     assert rc == 0, out
@@ -344,24 +379,29 @@ def test_runner_tees_the_last_run_log():
     )
 
 
-def test_venv_creation_falls_back_to_python_when_python3_is_absent(tmp_path):
-    # Windows python.org installs ship python.exe without a python3 alias:
-    # with python3 genuinely ABSENT from PATH (not merely failing), the
-    # creator must be `python` — a restricted-PATH harness plus a marker
-    # shim proves the fallback ran and the flow continued past creation.
+def test_venv_creation_falls_back_when_python3_is_unusable(tmp_path):
+    # Windows python.org installs ship python.exe without a python3 alias,
+    # and the WindowsApps python3 stub is worse: it EXISTS on PATH but
+    # exits 49 on every invocation. Either way the creator selection must
+    # reject python3 and fall back to python — a probe-failing python3
+    # shim plus a marker python shim proves the fallback ran and the flow
+    # continued past creation. (Prepending shims beats a restricted PATH:
+    # a git-bash `ln -s` copies the exe, and the copy cannot load
+    # msys-2.0.dll, so symlinked coreutils exec with 127 there.)
     rc, out = _run_harness_in(
         tmp_path,
-        'mkdir -p shim bin && '
-        # The shim emulates `python -m venv <dir>` (argv: -m venv dir): it
-        # must actually create the directory, or the post-create stamp
-        # write fails for an unrelated reason. The printf format is shell-
-        # single-quoted so $3/$PWD reach the shim literally — the harness
-        # itself runs set -u and would expand (or reject) them first.
-        "printf '#!/bin/sh\\nmkdir -p \"$3\"\\n: > \"$PWD/python.used\"\\nexit 0\\n' > shim/python && "
-        'chmod +x shim/python && '
-        'for t in cat md5sum cut mkdir rm mv; do '
-        'ln -s "$(command -v $t)" "bin/$t"; done && '
-        'PATH="$PWD/shim:$PWD/bin"',
+        'mkdir -p shim && '
+        "printf '#!/bin/sh\\nexit 49\\n' > shim/python3 && chmod +x shim/python3 && "
+        # The python shim emulates the two shapes the bootstrap calls it
+        # in: the `-c ''` capability probe (must exit 0 like any real
+        # interpreter) and `python -m venv <dir>` (argv: -m venv dir),
+        # which must actually create the directory or the post-create
+        # stamp write fails for an unrelated reason. The printf format is
+        # shell-single-quoted so $3/$PWD reach the shim literally — the
+        # harness itself runs set -u and would expand (or reject) them
+        # first.
+        "printf '#!/bin/sh\\nif [ \"$1\" = -m ]; then mkdir -p \"$3\"; : > \"$PWD/python.used\"; fi\\nexit 0\\n' > shim/python && "
+        'chmod +x shim/python && PATH="$PWD/shim:$PATH"',
         fake_pip_rc=0,
     )
     assert rc == 0, out
@@ -374,16 +414,17 @@ def test_venv_creation_falls_back_to_python_when_python3_is_absent(tmp_path):
     )
 
 
-def test_venv_creation_reports_127_when_neither_creator_exists(tmp_path):
-    # No python3 AND no python on a restricted PATH: the documented loud
-    # failure — a distinct 127, the remedy on stderr, and no stamp write
+def test_venv_creation_reports_127_when_neither_creator_is_usable(tmp_path):
+    # No usable creator on PATH — absent, or present-but-broken like the
+    # WindowsApps stubs (exit 49 on every call): the documented loud
+    # failure is a distinct 127, the remedy on stderr, and no stamp write
     # (the next run must retry, not accept a half state).
     rc, out = _run_harness_in(
         tmp_path,
-        'mkdir -p bin && '
-        'for t in cat md5sum cut mkdir rm mv; do '
-        'ln -s "$(command -v $t)" "bin/$t"; done && '
-        'PATH="$PWD/bin"',
+        'mkdir -p shim && '
+        "printf '#!/bin/sh\\nexit 49\\n' > shim/python3 && chmod +x shim/python3 && "
+        "printf '#!/bin/sh\\nexit 49\\n' > shim/python && chmod +x shim/python && "
+        'PATH="$PWD/shim:$PATH"',
         fake_pip_rc=0,
     )
     assert "ENSURE_RC=127" in out, out
@@ -396,18 +437,24 @@ def test_runner_rejects_pytest_selection_flags():
     """The trailing "$@" on the pytest invocation must never carry
     selection flags: `-k relay` would run a subset of the pinned contract
     files, pipefail+tee would preserve pytest's 0, and the last-run log
-    would record a green full-contract run that never happened."""
+    would record a green full-contract run that never happened. Both the
+    spaced and the ATTACHED spellings pytest accepts must be covered."""
     script = _SCRIPT.read_text(encoding="utf-8")
-    for flag in ("-k", "-m", "--deselect", "--ignore", "-p", "--collect-only", "-x", "--maxfail", "--lf", "--ff"):
-        assert f"'{flag}'" in script or f'"{flag}"' in script, (
-            f"the selection-flag guard must refuse {flag!r}"
+    for flag in ("-k", "-m", "--deselect", "--ignore", "-p",
+                 "--collect-only", "-x", "--maxfail", "--lf", "--ff"):
+        assert flag in script, f"the selection-flag guard must refuse {flag!r}"
+    # argparse accepts `--opt=value`; a bare-token case lets those through.
+    for attached in ("-k*", "-m*", "-p*", "--deselect=*", "--ignore=*", "--maxfail=*"):
+        assert attached in script, (
+            f"the guard must also refuse the attached form {attached!r}"
         )
-    assert 'exit 2' in script, "the guard must fail loudly, not filter silently"
+    assert "exit 2" in script, "the guard must fail loudly, not filter silently"
 
 
 def test_runner_rejects_a_selection_flag_end_to_end(tmp_path):
-    """Behavioral form: invoking the runner body's arg check with -k must
-    exit 2 with the diagnosis before pytest is ever spawned."""
+    """Behavioral form: invoking the runner body's arg check with each
+    shape — spaced and attached — must exit 2 with the diagnosis before
+    pytest is ever spawned."""
     probe = tmp_path / "argcheck.sh"
     # Extract the guard loop verbatim from the shipped script so the pin
     # tracks the real implementation instead of a copy.
@@ -419,18 +466,30 @@ def test_runner_rejects_a_selection_flag_end_to_end(tmp_path):
         + "\n".join(lines[start : end + 1])
         + '\necho PYREACHED\n',
         encoding="utf-8",
+        newline="\n",
     )
-    done = subprocess.run(
-        ["bash", str(probe), "-k", "relay"],
-        capture_output=True,
-        text=True,
-    )
-    assert done.returncode == 2, done.stdout + done.stderr
-    assert "would silently shrink the contract run" in done.stderr, done.stderr
-    assert "PYREACHED" not in done.stdout, done.stdout
+    refused = [
+        ["-k", "relay"],
+        ["--ignore=apps/desktop/scripts/test_sidecar_e2e.py"],
+        ["-kexpr"],
+        ["--deselect=tests::test_x"],
+        ["--maxfail=1"],
+        ["--lf"],
+    ]
+    for argv in refused:
+        done = subprocess.run(
+            [BASH, str(probe), *argv],
+            capture_output=True,
+            text=True,
+        )
+        assert done.returncode == 2, f"{argv}: {done.stdout + done.stderr}"
+        assert "would silently shrink the contract run" in done.stderr, (
+            f"{argv}: {done.stderr}"
+        )
+        assert "PYREACHED" not in done.stdout, f"{argv}: {done.stdout}"
     # A non-selection argument passes the guard untouched.
     done = subprocess.run(
-        ["bash", str(probe), "--verbose-ok"],
+        [BASH, str(probe), "--verbose-ok"],
         capture_output=True,
         text=True,
     )

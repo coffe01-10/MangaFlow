@@ -756,4 +756,12 @@ reset 至 origin/master 1386570（含 ledger-39 谱系）；flock 时代 CI 红�
 
 ---
 
+**§40 补充（夜班 07:50 段）**：#884/#885/#886/#887 批次审阅（生产 414+/17-）：
+- **D5 静态 API 证据过滤器的 userinfo-origin 绕过修复**（night 代理）：`http://127.0.0.1:8000@evil.example/…` 字符串前缀匹配已验证 origin——跨源调用满足"直连 API"门而中继无流量。改 origin 相等判定（与 plan-B 分支同型）。**同类即我 #537 authority-gate 的用户信息注入族**——该消费者（D5 证据层）此前未覆盖，夜班补齐。
+- **x-nonce 死头移除**（我此前 cosmetic 观察的落地）+ 注释精确化（CSP 请求头机制）。
+- **manifest.json 碰撞钉**：日志树内种植同名文件会被 exporter 归档成同中心目录双条目——现跳过并报 reserved_manifest_name。
+- **wait-for-health 预算钉** + runner 拒绝 selection flags。
+
+---
+
 **§41 补充二（08:10 段）**：**b8608f8 全量认证**——首跑 2 FAILED 为**新鲜度门正确工作**：web-standalone 构建于旧 apps/web 树（7777b13），#885 的 proxy.ts 清理推进树到 b3e1c22，门按 #461 契约拒绝陈旧包并指名重跑命令。重建 bundle 后 **180 passed, 2 skipped**（81s；含 #884-#887 全部新钉 + plan-B 全活跃）。shell-core **180/180**。负向探针：新鲜度门拒绝与 #734 的"内部不一致导出"互补——前者管陈旧、后者管半写；两者都需要 #736 提议的溯源戳/自检来在**构建期**拦截（D5/浏览器是运行期验收）。

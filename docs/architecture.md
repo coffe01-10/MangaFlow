@@ -85,7 +85,7 @@ Windows 原生客户端位于 `apps/desktop/native`，以 WPF 重绘工作台界
 - `usage-ledger`：HTTP/CLI 逐次派发计量、版本化成本估算、资产输出挂接与人工账单对账。
 - `inspection/repair`：文字、说话人、角色、服装、道具和连续性检查及分级修复；文字识别是人工校对辅助项，不自动触发付费修图，采用时需显式人工确认。
 - `library/exports`：批次素材库、PNG、PDF、项目 JSON 和素材清单。
-- `director`：自然语言导演命令 journal（V02-40）。模型只产出受 schema 约束的 envelope；服务端确定性校验、预览 diff、逐条接受/拒绝后，复用现有分镜/场景写入路径落库。命令与业务变更同事务；`command_id` 幂等。`regenerate_region` 在 mask/父候选缺失时 fail-closed，不发起付费调用。候选血缘表留给 V02-42。
+- `director`：自然语言导演命令 journal（V02-40）。模型只产出受 schema 约束的 envelope；服务端确定性校验、预览 diff、逐条接受/拒绝后，复用现有分镜/场景写入路径落库。命令与业务变更同事务；`command_id` 幂等。`regenerate_region` 在 mask/父候选缺失时 fail-closed，不发起付费调用。派生候选血缘由 `candidate_lineage` 承载（V02-42B 已实现，见 data-model.md）。
 
 所有 AI 创建接口返回 `202 + job_id`；普通查询只读数据库和存储，不触发模型调用。
 
@@ -109,6 +109,8 @@ flowchart LR
 
 修复自动尝试最多三次。失败任务互相隔离，重试创建新的调度尝试但保留原始审计记录。
 
+**租约回收宽限（#130 双花围栏）**：租约过期只证明「一个租约周期内没有续租」，不证明执行器已死（付费调用可合法运行远超租约时长）。janitor（`recover_pending_jobs`）只在过期冷过宽限窗 `max(2×心跳间隔, 租约/3)`（默认 60s；`job_lease_reclaim_grace_seconds` 可覆盖，0 禁用）后收回；心跳续租按 ownership 围栏（过期但未收回的租约仍可复活续期），完成/进度 CAS 一律以 `lease_owner` 仲裁。CLI 通道的取消探针（`job_service.cli_cancel_probe_should_stop`）遵守同一契约：只在显式取消、owner 易主、或过期冷过整个宽限窗（墙钟超时路径）时终止付费子进程，不得在租约刚过期时击杀本可跑完并赢得完成 CAS 的调用。
+
 RQ 并发名额等待在当前 Worker 的原队列与连接上创建延迟任务，使用不含冒号的独立调度 ID，数据库任务 ID 保持不变，等待不增加实际尝试次数。重新调度按剩余尝试次数保留重试策略；投递失败交给 RQ 错误处理，不在短生命周期的任务子进程内偷偷切换到本地线程。LOCAL 执行器继续使用自身的退避循环，不额外投递 Redis。
 
 Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共用 `.env` 配置，自动启用调度器，并在 Windows 使用 `SpawnWorker`。
@@ -121,7 +123,7 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 ## 6. 动态分页与逐页生成
 
-原作先拆为带字符区间和哈希的 `SourceSegment`，再映射到 Scene、Beat、剧本和 `MangaPage`。容量估算使用每页 3–5 格、最多 8 个气泡，中文对白/旁白软上限 120 字、硬上限 180 字；溢出时继续拆页，不压缩或删除情节。格内人物用 `VISIBLE/OFFSCREEN/MENTIONED` 表示，道具独立保存；没有实际出镜人物的场景页是合法页面。任何来源片段未映射、已有实际出镜人物却缺参考、场景服装缺失或正式风格未确认时，统一 readiness 服务拒绝候选请求。
+原作先拆为带字符区间和哈希的 `SourceSegment`，再映射到 Scene、Beat、剧本和 `MangaPage`。容量估算使用每页 3–8 格（`PageLayoutUpdate.panel_count` 上限，见分镜布局契约 §14）、最多 8 个气泡，中文对白/旁白软上限 120 字、硬上限 180 字；溢出时继续拆页，不压缩或删除情节。格内人物用 `VISIBLE/OFFSCREEN/MENTIONED` 表示，道具独立保存；没有实际出镜人物的场景页是合法页面。任何来源片段未映射、已有实际出镜人物却缺参考、场景服装缺失或正式风格未确认时，统一 readiness 服务拒绝候选请求。
 
 页面规划可以一次完成，但图片只允许逐页生成。`GenerationBatch` 是同一页的一轮抽卡会话，`PageCandidate` 是一次模型调用的候选。收藏和暂选互相独立；暂选只表达人工选择，不代表成品。只有候选图存在、分镜版本已确认、视觉检查通过三项同时成立，页面才进入生产通过状态并成为下一页的连续性输入。默认 DAG 终点是单页成品；整章导出使用独立 DAG，并要求章节内所有页面生产通过。
 

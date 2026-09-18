@@ -193,6 +193,15 @@ def run(mode: str, timeout: float = 2400) -> int:
                     forward_log_chunk(chunk)
             time.sleep(0.1)
         code = child.wait()
+        # The loop above exits as soon as the child is reaped; the final
+        # flush (often the Playwright failure summary) is still sitting in
+        # the log. Drain it so the console shows what the report file shows.
+        if log.exists():
+            with log.open("rb") as stream:
+                stream.seek(offset)
+                chunk = stream.read()
+            if chunk:
+                forward_log_chunk(chunk)
         if not result.exists():
             raise RuntimeError(f"Acceptance runner exited {code} without its result")
         summary["exit_code"] = json.loads(result.read_text(encoding="utf-8"))["exit_code"]
@@ -202,7 +211,18 @@ def run(mode: str, timeout: float = 2400) -> int:
         summary["errors"].append(f"run: {type(exc).__name__}: {exc}")
     finally:
         code = finish(runtime, summary, report, log=log)
-    print(f"OWNED_ACCEPTANCE_REPORT={report}", flush=True)
+    # The report path can contain non-ASCII (this repo's directory does);
+    # a console or redirect whose encoding lacks those code points must
+    # not crash the runner AFTER the run already finished. Same raw-bytes
+    # rule as forward_log_chunk: the outer terminal owns display.
+    try:
+        print(f"OWNED_ACCEPTANCE_REPORT={report}", flush=True)
+    except UnicodeEncodeError:
+        fallback = f"OWNED_ACCEPTANCE_REPORT={report}".encode(
+            "ascii", "backslashreplace"
+        )
+        sys.stdout.buffer.write(fallback + b"\n")
+        sys.stdout.buffer.flush()
     return code
 
 
@@ -212,6 +232,7 @@ def main() -> int:
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--token")
     parser.add_argument("--port", type=int)
+    parser.add_argument("--timeout", type=float, default=2400)
     args = parser.parse_args()
     if args.mode == "verify":
         runtime = assigned_runtime()
@@ -225,7 +246,7 @@ def main() -> int:
             parser.error("recover requires the exact owned directory and token")
         recover_stopped_tree(args.directory, args.token)
         return 0
-    return run(args.mode)
+    return run(args.mode, timeout=args.timeout)
 
 
 if __name__ == "__main__":

@@ -72,10 +72,14 @@ _ensure_e2e_venv_locked() {
     # before any stamp write either way.
     # Windows python.org installs ship `python.exe`/`py.exe` without a
     # `python3` alias (start-desktop.cmd's audience): fall back before
-    # failing the documented bootstrap path (#831).
-    if command -v python3 >/dev/null 2>&1; then
+    # failing the documented bootstrap path (#831). Existence is not
+    # capability: the WindowsApps `python3` stub satisfies command -v but
+    # exits 49 on every invocation, failing the bootstrap with a bare 49
+    # before the python fallback could run — so each creator is probed
+    # with `-c ''` before it is trusted with the venv.
+    if command -v python3 >/dev/null 2>&1 && python3 -c '' >/dev/null 2>&1; then
       python3 -m venv "$venv" || return $?
-    elif command -v python >/dev/null 2>&1; then
+    elif command -v python >/dev/null 2>&1 && python -c '' >/dev/null 2>&1; then
       python -m venv "$venv" || return $?
     else
       echo "run-sidecar-e2e: no python3/python on PATH to create the venv" >&2
@@ -169,10 +173,13 @@ E2E_LOG_PATH="$DESKTOP_ROOT/dist/e2e-last-run.log"
 # Selection flags are refused, not passed through: `-k relay` would run a
 # SUBSET of the pinned files, pipefail+tee would preserve pytest's 0, and
 # the last-run log would record a green full-contract run that never
-# happened — the same falsification an unlisted file would cause.
+# happened — the same falsification an unlisted file would cause. Every
+# pattern is anchored with `*` too: pytest accepts the attached form
+# (`--ignore=<path>`, `--deselect=<nodeid>`, `--maxfail=1`, `-kexpr`),
+# and a bare-token match would let those shrink the run untouched.
 for arg in "$@"; do
   case "$arg" in
-    '-k'|'-m'|'--deselect'|'--ignore'|'-p'|'--co'|'--collect-only'|'-x'|'--maxfail'|'--lf'|'--ff')
+    -k|-k*|-m|-m*|--deselect|--deselect=*|--ignore|--ignore=*|-p|-p*|--co|--collect-only|-x|--maxfail|--maxfail=*|--lf|--ff)
       echo "run-sidecar-e2e: selection flag '$arg' would silently shrink the contract run" >&2
       exit 2
       ;;
@@ -190,6 +197,8 @@ pytest_exit=0
   "$DESKTOP_ROOT/scripts/test_guard_frontend_dist.py" \
   "$DESKTOP_ROOT/scripts/test_run_sidecar_e2e.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_journal.py" \
+  "$DESKTOP_ROOT/scripts/test_sidecar_journal_fsync_order.py" \
+  "$DESKTOP_ROOT/scripts/test_package_sidecar.py" \
   "$DESKTOP_ROOT/scripts/test_verify_static_origin.py" \
   "$DESKTOP_ROOT/scripts/test_mjs_no_undef.py" \
   "$DESKTOP_ROOT/scripts/test_build_frontend_static_gate.py" \
