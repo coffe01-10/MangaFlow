@@ -161,6 +161,12 @@ def _write_journal(journal: Path, record: dict) -> None:
     # cannot leave a zero-length/torn journal (which mark_stopped-style
     # readers and the sweep would then treat as unreadable forever).
     with pending.open("wb") as handle:
+        # #870: tighten the pending mode before the payload is written.
+        # umask in main() covers POSIX mkdir/create; fchmod pins the
+        # journal itself to 0600 even if umask was looser at open.
+        # Windows ACL tightening is NOT RUN (no fchmod).
+        if hasattr(os, "fchmod"):
+            os.fchmod(handle.fileno(), 0o600)
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
@@ -1354,6 +1360,11 @@ def main() -> int:
         help="app: Next standalone bundle dir (server.js); omit to run without a web server",
     )
     args = parser.parse_args()
+
+    # #870: files and directories created from here inherit 077 (owner-only).
+    # Windows ACLs are NOT RUN — umask is a no-op for NTFS permissions.
+    if sys.platform != "win32":
+        os.umask(0o077)
 
     token, journal = _read_context()
     record = {
