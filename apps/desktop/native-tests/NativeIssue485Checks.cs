@@ -108,6 +108,10 @@ internal static class NativeIssue485Checks
         Console.WriteLine("PASS: #485 设为发布版本双击只发一次 POST，切换成功后无虚假 expected_published_version_id 错误");
         await CompareDoubleClickRejectedWhilePending();
         Console.WriteLine("PASS: #486-4 对比历史取数挂起期间按钮禁用，第二次调用被拒绝（只发一次 diff 请求、只弹一个对话框）");
+        await DeleteDraftDoubleClickSendsSingleDelete();
+        Console.WriteLine("PASS: #817/#830 删除草稿双击只发一次 DELETE，成功后无虚假失败提示");
+        await ArchiveDoubleClickSendsSinglePost();
+        Console.WriteLine("PASS: #817/#830 归档角色包双击只发一次 POST，成功后无虚假失败提示");
     }
 
     // ── ① 创建角色模型包：双击（第二次点击落在第一个 POST 挂起期间）──
@@ -282,6 +286,57 @@ internal static class NativeIssue485Checks
         }
     }
 
+    // ── ⑥ 删除草稿：双击在第一个 DELETE 挂起期间发出第二次 → 404 虚假失败 ──
+    private static async Task DeleteDraftDoubleClickSendsSingleDelete()
+    {
+        var http = new Fixture();
+        http.Package = () => http.DeleteDrafts >= 1 ? Fixture.PackagePublished : Fixture.PackageWithDraft;
+        var gate = NewGate();
+        http.GateFirstDelete = gate;
+        using var api = new ApiClient("http://127.0.0.1:12345", http);
+        var (view, pane) = await Attach(api);
+        try
+        {
+            await Until(() => Buttons(pane, "删除草稿").Count() == 1);
+            pane.DestructiveConfirmOverride = () => Task.FromResult(true);
+            var delete = Buttons(pane, "删除草稿").Single();
+            Click(delete); Click(delete);
+            await Until(() => http.DeleteDrafts >= 1);
+            await Settle();
+            Require(http.DeleteDrafts == 1, $"删除草稿双击必须只发出一次 DELETE（实际 {http.DeleteDrafts} 次，#817/#830）");
+            gate.TrySetResult(Json("{}"));
+            await Until(() => !Busy(pane));
+            await Settle();
+            Require(!Notice(view).Text.Contains("失败"), $"成功删除草稿后不得出现虚假失败提示（实际：{Notice(view).Text}，#817/#830）");
+        }
+        finally { gate.TrySetResult(Json("{}")); view.Deactivate(); }
+    }
+
+    // ── ⑦ 归档：双击在第一个 archive POST 挂起期间发出第二次 → 409 虚假失败 ──
+    private static async Task ArchiveDoubleClickSendsSinglePost()
+    {
+        var http = new Fixture { Package = () => Fixture.PackagePublished };
+        var gate = NewGate();
+        http.GateFirstArchivePost = gate;
+        using var api = new ApiClient("http://127.0.0.1:12345", http);
+        var (view, pane) = await Attach(api);
+        try
+        {
+            await Until(() => Buttons(pane, "归档角色包").Count() == 1);
+            pane.DestructiveConfirmOverride = () => Task.FromResult(true);
+            var archive = Buttons(pane, "归档角色包").Single();
+            Click(archive); Click(archive);
+            await Until(() => http.ArchivePosts >= 1);
+            await Settle();
+            Require(http.ArchivePosts == 1, $"归档角色包双击必须只发出一次 POST（实际 {http.ArchivePosts} 次，#817/#830）");
+            gate.TrySetResult(Json("{}"));
+            await Until(() => !Busy(pane));
+            await Settle();
+            Require(!Notice(view).Text.Contains("失败"), $"成功归档后不得出现虚假失败提示（实际：{Notice(view).Text}，#817/#830）");
+        }
+        finally { gate.TrySetResult(Json("{}")); view.Deactivate(); }
+    }
+
     // ── 反射/断言辅助（NativeIssue484Checks / NativeStoryboardEditChecks 同款）──
 
     // 激活 AssetsView（默认 Characters 页）并直接构造挂载好的 CharacterPackagePane：
@@ -406,8 +461,8 @@ internal static class NativeIssue485Checks
             """[{"id":"ch-1","primary_name":"林小满","aliases":[],"locked_features":[],"forbidden_changes":[],"version":1,"references":[]}]""";
 
         public Func<string> Package = () => "null";
-        public TaskCompletionSource<HttpResponseMessage>? GateFirstCreatePost, GateFirstDerivePost, GateFirstActivatePost, GateSavePatch, GateDiff;
-        public int CreatePosts, DerivePosts, PublishPosts, ActivatePosts, SavePatches, DiffGets, PackageGets;
+        public TaskCompletionSource<HttpResponseMessage>? GateFirstCreatePost, GateFirstDerivePost, GateFirstActivatePost, GateSavePatch, GateDiff, GateFirstDelete, GateFirstArchivePost;
+        public int CreatePosts, DerivePosts, PublishPosts, ActivatePosts, SavePatches, DiffGets, PackageGets, DeleteDrafts, ArchivePosts;
         private readonly object gate = new();
         private readonly List<string> requests = [];
 
@@ -460,6 +515,18 @@ internal static class NativeIssue485Checks
                 Interlocked.Increment(ref DiffGets);
                 if (GateDiff is { } diffGate && !diffGate.Task.IsCompleted) return await diffGate.Task;
                 return Json("{}");
+            }
+            if (path == PackagePath + "/archive" && method == "POST")
+            {
+                var count = Interlocked.Increment(ref ArchivePosts);
+                if (count == 1 && GateFirstArchivePost is { } archiveGate) return await archiveGate.Task;
+                return count > 1 ? Conflict("角色模型包已归档") : Json("{}");
+            }
+            if (path.Contains("/versions/", StringComparison.Ordinal) && method == "DELETE")
+            {
+                var count = Interlocked.Increment(ref DeleteDrafts);
+                if (count == 1 && GateFirstDelete is { } deleteGate) return await deleteGate.Task;
+                return count > 1 ? Conflict("草稿不存在") : Json("{}");
             }
             // AssetsView 激活载入（models/assets/characters/outfits）与角色包列表。
             if (path == "/api/v1/models") return Json("[]");

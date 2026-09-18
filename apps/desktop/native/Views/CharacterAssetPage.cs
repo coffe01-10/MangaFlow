@@ -98,6 +98,7 @@ internal sealed class CharacterPackagesWorkspace : StackPanel
         }
         list.SelectedItem = list.Items.OfType<ListBoxItem>().FirstOrDefault(item => Equals(item.Tag, selected));
         var detail = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        var restoring = false;
         void Select()
         {
             var id = (list.SelectedItem as ListBoxItem)?.Tag as string;
@@ -105,7 +106,20 @@ internal sealed class CharacterPackagesWorkspace : StackPanel
             if (character == null) return;
             selected = character.Id; detail.Content = new CharacterPackagePane(view, character) { Margin = new Thickness(0) };
         }
-        list.SelectionChanged += (_, _) => Select(); Select();
+        list.SelectionChanged += async (_, _) =>
+        {
+            if (restoring) return;
+            if (detail.Content is CharacterPackagePane pane && pane.SpecDirty
+                && !await pane.ConfirmSpecLeaveAsync())
+            {
+                restoring = true;
+                list.SelectedItem = list.Items.OfType<ListBoxItem>().FirstOrDefault(item => Equals(item.Tag, selected));
+                restoring = false;
+                return;
+            }
+            Select();
+        };
+        Select();
         split.Children.Add(list); Grid.SetColumn(detail, 1); split.Children.Add(detail);
         if (packages.Count == 0) content.Children.Add(Kit.Caption("尚未创建角色模型包。为角色创建模型包后，可以维护四视图矩阵、表情集与默认服装。"));
         else content.Children.Add(split);

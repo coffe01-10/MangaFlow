@@ -205,8 +205,18 @@ internal static class NativeUsagePageChecks
                 using var numberAmount=JsonDocument.Parse("""{"amount":1234.56}""");
                 Require((string)amountText.Invoke(null,new object[]{numberAmount.RootElement,"amount"})=="1234.56",
                     "csv numeric amounts are culture-invariant (A11)");
+                KeyValueStore.Set("mangaflow.usage-budget","{\"currency\":\"EUR\",\"amount\":\"12.5\"}");
+                typeof(UsageView).GetField("budgetFormOpen",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(view,true);
+                typeof(UsageView).GetMethod("RenderBudget",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(view,new object[]{new List<JsonElement>()});
+                var amountBox=Desc(view).OfType<TextBox>().Single(b=>System.Windows.Automation.AutomationProperties.GetName(b)=="预算金额");
+                Require(amountBox.Text=="12.5","budget amount prefill stays invariant under comma-decimal culture (#817)");
             }
             finally{System.Threading.Thread.CurrentThread.CurrentCulture=culture;}
+            using var pendingAttempt=JsonDocument.Parse("""{"provider":"x","model_id":"m","channel":"CLI","outcome":"PENDING","job_attempt":1,"dispatch_no":1,"route_switched":false,"duration_ms":null,"input_tokens":null,"output_tokens":null,"usage_status":"UNKNOWN"}""");
+            typeof(UsageView).GetMethod("ShowAttemptDrawer",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(view,new object[]{pendingAttempt.RootElement});
+            var drawerTexts=Desc(view).OfType<TextBlock>().Select(t=>t.Text).ToList();
+            Require(drawerTexts.Contains("未知") && !drawerTexts.Contains("0 ms"),
+                "unknown duration_ms must render as 未知, never 0 ms (#830)");
             Console.WriteLine("PASS: usage layouts, 4 KPIs, three trend metrics, currency isolation, calendar gaps, unknown values, budget edit, paginated inline retry, channel parity for summary+attempts (A10), facets dimensions with provider linkage (A12), project retry (A13), partitioned summary/attempts errors (A14), csv contract incl. billed block/escaping/invariant amounts (A11), invalid dates, empty/reload and navigation.");
             Console.WriteLine("HTTP fixtures/offscreen WPF only. Real backend, CSV file dialog/write, native high-DPI and frame timing NOT RUN.");
         }

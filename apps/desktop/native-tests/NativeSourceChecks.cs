@@ -80,9 +80,24 @@ internal static class NativeSourceChecks
             view.Deactivate(); view.Activate(Context("empty-project")); await view.RefreshAsync();
             delayedScript.SetResult(Json("{\"status\":\"READY\"}")); await lateRefresh;
             Require(Field<StackPanel>(view, "workflowActions").Visibility == Visibility.Collapsed, "late script response changed another project");
+            var source = ReadSource("native", "Views", "SourceView.cs") ?? ReadSource("apps", "desktop", "native", "Views", "SourceView.cs");
+            Require(source != null && source.Contains("private async Task DeleteChapter") && source.Contains("if (epoch != activation || lifetime.Token.IsCancellationRequested) return;")
+                && source.Contains("private async void RestoreChapter") && source.Split("pendingRestoreChapterIds.Add").Length == 2,
+                "delete/restore must capture activation epoch before mutating pendingRestoreChapterIds (#830)");
         }
         finally { view.Deactivate(); }
         Console.WriteLine("PASS: source layout, selected-chapter plan/parse, duplicate guard, multipart import, revision save and stale project isolation");
+    }
+    private static string? ReadSource(params string[] relative)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            var candidate = Path.Combine(new[] { dir.FullName }.Concat(relative).ToArray());
+            if (File.Exists(candidate)) return File.ReadAllText(candidate);
+            dir = dir.Parent;
+        }
+        return null;
     }
     private static T Field<T>(object value, string name) => (T)value.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(value)!;
     private static void Require(bool value, string message) { if (!value) throw new Exception(message); }

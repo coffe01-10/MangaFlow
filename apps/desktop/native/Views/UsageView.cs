@@ -563,7 +563,7 @@ public sealed partial class UsageView : WorkspaceView
         budgetHost.Children.Add(banner);
         var currencyInput = new TextBox { Width = 64, MaxLength = 3, Text = budget?.Currency ?? "" };
         System.Windows.Automation.AutomationProperties.SetName(currencyInput, "预算币种");
-        var amountInput = new TextBox { Width = 110, Text = budget is { } kept ? kept.Amount.ToString("0.##") : "" };
+        var amountInput = new TextBox { Width = 110, Text = budget is { } kept ? kept.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "" };
         System.Windows.Automation.AutomationProperties.SetName(amountInput, "预算金额");
         var hint = new TextBlock { Style = (Style)Application.Current.FindResource("Micro"), VerticalAlignment = VerticalAlignment.Center };
         var form = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
@@ -880,7 +880,7 @@ public sealed partial class UsageView : WorkspaceView
             Field("尝试序号", $"调度尝试 {attempt.Number("job_attempt")} · 第 {attempt.Number("dispatch_no")} 次派发" + (attempt.Flag("route_switched") ? " · 换路" : ""));
             Field("输入 / 输出 Token", $"{AttemptNumberOrNull(attempt, "input_tokens")} / {AttemptNumberOrNull(attempt, "output_tokens")}");
             Field("输出图片", attempt.Element("output_images").ValueKind == JsonValueKind.Number ? $"{attempt.Number("output_images")} 张" : "未知");
-            Field("耗时", $"{attempt.Number("duration_ms")} ms");
+            Field("耗时", attempt.Element("duration_ms").ValueKind == JsonValueKind.Number ? $"{attempt.Number("duration_ms")} ms" : "未知");
             Field("结果", $"{Labels.Map(Labels.AttemptOutcome, attempt.Text("outcome"))}{(attempt.Text("error_code").Length > 0 ? $" · {attempt.Text("error_code")}" : "")}");
             if (attempt.Text("error_message").Length > 0)
                 Field("错误信息", attempt.Text("error_message"));

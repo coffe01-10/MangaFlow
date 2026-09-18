@@ -84,6 +84,7 @@ public sealed class AssetsView : WorkspaceView
         if (!tabs.ContainsKey(view)) return;
         if (current == view) return;
         if (await GuardOutfitDraftAsync() != OutfitDraftDecision.Proceed) return;
+        if (!await GuardPackageSpecAsync()) return;
         current = view;
         foreach (var (key, tab) in tabs) tab.IsChecked = key == view;
         Render();
@@ -349,7 +350,21 @@ public sealed class AssetsView : WorkspaceView
     // Leaving the whole assets view (page/project navigation, window close) gets the
     // same unsaved-draft protection as internal tab switches.
     public override async Task<bool> ConfirmLeaveAsync() =>
-        await GuardOutfitDraftAsync() == OutfitDraftDecision.Proceed;
+        await GuardOutfitDraftAsync() == OutfitDraftDecision.Proceed && await GuardPackageSpecAsync();
+
+    internal async Task<bool> GuardPackageSpecAsync()
+    {
+        foreach (var pane in FindLogical<CharacterPackagePane>(host))
+            if (!await pane.ConfirmSpecLeaveAsync()) return false;
+        return true;
+    }
+
+    private static IEnumerable<T> FindLogical<T>(DependencyObject root) where T : DependencyObject
+    {
+        if (root is T match) yield return match;
+        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
+            foreach (var nested in FindLogical<T>(child)) yield return nested;
+    }
 
     internal bool OwnsOutfits(OutfitWorkspace pane) => host.Children.Contains(pane);
     internal bool OwnsScenes(SceneWorkspace pane) => host.Children.Contains(pane);

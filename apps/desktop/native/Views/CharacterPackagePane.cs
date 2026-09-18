@@ -21,6 +21,7 @@ internal sealed partial class CharacterPackagePane : Border
     private JsonElement package;
     private readonly int epoch;
     private bool busy;
+    private bool specDirty;
     private readonly StackPanel content = new();
     // Fresh on every RenderDraft(): these sit nested inside FieldGrid cards, so a
     // reused instance would still belong to the previous (detached) grid and throw.
@@ -164,17 +165,23 @@ internal sealed partial class CharacterPackagePane : Border
         compare.IsEnabled = package.Array("versions").Count > 1; compare.Margin = new Thickness(8, 0, 0, 0); actions.Children.Add(compare);
         var archive = Kit.Act(package.Text("status") == "ARCHIVED" ? "恢复角色包" : "归档角色包", async (_, _) =>
         {
-            var message = package.Text("status") == "ARCHIVED"
-                ? "恢复角色模型包？该角色将重新进入生成默认继承。"
-                : "归档角色模型包后，该角色将退出生成默认继承，既有分镜与候选不受影响。确认归档？";
-            if (MessageBox.Show(view.WindowHost(), message, "角色模型包", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            if (busy || !Showing) return; busy = true; IsEnabled = false;
             try
             {
+                var message = package.Text("status") == "ARCHIVED"
+                    ? "恢复角色模型包？该角色将重新进入生成默认继承。"
+                    : "归档角色模型包后，该角色将退出生成默认继承，既有分镜与候选不受影响。确认归档？";
+                var confirmed = DestructiveConfirmOverride is { } prompt
+                    ? await prompt()
+                    : MessageBox.Show(view.WindowHost(), message, "角色模型包", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+                if (!confirmed || !Showing) return;
                 var action = package.Text("status") == "ARCHIVED" ? "restore" : "archive";
                 await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/{action}", HttpMethod.Post);
+                if (!Showing) return;
                 await LoadAsync();
             }
-            catch (Exception error) { view.Notify(error.Message); }
+            catch (Exception error) { if (Showing) view.Notify(error.Message); }
+            finally { busy = false; IsEnabled = true; }
         }, "Ghost");
         archive.Margin = new Thickness(8, 0, 0, 0);
         actions.Children.Add(archive);
@@ -287,17 +294,18 @@ internal sealed partial class CharacterPackagePane : Border
         var snapshot = package;
         var identity = snapshot.Element("identity_spec");
         var visual = snapshot.Element("visual_spec");
-        age = new TextBox { Text = identity.Text("age_appearance") };
-        gender = new TextBox { Text = identity.Text("gender") };
-        personality = new TextBox { Text = identity.Text("personality") };
-        identityNotes = new TextBox { Text = identity.Text("identity_notes"), AcceptsReturn = true, MinHeight = 44 };
-        hair = new TextBox { Text = visual.Text("hair") };
-        hairColor = new TextBox { Text = visual.Text("hair_color") };
-        face = new TextBox { Text = visual.Text("face") };
-        eyes = new TextBox { Text = visual.Text("eyes") };
-        body = new TextBox { Text = visual.Text("body") };
-        marks = new TextBox { Text = visual.Text("distinguishing_marks") };
-        negative = new TextBox { Text = string.Join("\n", snapshot.Array("negative_constraints")), AcceptsReturn = true, MinHeight = 64 };
+        age = Track(new TextBox { Text = identity.Text("age_appearance") });
+        gender = Track(new TextBox { Text = identity.Text("gender") });
+        personality = Track(new TextBox { Text = identity.Text("personality") });
+        identityNotes = Track(new TextBox { Text = identity.Text("identity_notes"), AcceptsReturn = true, MinHeight = 44 });
+        hair = Track(new TextBox { Text = visual.Text("hair") });
+        hairColor = Track(new TextBox { Text = visual.Text("hair_color") });
+        face = Track(new TextBox { Text = visual.Text("face") });
+        eyes = Track(new TextBox { Text = visual.Text("eyes") });
+        body = Track(new TextBox { Text = visual.Text("body") });
+        marks = Track(new TextBox { Text = visual.Text("distinguishing_marks") });
+        negative = Track(new TextBox { Text = string.Join("\n", snapshot.Array("negative_constraints")), AcceptsReturn = true, MinHeight = 64 });
+        specDirty = false;
 
         var headerRow = new DockPanel { Margin = new Thickness(0, 8, 0, 8) };
         var actions = new StackPanel { Orientation = Orientation.Horizontal };
@@ -391,6 +399,7 @@ internal sealed partial class CharacterPackagePane : Border
                 version = package.Number("version"),
             });
             if (!Showing) return;
+            specDirty = false;
             view.Notify("草稿规格已保存。");
             await LoadAsync();
         }
@@ -401,6 +410,26 @@ internal sealed partial class CharacterPackagePane : Border
     // 测试缝：headless 回归检查用无模态实现替换发布确认（StoryboardView 的
     // DeleteConfirmOverride 同一模式）；生产路径为 null。
     internal Func<Task<bool>>? PublishConfirmOverride;
+    internal Func<Task<bool>>? DestructiveConfirmOverride;
+    internal Func<Task<bool>>? SpecLeaveConfirmOverride;
+    internal bool SpecDirty => specDirty;
+
+    private TextBox Track(TextBox box)
+    {
+        box.TextChanged += (_, _) => specDirty = true;
+        return box;
+    }
+
+    internal async Task<bool> ConfirmSpecLeaveAsync()
+    {
+        if (!specDirty) return true;
+        var leave = SpecLeaveConfirmOverride is { } prompt
+            ? await prompt()
+            : MessageBox.Show(view.WindowHost(), "草稿规格有未保存修改，离开将丢弃这些编辑。确定离开？",
+                "未保存的规格", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+        if (leave) specDirty = false;
+        return leave;
+    }
 
     private async Task Publish(JsonElement draft)
     {
@@ -429,14 +458,21 @@ internal sealed partial class CharacterPackagePane : Border
 
     private async Task DeleteDraft(JsonElement draft)
     {
-        if (MessageBox.Show(view.WindowHost(), $"删除草稿 V{draft.Number("version_number")} 及其矩阵绑定？该操作不可撤销。",
-                "删除草稿", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (busy || !Showing) return; busy = true; IsEnabled = false;
         try
         {
+            var confirmed = DestructiveConfirmOverride is { } prompt
+                ? await prompt()
+                : MessageBox.Show(view.WindowHost(), $"删除草稿 V{draft.Number("version_number")} 及其矩阵绑定？该操作不可撤销。",
+                    "删除草稿", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+            if (!confirmed || !Showing) return;
             await view.ApiSendOptional($"{string.Format(Base, view.ProjectIdValue, character.Id)}/versions/{draft.Text("id")}", HttpMethod.Delete);
+            if (!Showing) return;
+            specDirty = false;
             await LoadAsync();
         }
         catch (Exception error) { if (Showing) view.Notify(error.Message); }
+        finally { busy = false; IsEnabled = true; }
     }
 
     private void RenderVersions()

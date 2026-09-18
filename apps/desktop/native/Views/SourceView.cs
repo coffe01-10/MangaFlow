@@ -389,9 +389,11 @@ public sealed class SourceView : WorkspaceView
     {
         if (MessageBox.Show(Host, "删除后会暂时隐藏该章节，可立即撤回。继续吗？", "删除章节",
             MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        var epoch = activation;
         try
         {
             await Api.SendOptionalAsync($"chapters/{chapter.Id}", HttpMethod.Delete, cancellation: lifetime.Token);
+            if (epoch != activation || lifetime.Token.IsCancellationRequested) return;
             pendingRestoreChapterIds.Add(chapter.Id);
             undoBannerText.Text = pendingRestoreChapterIds.Count == 1
                 ? "章节已移入回收状态"
@@ -402,6 +404,7 @@ public sealed class SourceView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (epoch != activation || lifetime.Token.IsCancellationRequested) return;
             MessageBox.Show(Host, "章节删除失败，请重试：" + error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -409,14 +412,17 @@ public sealed class SourceView : WorkspaceView
     private async void RestoreChapter(object sender, RoutedEventArgs e)
     {
         if (pendingRestoreChapterIds.Count == 0) return;
+        var epoch = activation;
         ((Button)sender).IsEnabled = false;
         try
         {
             // 每章恢复成功即出列：部分失败时重试不会重复 restore 已恢复章节。
             while (pendingRestoreChapterIds.Count > 0)
             {
+                if (epoch != activation || lifetime.Token.IsCancellationRequested) return;
                 var chapterId = pendingRestoreChapterIds[0];
                 await Api.SendAsync($"chapters/{chapterId}/restore", HttpMethod.Post, cancellation: lifetime.Token);
+                if (epoch != activation || lifetime.Token.IsCancellationRequested) return;
                 pendingRestoreChapterIds.RemoveAt(0);
             }
             undoBanner.Visibility = Visibility.Collapsed;
@@ -425,13 +431,14 @@ public sealed class SourceView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (epoch != activation || lifetime.Token.IsCancellationRequested) return;
             if (pendingRestoreChapterIds.Count > 0)
                 undoBannerText.Text = pendingRestoreChapterIds.Count == 1
                     ? "章节已移入回收状态"
                     : $"已删除 {pendingRestoreChapterIds.Count} 章，可一次全部撤回";
             MessageBox.Show(Host, "章节撤回失败，请重试：" + error.Message, "撤回未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        finally { ((Button)sender).IsEnabled = true; }
+        finally { if (epoch == activation) ((Button)sender).IsEnabled = true; }
     }
 
     private async void ParseChapter(object sender, RoutedEventArgs e) => await RunWorkflowAsync(false);

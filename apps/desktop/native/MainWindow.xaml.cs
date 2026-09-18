@@ -195,7 +195,7 @@ public partial class MainWindow : Window
         _ => throw new ArgumentException($"未知页面：{id}"),
     };
 
-    private async Task NavigateAsync(string destination, bool confirmLeave = true)
+    private async Task<bool> NavigateAsync(string destination, bool confirmLeave = true)
     {
         destination = destination switch
         {
@@ -204,8 +204,8 @@ public partial class MainWindow : Window
             "settings" => "project-settings",
             _ => destination,
         };
-        if (page == destination && ContentHost.Content != null) return;
-        if (confirmLeave && activeView != null && !await activeView.ConfirmLeaveAsync()) return;
+        if (page == destination && ContentHost.Content != null) return true;
+        if (confirmLeave && activeView != null && !await activeView.ConfirmLeaveAsync()) return false;
         activeView?.Deactivate();
         CancelReads();
         page = destination;
@@ -229,6 +229,7 @@ public partial class MainWindow : Window
         }
         ContentHost.Content = view as UIElement ?? throw new InvalidOperationException("视图不是 UI 元素");
         await ActivateCurrentViewAsync();
+        return true;
     }
 
     private async void OnProjectCreated()
@@ -633,9 +634,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private void CreateProject(object sender, RoutedEventArgs e)
+    private async void CreateProject(object sender, RoutedEventArgs e)
     {
-        Navigate("home");
+        // #817: wait for leave-confirm. Fire-and-forget Navigate left drawer.Open
+        // on the cached HomeView even when the user declined discard, so the next
+        // home visit popped a stale creation form.
+        if (!await NavigateAsync("home")) return;
         if (viewCache.TryGetValue("home", out var view) && view is HomeView home) home.OpenCreationDrawer();
     }
 

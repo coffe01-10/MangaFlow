@@ -78,6 +78,11 @@ internal static class NativeCharacterPageChecks
             Require(fake.Mutations.Any(m => m.Path.EndsWith("/versions/v1/references") && m.Body.Contains("front") && m.Body.Contains("version")), "matrix bind omitted role/version");
             Click(Button(package, "保存草稿规格")); await Task.Delay(15);
             Require(fake.Mutations.Any(m => m.Method == "PATCH" && m.Path.EndsWith("/c1/package") && m.Body.Contains("identity_spec")), "package spec save contract changed");
+            Field<TextBox>(package, "age").Text = "18 岁";
+            Require(package.SpecDirty, "typing in the spec editor must mark the pane dirty (#817)");
+            package.SpecLeaveConfirmOverride = () => Task.FromResult(false);
+            Require(!package.ConfirmSpecLeaveAsync().GetAwaiter().GetResult(), "dirty spec leave confirm can cancel (#817)");
+            Require(package.SpecDirty, "cancelled leave must keep the spec dirty (#817)");
             var references = Descendants(view).OfType<CharacterReferencesPane>().Single();
             Render(new CharacterReferencesPane(view), 1100, 700, 96, Path.Combine(output, "native-character-references-restored.png"));
             Click(Button(references, "解除与 樱 的绑定")); await Task.Delay(15);
