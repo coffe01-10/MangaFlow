@@ -2269,4 +2269,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&outside);
     }
 
+    /// One un-removable candidate must not abort the sweep: the failure is
+    /// logged and the loop CONTINUES, so other stale directories still get
+    /// reclaimed, and the sweep still reports Ok (a stuck directory is a
+    /// housekeeping annoyance, never a session-start failure). POSIX-only:
+    /// the write-permission strip that makes remove_dir_all fail is a Unix
+    /// semantic (and root bypasses it, hence the guard).
+    #[test]
+    #[cfg(unix)]
+    fn sweep_survives_a_stuck_candidate_and_still_sweeps_the_rest() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("running as root: chmod-based removal barrier is void; skipping");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-stuck-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        std::fs::create_dir_all(&user_data).unwrap();
+        let stuck = runtime_fixture(
+            &user_data,
+            &"8".repeat(32),
+            &serde_json::json!({"version": 1, "token": "8".repeat(32), "state": "stopped"}).to_string(),
+        );
+        let removable = runtime_fixture(
+            &user_data,
+            &"9".repeat(32),
+            &serde_json::json!({"version": 1, "token": "9".repeat(32), "state": "stopped"}).to_string(),
+        );
+        // Strip the write bit on the STUCK candidate: remove_dir_all cannot
+        // unlink its own journal (EACCES) — the deterministic stand-in for
+        // any wedged directory.
+        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = sweep_runtime_dirs_with(&user_data, 0);
+
+        // Restore first so the cleanup below cannot fail for the same reason.
+        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o700)).unwrap();
+        result.expect("a stuck candidate must not fail the sweep");
+        assert!(
+            stuck.exists(),
+            "the un-removable candidate must still be present"
+        );
+        assert!(
+            !removable.exists(),
+            "the sweep must CONTINUE past the stuck candidate and reclaim the rest"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
 }
