@@ -78,6 +78,11 @@ class StubApi:
     def _handle(self, conn: socket.socket) -> None:
         try:
             while True:
+                # 10s per-request read guard: an idle OPEN connection is
+                # closed by the STUB (not the relay) — this fallback can
+                # mask relay-side deadlines in outcome-only assertions (the
+                # #825 mutant measured that end at 10.5s); pins that must
+                # discriminate the RELAY deadline bound its latency (<5s).
                 conn.settimeout(10)
                 request = b""
                 while b"\r\n\r\n" not in request:
