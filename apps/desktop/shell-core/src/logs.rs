@@ -3940,4 +3940,27 @@ mod tests {
         );
     }
 
+    /// Source-split pin for the export's sync_all failure arm (same
+    /// c106c43 precedent: syscall-order contracts lack in-process
+    /// falsifiers — a freshly written regular file cannot be made to fail
+    /// sync_all in a test — but a regression that drops the ORPHAN
+    /// CLEANUP is structurally detectable). The arm between the
+    /// sync_all guard and the next statement must still remove the
+    /// staged pending sibling.
+    #[test]
+    fn export_sync_all_failure_arm_cleans_the_pending_orphan() {
+        let source = include_str!("logs.rs");
+        let arm = source
+            .split("if let Err(error) = file.sync_all() {")
+            .nth(1)
+            .expect("the export pending sync_all guard must exist")
+            .split("place_archive(")
+            .next()
+            .expect("the sync_all arm must precede the placement");
+        assert!(
+            arm.contains("remove_file_if_exists(&pending)"),
+            "a failed post-write sync_all must still clean the staged orphan"
+        );
+    }
+
 }
