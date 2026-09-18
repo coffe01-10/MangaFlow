@@ -2646,4 +2646,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&outside);
     }
 
+    /// Source-split pins for the syscall-order durability contracts that
+    /// have no in-process falsifier (the c106c43 precedent: a syscall
+    /// ordering cannot be behaviorally tested without libc mocking, but a
+    /// regression that DROPS the call is still detectable by structure).
+    ///
+    /// 1. write_journal_atomic must commit the directory entry after the
+    ///    rename (#874 residual, landed un-pinned): deleting the dir fsync
+    ///    — or the cfg(unix) gate — fails this pin.
+    /// 2. The rename itself must stay AFTER the payload fsync (moving the
+    ///    rename first would publish uncommitted bytes).
+    #[test]
+    fn write_journal_atomic_dir_fsync_survives_refactors() {
+        let source = include_str!("protocol.rs");
+        let body = source
+            .split("fn write_journal_atomic(")
+            .nth(1)
+            .expect("write_journal_atomic must exist")
+            .split("\n}\n")
+            .next()
+            .expect("the function body must terminate");
+        let rename_at = body
+            .find("std::fs::rename(&pending, journal)")
+            .expect("the publish must be a rename of the pending sibling");
+        let before_rename = &body[..rename_at];
+        let after_rename = &body[rename_at..];
+        // Payload durability BEFORE the rename.
+        assert!(
+            before_rename.contains("sync_all()"),
+            "the pending payload must be fsynced before the publish"
+        );
+        // Directory-entry durability AFTER the rename (the #874 residual):
+        // a parent-dir open + sync_all, unix-gated with the rename result.
+        let dir_sync = after_rename
+            .find("File::open(journal.parent()")
+            .expect("the rename must be followed by a parent-directory open");
+        let tail = &after_rename[dir_sync..];
+        assert!(
+            tail.contains("sync_all()"),
+            "the opened directory must be fsynced after the rename"
+        );
+        assert!(
+            tail.contains("#[cfg(unix)]") || body.contains("#[cfg(unix)]"),
+            "the dir fsync must stay platform-gated"
+        );
+    }
+
 }
