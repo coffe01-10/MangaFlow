@@ -98,6 +98,9 @@ internal static class NativeIssue470Checks
         Dispatcher.PushFrame(frame);
         timeout.Stop();
         if (failure != null) throw new Exception("Issue 470 checks failed", failure);
+        var main = ReadSource("native", "MainWindow.xaml.cs") ?? ReadSource("apps", "desktop", "native", "MainWindow.xaml.cs");
+        Require(main != null && main.Contains("if (!await NavigateAsync(\"home\")) return;") && main.Contains("home.OpenCreationDrawer()"),
+            "Ctrl+N / create must open the drawer only after NavigateAsync succeeds (#817)");
         Console.WriteLine("PASS: #470 cancelled create surfaces unknown-outcome guidance; #471-2 closed-drawer failures reach the status line; #471-3 F5 failures surface an error and retry cue");
     }
 
@@ -221,6 +224,18 @@ internal static class NativeIssue470Checks
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new Exception(message);
+    }
+
+    private static string? ReadSource(params string[] relative)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            var candidate = Path.Combine(new[] { dir.FullName }.Concat(relative).ToArray());
+            if (File.Exists(candidate)) return File.ReadAllText(candidate);
+            dir = dir.Parent;
+        }
+        return null;
     }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
