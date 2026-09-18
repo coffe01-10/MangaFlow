@@ -183,6 +183,20 @@ def _write_record(path: Path, record: dict) -> None:
         file.flush()
         os.fsync(file.fileno())
     pending.replace(path)
+    # Durability tail (#874 parity with the sidecar journal): the fsync above
+    # commits the payload bytes, but the replace is directory metadata — without
+    # a parent-dir fsync a power loss can revert the rename to a missing/prior
+    # owner.json that recovery refuses to clean. POSIX-only; best-effort so an
+    # unopenable directory never masks the successful publish.
+    if os.name == "posix":
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
 
 
 def _validate_directory(directory: Path, token: str) -> tuple[Path, dict]:

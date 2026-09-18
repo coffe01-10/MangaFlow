@@ -79,6 +79,45 @@ def test_refuses_to_reuse_existing_database(runtime):
         _load_serve().build_isolated_env(runtime)
 
 
+def test_new_runtime_fsyncs_the_owner_marker_payload(tmp_path, monkeypatch):
+    """#874 durability parity with the journal twins: runtime-owner.json is the
+    ownership proof assigned_runtime re-reads in every child process, so the
+    payload must be flushed and fsynced at creation (create-new, no rename —
+    the same shape as backup_restore's write_owner_marker), not merely
+    buffered. Two payload fsyncs land on this path: the tree's owner.json
+    (OwnedProcessTree creation) and the runtime-owner.json marker itself."""
+    import inspect
+
+    from e2e_runtime import new_runtime
+
+    real_fsync = os.fsync
+    fsynced: list[int] = []
+
+    def fsync_spy(fd):
+        fsynced.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync_spy)
+
+    instance = new_runtime(tmp_path)
+    try:
+        marker = instance.path / "runtime-owner.json"
+        assert json.loads(marker.read_text(encoding="utf-8")) == {
+            "version": 1,
+            "run_id": instance.run_id,
+        }
+        assert len(fsynced) == 2, (
+            f"owner journal payload + runtime marker payload: {fsynced}"
+        )
+        # This suite is Windows-only, so pin the write's shape structurally too:
+        # the marker write must fsync inside its open context.
+        source = inspect.getsource(new_runtime)
+        assert "os.fsync" in source, source
+    finally:
+        if not instance.cleaned:
+            instance.cleanup()
+
+
 @pytest.mark.parametrize("suffix", ["foreign-abc123", "mangaflow-e2e-abc123"])
 def test_assigned_existing_foreign_directory_is_not_adopted(tmp_path, monkeypatch, suffix):
     foreign = tmp_path / suffix
