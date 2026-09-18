@@ -260,7 +260,13 @@ def _assemble(src: Path, res: Path, node: Path) -> Path:
     for remnant in res.parent.glob(f"{res.name}.tmp-*"):
         shutil.rmtree(remnant, ignore_errors=True)
 
-    mb = sum(f.stat().st_size for f in res.rglob("*") if f.is_file()) / 1048576
+    # The size line is diagnostics only: an AV scanner or concurrent reader
+    # deleting a file between rglob() and stat() must not fail an assemble
+    # that already swapped successfully.
+    try:
+        mb = sum(f.stat().st_size for f in res.rglob("*") if f.is_file()) / 1048576
+    except OSError:
+        mb = 0
     print(f"WEB_RESOURCES_READY {res} ({mb:.0f} MB)")
     return res
 

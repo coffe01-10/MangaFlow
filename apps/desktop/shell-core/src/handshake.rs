@@ -396,9 +396,21 @@ pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Resul
             std::io::ErrorKind::InvalidInput,
             "origin must be an http://127.0.0.1:<port> URL",
         ))?;
+    // The deadline starts BEFORE the connect: connect/write each drew the
+    // full budget on top of the read budget, so one call could cost up to
+    // 3x `timeout`. Every later phase spends only what is left.
+    let started = std::time::Instant::now();
     let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
+    let connect_elapsed = started.elapsed();
+    if connect_elapsed >= timeout {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "status connect exceeded the total deadline",
+        ));
+    }
+    let remaining_after_connect = timeout - connect_elapsed;
+    stream.set_read_timeout(Some(remaining_after_connect))?;
+    stream.set_write_timeout(Some(remaining_after_connect))?;
     write!(
         stream,
         "GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
@@ -409,7 +421,6 @@ pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Resul
     // every read gets only the remaining budget and the deadline is
     // re-checked between reads. Truncation at the byte cap and the
     // non-UTF8 fail-closed behavior are preserved.
-    let started = std::time::Instant::now();
     let mut response_bytes = Vec::new();
     let mut reader = BufReader::new(stream.try_clone()?);
     {
@@ -608,9 +619,15 @@ mod tests {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         request.extend_from_slice(&buffer[..n]);
-                        if request.windows(4).any(|window| window == b"
-
-") {
+                        // The needle must be the 4-byte \r\n\r\n the client
+                        // actually sends (and 4 bytes wide to match the
+                        // window): a 2-byte literal never matches a 4-byte
+                        // window, the drain then idles until the 2s read
+                        // timeout, and the drip below starts only after the
+                        // client's 500ms budget is gone — the test degrades
+                        // to "peer sent nothing" and a per-read-only
+                        // implementation passes it too.
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
                             break;
                         }
                     }

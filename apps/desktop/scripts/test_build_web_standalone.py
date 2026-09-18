@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -83,6 +84,30 @@ def test_replace_dist_swaps_and_stamps_atomically(tmp_path, monkeypatch):
     }
     assert not (dist / ".build-info.json.tmp").exists(), "temp stamp must not linger"
     assert not (dist / "stale").exists()
+
+
+def test_replace_dist_refuses_before_the_move_when_provenance_fails(
+    tmp_path, monkeypatch
+):
+    """A git-less (or broken-repo) machine must fail BEFORE the destructive
+    clear+move. With the probes after the move, the swap had already
+    replaced the dist with an unprovenanced bundle — and assemble/tauri
+    only check for server.js, so only the sidecar e2e freshness gate
+    would catch it, long after packaging."""
+
+    standalone = _standalone_at(tmp_path)
+    dist = _stale_dist_at(tmp_path)
+
+    def broken_git(*args):
+        raise subprocess.CalledProcessError(128, ["git", *args])
+
+    monkeypatch.setattr(bw, "_git", broken_git)
+    with pytest.raises(subprocess.CalledProcessError):
+        bw._replace_dist(standalone, dist)
+    # Nothing destructive happened: the stale dist is intact and the
+    # fresh bundle was never moved out of its build location.
+    assert (dist / "server.js").read_text(encoding="utf-8") == "stale"
+    assert (standalone / "server.js").is_file(), "standalone stays in place"
 
 
 def test_best_effort_clear_is_noop_for_missing_path(tmp_path):

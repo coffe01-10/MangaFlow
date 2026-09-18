@@ -163,18 +163,22 @@ def _replace_dist(standalone: Path, desktop_dist: Path) -> None:
     can never leave a partial JSON inside a valid-looking bundle.
     """
 
-    _best_effort_clear(desktop_dist, "the new web-standalone bundle")
-    desktop_dist.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(standalone), str(desktop_dist))
-
     # Build provenance: the e2e asserts the bundle was built from THIS
     # source tree, so a stale relocated bundle (dist/ is gitignored and
-    # survives for days) can never silently test outdated UI code.
+    # survives for days) can never silently test outdated UI code. The
+    # probes run BEFORE the destructive clear/move: on a git-less or
+    # broken-repo machine the build must fail with the old bundle still
+    # in place — after the move it would have already installed an
+    # unprovenanced bundle that assemble/tauri happily packages.
     build_info = {
         "source_commit": _git("rev-parse", "HEAD"),
         "apps_web_tree": _git("rev-parse", "HEAD:apps/web"),
         "relay_origin": RELAY_ORIGIN,
     }
+    _best_effort_clear(desktop_dist, "the new web-standalone bundle")
+    desktop_dist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(standalone), str(desktop_dist))
+
     staged = desktop_dist / ".build-info.json.tmp"
     staged.write_text(
         json.dumps(build_info, indent=2, sort_keys=True) + "\n", encoding="utf-8"

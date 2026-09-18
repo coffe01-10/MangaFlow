@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -35,9 +34,17 @@ from pathlib import Path
 
 import pytest
 
+from _bash_resolve import resolve_posix_bash
+
 SCRIPTS = Path(__file__).resolve().parent
 STANDALONE_PY = SCRIPTS / "build-web-standalone.py"
 LOCK_SH = SCRIPTS / "dist-build-lock.sh"
+
+# The bash side of the lock ships as a shell script; the PATH-order `bash`
+# can be the WSL stub on Windows hosts, which fails every contender for an
+# environment reason — shell it only through a probe-verified POSIX bash
+# (#839, the windows-latest CI red).
+BASH = resolve_posix_bash()
 
 HOLD_SECONDS = 1.5
 CONTEND_TIMEOUT = 60
@@ -104,7 +111,7 @@ def _run_contenders(
             script = _BASH_CONTENDER.format(
                 helper=LOCK_SH, lock=lock, start=base / "start", end=base / "end"
             )
-            command = ["bash", "-c", script]
+            command = [BASH, "-c", script]
         plans[key] = (command, base)
 
     processes = {}
@@ -153,7 +160,7 @@ def _assert_mutually_exclusive(intervals: dict) -> None:
 
 
 def _have_bash() -> bool:
-    return shutil.which("bash") is not None
+    return resolve_posix_bash() is not None
 
 
 def _interlock_mechanisms_match() -> tuple[bool, str]:
@@ -173,7 +180,7 @@ def _interlock_mechanisms_match() -> tuple[bool, str]:
     except ImportError:
         python_has_flock = False
     probe = subprocess.run(
-        ["bash", "-c", "command -v flock >/dev/null 2>&1"], capture_output=True
+        [BASH, "-c", "command -v flock >/dev/null 2>&1"], capture_output=True
     )
     bash_has_flock = probe.returncode == 0
     if bash_has_flock != python_has_flock:
@@ -281,7 +288,7 @@ def test_noclobber_timed_out_waiter_leaves_the_holder_locked(tmp_path: Path):
     ).format(helper=LOCK_SH, lock=lock, start=holder_base / "start",
              end=holder_base / "end")
     holder = subprocess.Popen(
-        ["bash", "-c", holder_script],
+        [BASH, "-c", holder_script],
         env={**os.environ, **_NOCLOBBER_SEAM},
     )
     try:
@@ -294,7 +301,7 @@ def test_noclobber_timed_out_waiter_leaves_the_holder_locked(tmp_path: Path):
         assert lock.exists(), "the lock file must exist while held"
 
         waiter = subprocess.run(
-            ["bash", "-c", _BASH_TIMED_OUT_WAITER.format(
+            [BASH, "-c", _BASH_TIMED_OUT_WAITER.format(
                 helper=LOCK_SH, lock=lock, timeout=1)],
             env={**os.environ, **_NOCLOBBER_SEAM},
             capture_output=True, text=True, timeout=CONTEND_TIMEOUT,
@@ -325,7 +332,7 @@ def test_stale_noclobber_lock_fails_loudly_with_the_remedy(tmp_path: Path):
     lock.write_text("999999999\n", encoding="utf-8")
 
     probe = subprocess.run(
-        ["bash", "-c",
+        [BASH, "-c",
          f'source "{LOCK_SH}"\nacquire_dist_build_lock "{lock}" 1\n'],
         env={**os.environ, **_NOCLOBBER_SEAM},
         capture_output=True, text=True, timeout=CONTEND_TIMEOUT,

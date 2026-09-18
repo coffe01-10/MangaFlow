@@ -88,6 +88,8 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 
 坐标统一为 `{x, y, width, height}`，范围 0–1，供不同分辨率复用。
 
+**软删章节的对象可见性矩阵**：`DELETE /chapters/{id}` 只给章节行打墓碑（不级联页面）。章节所属的页面/分镜格/对白/场景/节拍在共享 scope 边界（`ensure_project_scope`）连带校验章节存活：对象路由（无 `project_id` 参数的旧调用含）默认 404「所属章节已删除」，与章节自身列表/读取的 404 一致；`restore` 清除墓碑后写路径恢复。例外（#633 设计契约）：`GET /pages/{id}/readiness` 返回 200 + `CHAPTER_DELETED` 阻塞项（UI 以此解释为什么不能生成）；`POST /pages/{id}/batches` 由 readiness 门以结构化 409 `PAGE_NOT_READY`（含 `CHAPTER_DELETED` 阻塞项）拒绝。
+
 ### DirectorCommandGroup、DirectorCommand（V02-40）
 
 导演命令 journal 只追加。`DirectorCommandGroup` 以 `(project_id, command_group_id)` 唯一，状态机 `PROPOSED → PREVIEWED → PARTIALLY_ACCEPTED → COMMITTED / PARTIALLY_REJECTED`，全组校验失败为 `REJECTED`，用户放弃为 `DISCARDED`。`DirectorCommand` 以 `(project_id, command_id)` 唯一，同一 `command_id` 重放返回首次结果。payload 只允许契约 §4 白名单字段；未知字段拒绝。执行器不新增第二条写路径，结构化命令调用现有 panel/dialogue/scene/layout 服务。`regenerate_region` 可预览，无 mask 或父候选已删除时在调用前 422。逆命令占用新的 `command_id`；分镜在撤销前被更新则原命令标 `SUPERSEDED`。迁移 `20260903_27` 为可回滚建表。契约见 `docs/v02-director-command-lineage-contract.md`。
@@ -97,8 +99,6 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 `GenerationBatch` 表示同一目标的一轮抽卡会话，目标可为页面、角色补图、服装图、风格测试或修复图。切换模型不关闭批次；进入下一页或手动新建批次时才关闭。
 
 `PageCandidate` 保存模型别名、真实模型 ID、分辨率、参数、参考资产、任务、输出资产、收藏与软删除状态。每页可收藏多个，但 `MangaPage.selected_candidate_id` 只能指向一个暂选版本；`selected_candidate_ack_version`、候选检查状态与 `continuity_status` 共同决定页面是否生产通过。`AssetCandidate` 为非页面批次提供同样的审计与素材库能力。AI 生成素材被服装档案复用时只新增 `reference_asset_ids` 关系，不改变原始 `Asset.kind/source`，删除服装也不会删除外部生成批次拥有的素材。
-
-`PageCandidate.prompt_snapshot` 在生成边界固化场景资产版本事实：`scene_asset` 快照包含 `scene_asset_id`、`scene_asset_version`、`scene_asset_variant_id`、变体 `structured_overrides` 与编译后的背景文本；资产后续修订不改变历史候选快照，与 `based_on_storyboard_version` 同款不可变语义。`GenerationRecord.input_versions` 记录同一份快照。
 
 `PageCandidate.prompt_snapshot` 在生成边界固化场景资产版本事实：`scene_asset` 快照包含 `scene_asset_id`、`scene_asset_version`、`scene_asset_variant_id`、变体 `structured_overrides` 与编译后的背景文本；资产后续修订不改变历史候选快照，与 `based_on_storyboard_version` 同款不可变语义。`GenerationRecord.input_versions` 记录同一份快照。
 
@@ -112,7 +112,7 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 
 ### ModelCallAttempt、ModelPricingVersion、ProviderUsageReconciliation
 
-`ModelCallAttempt` 是每次真实上游派发的脱敏账本行，包括 HTTP API 和 CLI 通道、任务/探测关联、章节/页/格/候选维度、终态、延迟与用量来源。`dispatch_request_id` 全局唯一，相同派发重放返回既有行；`outcome=NULL` 表示崩溃或结果未知，不得作为零费用。
+`ModelCallAttempt` 是每次真实上游派发的脱敏账本行，包括 HTTP API 和 CLI 通道、任务/探测关联、章节/页/格/候选维度、终态、延迟与用量来源。`dispatch_request_id` 全局唯一，相同派发重放返回既有行；派发身份由 `(job_id, attempt_count, dispatch 序号, lease_owner, connection/provider, 模型, 主/备路)` 哈希构成——`lease_owner` 按认领唯一（手动重试会把 `attempt_count` 归零，认领因子保证重试的新付费派发不会命中原运行的审计行），且重放去重只匹配 `outcome=NULL` 的未终态行，已终态的同键行属于另一次执行、不得复用。`outcome=NULL` 表示崩溃或结果未知，不得作为零费用。
 
 结构化计量列为 `input_tokens`、`output_tokens`、`cached_input_tokens`、`output_images` 及 `usage_status/source/unit_kind`。缺失值保持 `NULL + UNKNOWN/PARTIAL`，只有上游明确上报 0 才保存为 0。资产落库晚于上游返回，因此 `output_asset_ids/output_image_dims` 在资产事务提交后以幂等第二阶段挂接；挂接失败保留成功 attempt，并写入脱敏修复标记。
 
