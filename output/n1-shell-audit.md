@@ -480,3 +480,14 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 新增 #509（night/pr-build-info-stamp-refusal）：_replace_dist 的
   stamp-write 失败拒绝钉（bundle 已就位时失败必须传播、无 stamp 无
   .tmp 残留，下次 e2e 拒绝未钉源树）（4 pass）。
+
+## 42. 夜窗 20260918→19（分支 night/n1-core-burn-20260918，基线 c68423e）
+
+开跑：fetch + 新分支自 origin/master（#900-#924 大波已入——昨夜 N3 立案
+的整批红队 findings 已被并行修复波吸收：流式导出+空闲空间预检、relay
+空闲超时、umask/权限、SIGTERM 推迟、stub 限连、grandchild env 剥离、
+journal 写时包含再验证、node 运行时校验、summary 写守卫、owned 进程
+分配前窗口、clone 排序、静态读 O_NOFOLLOW 围栏等）。
+- 本窗策略：转向「新波代码的未钉臂 + 回归面」；已知候选 #891 亦已被
+  修复（symlink 拒绝 + 4 测试在 test_dist_build_lock.py）。
+- 勘察：两路子代理（流式导出臂 / 十项修复的覆盖缺口）在飞。
