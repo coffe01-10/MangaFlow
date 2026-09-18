@@ -49,11 +49,24 @@ DIST_LOCK_MECHANISM=""
 acquire_dist_build_lock() {
   local lock_path="$1" timeout_seconds="$2"
   mkdir -p "$(dirname "$lock_path")"
+  # #891: a planted link at the lock name must be refused BEFORE any open —
+  # the flock arm's redirect would follow it and truncate the target, and the
+  # python twin (build-web-standalone.py) already refuses links for the same
+  # reason. dist/ is gitignored local build output; whoever can plant the
+  # link already has local write access, but a data-destroying truncate is
+  # not a proportionate response to a planted name.
+  if [ -L "$lock_path" ]; then
+    echo "dist build lock: refusing a symlinked lock path: $lock_path" >&2
+    return 1
+  fi
   if [ "${MANGAFLOW_DIST_LOCK_FORCE:-}" != "noclobber" ] && command -v flock >/dev/null 2>&1; then
     # Latched (round-6 review F-NIT, merged as the latch PR): release must
     # use the SAME mechanism acquire did — see release below.
     DIST_LOCK_MECHANISM="flock"
-    exec 9>"$lock_path"
+    # `<>` is O_RDWR|O_CREAT with NO truncation (the python twin's os.open
+    # flags): `>` would zero a pre-existing regular lock file for no benefit
+    # and, through a link planted after the -L check, clobber its target.
+    exec 9<>"$lock_path"
     if ! flock -w "$timeout_seconds" 9; then
       # Nothing was acquired, so nothing must stay held: close the
       # descriptor a later release's `flock -u 9` would otherwise aim at

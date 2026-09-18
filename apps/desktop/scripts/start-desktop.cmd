@@ -25,6 +25,12 @@ if not exist "%REPO%\.venv-desktop\Scripts\python.exe" (
 set "MANGAFLOW_DESKTOP_PYTHON=%REPO%\.venv-desktop\Scripts\python.exe"
 set "MANGAFLOW_DESKTOP_HELPER=%REPO%\apps\desktop\sidecar\mangaflow_desktop_helper.py"
 set "MANGAFLOW_DESKTOP_API_ROOT=%REPO%\apps\api"
+rem #895: one-sided inheritance guard. setlocal copies the parent env; without
+rem this clear, a MANGAFLOW_DESKTOP_WEB_DIST set once (scratch bundle) survives
+rem every later launch whose repo bundle is absent — the shell then silently
+rem serves a stale/foreign tree that only needs a server.js to pass the
+rem runtime check. Clear first; the repo bundle (when present) wins below.
+set "MANGAFLOW_DESKTOP_WEB_DIST="
 if exist "%REPO%\apps\desktop\dist\web-standalone\server.js" (
   set "MANGAFLOW_DESKTOP_WEB_DIST=%REPO%\apps\desktop\dist\web-standalone"
 )
