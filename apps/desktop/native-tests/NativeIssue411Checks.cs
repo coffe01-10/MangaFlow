@@ -132,6 +132,9 @@ internal static class NativeIssue411Checks
             "请求超时的提交冲突文案不得被误改");
         Require((string)errorText.Invoke(null, [boot])! == NativeBackend.StartupTimeoutText,
             "启动超时文案必须原样穿过 ErrorText 到达错误位");
+        Require(
+            NativeBackend.BootFailureGrace.TotalSeconds is >= 1 and <= 5,
+            "boot-timeout cleanup must use a short graceful window (#811)");
     }
 
     private static void Require(bool condition, string message)
