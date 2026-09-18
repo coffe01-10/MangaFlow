@@ -1148,7 +1148,11 @@ fn estimate_manifest_bytes(members: &[(String, PathBuf, u64)]) -> u64 {
 /// Bytes the export may need on the destination volume: min(sum of collected
 /// sizes, max_total_bytes) plus local/central headers, the manifest member,
 /// EOCD, and ≥1 MiB slack.
-fn export_space_needed(members: &[(String, PathBuf, u64)], max_total_bytes: u64) -> u64 {
+fn export_space_needed(
+    members: &[(String, PathBuf, u64)],
+    collect_skips: &[String],
+    max_total_bytes: u64,
+) -> u64 {
     const EOCD_LEN: u64 = 22;
     const MANIFEST_NAME_LEN: usize = "manifest.json".len();
     let payload = members
@@ -1161,6 +1165,15 @@ fn export_space_needed(members: &[(String, PathBuf, u64)], max_total_bytes: u64)
     }
     overhead = overhead.saturating_add(zip_member_header_overhead(MANIFEST_NAME_LEN));
     overhead = overhead.saturating_add(estimate_manifest_bytes(members));
+    // Collect-phase refusals (planted links, non-UTF-8 names, unreadable
+    // members) never enter `members`, but they DO land in the manifest's
+    // skipped list — a skip-heavy tree's manifest is larger than a
+    // members-only estimate admits.
+    for name in collect_skips {
+        overhead = overhead
+            .saturating_add(48u64)
+            .saturating_add(name.len() as u64);
+    }
     payload.saturating_add(overhead)
 }
 
@@ -1248,7 +1261,10 @@ fn export_logs_with(
         Some(bytes) => bytes,
         None => disk_available_bytes(parent).map_err(ExportError::Io)?,
     };
-    let needed = export_space_needed(&members, limits.max_total_bytes);
+    let collect_skip_names: Vec<String> =
+        skipped.iter().map(|entry| entry.name.clone()).collect();
+    let needed =
+        export_space_needed(&members, &collect_skip_names, limits.max_total_bytes);
     if available < needed {
         return Err(ExportError::InsufficientSpace { needed, available });
     }
@@ -2340,7 +2356,7 @@ mod tests {
             ("a.log".into(), PathBuf::from("a.log"), 100u64),
             ("bb.log".into(), PathBuf::from("bb.log"), 200u64),
         ];
-        let needed = export_space_needed(&members, EXPORT_MAX_TOTAL_BYTES);
+        let needed = export_space_needed(&members, &[], EXPORT_MAX_TOTAL_BYTES);
         let payload = 300u64;
         assert!(
             needed >= payload + EXPORT_SPACE_SLACK_BYTES,
@@ -3828,7 +3844,7 @@ mod tests {
         let mut skipped: Vec<SkippedEntry> = Vec::new();
         let logs_canonical = logs.canonicalize().unwrap();
         collect_members(&logs, &logs_canonical, "", 0, &mut members, &mut skipped).unwrap();
-        let needed = export_space_needed(&members, EXPORT_MAX_TOTAL_BYTES);
+        let needed = export_space_needed(&members, &[], EXPORT_MAX_TOTAL_BYTES);
 
         // available == needed: must PASS (refusing an exactly-enough
         // export would make the precheck order-dependent guesswork).
@@ -3872,4 +3888,18 @@ mod tests {
         let _ = fs::remove_dir_all(&destination);
         let _ = fs::remove_dir_all(&destination_short);
     }
+    /// Collect-phase refusals land in the manifest's skipped list without
+    /// ever entering the member set: the estimate must count their bytes,
+    /// or a skip-heavy tree under-estimates the need and can hit ENOSPC
+    /// mid-stream despite a passing precheck (the 1 MiB slack alone does
+    /// not cover an unbounded number of refused entries).
+    #[test]
+    fn export_space_needed_counts_collect_phase_skip_names() {
+        let members = vec![("a.log".to_string(), PathBuf::from("a.log"), 10)];
+        let without = export_space_needed(&members, &[], EXPORT_MAX_TOTAL_BYTES);
+        let skip_name = "x".repeat(200);
+        let with = export_space_needed(&members, &[skip_name], EXPORT_MAX_TOTAL_BYTES);
+        assert!(with >= without + 48 + 200, "{without} vs {with}");
+    }
+
 }
