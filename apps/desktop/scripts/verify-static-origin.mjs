@@ -248,6 +248,13 @@ if (!PLAN_B) {
   // ---- 2. static export server (no /api routes exist here) -----------------
   server = createServer(async (req, res) => {
     static_hits.push(req.url);
+    // HEAD must not carry a body (HTTP semantics): D5 never issues HEAD,
+    // but a stray curl -I against this test server would otherwise hang
+    // or misparse a GET-shaped response. 501 is honest for a fixture.
+    if (req.method === "HEAD") {
+      res.writeHead(501, { "content-type": "text/plain" });
+      return res.end("HEAD not implemented by the D5 static fixture");
+    }
     if (req.url.startsWith("/api/")) {
       res.writeHead(404, { "content-type": "application/json" });
       return res.end(JSON.stringify({ error: "static server has no /api routes (D5 contract)" }));
