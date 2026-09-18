@@ -325,6 +325,7 @@ impl RuntimeLayout {
                 "shell_pid": std::process::id(),
                 "created_at": unix_now(),
             }),
+            user_data,
         )?;
         Ok(layout)
     }
@@ -370,7 +371,7 @@ impl RuntimeLayout {
             }
         };
         apply_stop(&mut value, exit_code, unix_now());
-        write_journal_atomic(&journal, &value)?;
+        write_journal_atomic(&journal, &value, &self.user_data)?;
 
         // #602 post-write verify (single bounded retry — never a loop): the
         // helper also writes this journal (every state transition). A late
@@ -391,7 +392,7 @@ impl RuntimeLayout {
         if let Some(text) = read_journal_bounded(&journal) {
             if let Ok(current) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(merged) = merge_stop_onto_current(&current, exit_code, unix_now()) {
-                    return write_journal_atomic(&journal, &merged);
+                    return write_journal_atomic(&journal, &merged, &self.user_data);
                 }
             }
         }
@@ -440,7 +441,11 @@ fn merge_stop_onto_current(
 /// helper stages its writes to ``owner.json.helper.pending`` — a shared
 /// pending name let the two writers rendezvous (publishing the other's
 /// payload or failing with the other's missing file).
-fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::Result<()> {
+fn write_journal_atomic(
+    journal: &Path,
+    record: &serde_json::Value,
+    user_data: &Path,
+) -> std::io::Result<()> {
     let pending = journal.with_file_name(format!(
         "{}.shell.pending",
         journal.file_name().unwrap_or_default().to_string_lossy()
@@ -470,6 +475,32 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
                     "process journal and its pending sibling must be regular files: {}",
                     path.display()
                 ),
+            ));
+        }
+    }
+    // #826: create() checked containment once. A same-user racer who
+    // swaps the runtime directory for a symlink (to an outside tree with
+    // the same leaf) between that check and this write would make the
+    // pending open follow the parent and plant owner.json outside
+    // user-data — leaf guards still pass because the names are absent at
+    // the new location. Re-assert: the parent is not a link, and its
+    // canonical path still lives inside the user-data root.
+    if let Some(parent) = journal.parent() {
+        if std::fs::symlink_metadata(parent).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "runtime directory must not be a link: {}",
+                    parent.display()
+                ),
+            ));
+        }
+        let parent_canonical = parent.canonicalize()?;
+        let user_data_canonical = user_data.canonicalize()?;
+        if !parent_canonical.starts_with(&user_data_canonical) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "runtime path escapes the user-data root",
             ));
         }
     }
@@ -1183,7 +1214,11 @@ mod tests {
 
         // (1) Link at the journal: refused, outside untouched.
         platform_symlink(&outside, &journal).unwrap();
-        let error = write_journal_atomic(&journal, &serde_json::json!({"state": "ready"}))
+        let error = write_journal_atomic(
+            &journal,
+            &serde_json::json!({"state": "ready"}),
+            &user_data,
+        )
             .err()
             .expect("a symlinked journal must be refused");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
@@ -1194,7 +1229,11 @@ mod tests {
         // outside untouched (write_text would have followed the link).
         fs::remove_file(&journal).unwrap();
         platform_symlink(&outside, &pending).unwrap();
-        let error = write_journal_atomic(&journal, &serde_json::json!({"state": "ready"}))
+        let error = write_journal_atomic(
+            &journal,
+            &serde_json::json!({"state": "ready"}),
+            &user_data,
+        )
             .err()
             .expect("a symlinked pending sibling must be refused");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
@@ -1202,6 +1241,80 @@ mod tests {
         assert!(!journal.exists());
 
         let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// #826: after create() has checked containment, a same-user swap of
+    /// the runtime directory for a symlink to an outside same-leaf tree
+    /// must be refused at write time — otherwise the pending open follows
+    /// the parent and plants owner.json outside user-data.
+    #[test]
+    #[cfg(unix)]
+    fn write_journal_atomic_refuses_a_swapped_runtime_dir_link() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-jswap-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = fs::remove_dir_all(&user_data);
+        let layout = RuntimeLayout::create(&user_data).unwrap();
+        let runtime = layout.runtime_dir();
+        let outside_root = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-jswap-out-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let outside_runtime = outside_root.join(runtime.file_name().unwrap());
+        fs::create_dir_all(&outside_runtime).unwrap();
+        let stashed = runtime.with_file_name(format!(
+            "{}-real",
+            runtime.file_name().unwrap().to_string_lossy()
+        ));
+        fs::rename(&runtime, &stashed).unwrap();
+        symlink(&outside_runtime, &runtime).unwrap();
+
+        let error = write_journal_atomic(
+            &layout.journal_path(),
+            &serde_json::json!({"state": "stopped"}),
+            &user_data,
+        )
+        .err()
+        .expect("a swapped runtime dir link must be refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            error.to_string().contains("must not be a link"),
+            "the refusal must name the parent-link contract: {error}"
+        );
+        assert!(
+            !outside_runtime.join(JOURNAL_NAME).exists(),
+            "the journal must not be planted outside user-data"
+        );
+
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&outside_root);
+    }
+
+    /// Structural pin for #826: the write path must re-check that the
+    /// parent is not a link and still canonicalizes inside user-data.
+    /// Reverting either check leaves the dynamic dir-swap race open.
+    #[test]
+    fn write_journal_atomic_rechecks_parent_containment() {
+        let source = include_str!("protocol.rs");
+        let after = source
+            .split("fn write_journal_atomic(")
+            .nth(1)
+            .expect("write_journal_atomic must exist");
+        let body = after.split("\nfn ").next().expect("function body bounded");
+        assert!(
+            body.contains("runtime directory must not be a link"),
+            "parent-symlink refusal must stay on the write path: {body}"
+        );
+        assert!(
+            body.contains("escapes the user-data root"),
+            "containment re-check must stay on the write path: {body}"
+        );
     }
 
     /// An oversized journal (identity fields are a few hundred bytes) must
@@ -2103,6 +2216,7 @@ mod tests {
         let error = write_journal_atomic(
             &journal,
             &serde_json::json!({"state": "stopped"}),
+            &layout.user_data,
         )
         .err()
         .expect("a FIFO at the pending name must be refused");
