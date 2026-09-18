@@ -54,6 +54,17 @@ def find_node() -> Path:
         return Path(override)
     which = shutil.which("node")
     if which:
+        # shutil.which honors PATHEXT, so a node.cmd/node.bat shim earlier on
+        # PATH resolves as "node". A script cannot be bundled as the runtime
+        # that executes server.js; reject non-.exe resolutions loudly instead
+        # of falling through to the fallback, which would mask a shadowed
+        # PATH (#894).
+        if os.name == "nt" and not which.lower().endswith(".exe"):
+            raise SystemExit(
+                f"PATH node resolved to {which}, which is not an .exe (a "
+                ".cmd/.bat shim cannot be bundled as the runtime); set "
+                "NODE_EXE to the real node.exe"
+            )
         return Path(which)
     if NODE_FALLBACK.is_file():
         return NODE_FALLBACK
@@ -217,6 +228,15 @@ def _assemble(src: Path, res: Path, node: Path) -> Path:
     try:
         (staging / "node").mkdir(parents=True)
         shutil.copy2(node, staging / "node" / "node.exe")
+        # The staged runtime executes server.js inside the installed app; a
+        # non-PE payload (a text shim, a corrupt download) must be refused
+        # before the swap, whatever source resolved it (#894).
+        with (staging / "node" / "node.exe").open("rb") as stream:
+            if stream.read(2) != b"MZ":
+                raise SystemExit(
+                    f"{node} is not a Windows PE executable (no MZ header); "
+                    "refusing to bundle it as the node runtime"
+                )
         shutil.copytree(src, staging / "standalone")
         try:
             if res.exists():

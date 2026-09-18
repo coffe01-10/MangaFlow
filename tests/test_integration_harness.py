@@ -474,6 +474,15 @@ def _wait_process_file(path, timeout=8):
     raise AssertionError("Owned test process did not produce its readiness file")
 
 
+def _terminate_if_alive(api, handle):
+    """Test-owned cleanup: hard-stop a leaked process through its open handle."""
+    from tests.integration.process_resources import _checked
+
+    if api.WaitForSingleObject(handle, 0) == 258:
+        _checked(api.TerminateProcess(handle, 125))
+        api.WaitForSingleObject(handle, 5000)
+
+
 def test_owned_process_runs_in_isolated_environment_and_retains_nonzero_status(
     process_tree, monkeypatch
 ):
@@ -706,6 +715,103 @@ os._exit(23)
         for handle in handles:
             _checked(api.CloseHandle(handle))
         if identity and Path(identity["directory"]).exists():
+            recover_stopped_tree(Path(identity["directory"]), identity["token"])
+
+
+def test_controller_death_before_assignment_refuses_recovery_of_live_child(tmp_path):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from tests.integration.process_resources import (
+        _checked,
+        _creation_time,
+        _kernel,
+        recover_stopped_tree,
+    )
+
+    if os.name != "nt":
+        pytest.skip("Windows process recovery test")
+    repo = str(Path(__file__).resolve().parents[1])
+    pointer = tmp_path / "tree.json"
+    # Controller imports the actual module from this checkout. No parent patches.
+    # It dies INSIDE the #892 window: after CreateProcess and the journal write,
+    # before AssignProcessToJobObject, leaving a suspended child outside the job.
+    code = """import json, os, pathlib, sys, time
+sys.path.insert(0, sys.argv[1])
+from tests.integration.process_resources import OwnedProcessTree
+parent, pointer = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+tree = OwnedProcessTree(parent)
+
+def die_before_assignment(job, handle):
+    pointer.write_text(json.dumps(
+        {"directory": str(tree.directory), "token": tree.token}), encoding="utf-8")
+    while not (parent / "die-now").exists():
+        time.sleep(0.02)
+    os._exit(9)
+
+tree.api.AssignProcessToJobObject = die_before_assignment
+tree.start_python("victim", "import time; time.sleep(60)")
+"""
+    env = {key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ}
+    env.update(TEMP=str(tmp_path), TMP=str(tmp_path), PYTHONDONTWRITEBYTECODE="1")
+    controller = subprocess.Popen(
+        [sys._base_executable, "-I", "-B", "-S", "-c", code, repo, str(tmp_path), str(pointer)],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    api, victim, identity = _kernel(), None, None
+    try:
+        identity = json.loads(_wait_process_file(pointer))
+        directory = Path(identity["directory"])
+        record = json.loads((directory / "owner.json").read_text(encoding="utf-8"))
+        # The journal already owns the suspended child BEFORE assignment (#892):
+        # pid plus creation time, so recovery can check liveness pid-reuse-safely.
+        entry = record["processes"][0]
+        assert entry["state"] == "attaching" and entry["pid"] > 0
+        assert isinstance(entry["created"], int) and record["state"] == "attaching"
+        (tmp_path / "die-now").touch()
+        assert controller.wait(timeout=8) != 0
+        # The victim leaked: alive, outside the Job Object, controller dead.
+        victim = _checked(
+            api.OpenProcess(0x1000 | 0x100000 | 0x1, False, entry["pid"])
+        )
+        assert api.WaitForSingleObject(victim, 0) == 258
+        # Recovery must refuse instead of rmtree-ing the live child's payload.
+        with pytest.raises(RuntimeError, match="attaching"):
+            recover_stopped_tree(directory, identity["token"])
+        assert (directory / "payload").exists()
+        # Once the leaked process is gone, the same recovery completes.
+        _terminate_if_alive(api, victim)
+        recover_stopped_tree(directory, identity["token"])
+        assert not directory.exists()
+    finally:
+        if controller.poll() is None:
+            controller.kill()
+            controller.wait(timeout=8)
+        if victim is not None:
+            _terminate_if_alive(api, victim)
+            _checked(api.CloseHandle(victim))
+        if identity and Path(identity["directory"]).exists():
+            # Only the journal can identify a still-leaked attaching child now.
+            # Match pid AND creation time before terminating (never a reused PID).
+            record = json.loads(
+                (Path(identity["directory"]) / "owner.json").read_text(encoding="utf-8")
+            )
+            for item in record.get("processes", ()):
+                if item.get("state") != "attaching":
+                    continue
+                leaked = api.OpenProcess(
+                    0x1000 | 0x100000 | 0x1, False, item["pid"]
+                )
+                if leaked and _creation_time(api, leaked) == item["created"]:
+                    _terminate_if_alive(api, leaked)
+                if leaked:
+                    _checked(api.CloseHandle(leaked))
             recover_stopped_tree(Path(identity["directory"]), identity["token"])
 
 
