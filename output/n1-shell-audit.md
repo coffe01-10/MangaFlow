@@ -516,3 +516,24 @@ summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏
 已知候选 #891 亦已被修复（symlink 拒绝 + 4 测试）。
 （附注：#846/#898/#899/#927/#929/#931/#932/#936/#938 均已由 lead 合入；
 #846 的 CONFLICTING 已 rebase 解锁后合入。）
+
+- 第三批产出（勘察二残余 + #934/#935 落钉；全部 test-only，生产零触）：
+  · #946（已合入）：POSIX 臂 fixture 缺 .bin 父目录（os.symlink 不建父）
+    —— 两枚 cross-tree 重锚定测试在一切 Linux 运行即红（Windows CI
+    skip 掩护下入 master）。mkdir(parents=True) 修复，3/3 绿。
+    全量 tests/ 审计另发现 #938-前态 red（已修）与桥接 red（E0061）。
+  · #947 立案：check 门 Windows-only——本周三起 master 红全部对其不可
+    见。附完整 Linux pytest job YAML（本会话 OAuth 无 workflow scope
+    推送被拒，需 lead 或有凭据会话落地）。
+  · #944 hotfix 开放中；#945（并行会话同内容）已交叉链接。
+  · #951：relay 首字节三臂钉（clear-after-first-byte：首字节后 0.6s
+    空闲须存活；默认 30.0 值钉——全测试 monkeypatch 0.3，回归 3000.0
+    不可见；connect-then-close 幽灵释放槽位——break→continue 变异饿死
+    唯一槽位）。28/28。
+  · #952：SIGTERM 恢复半边钉（哨兵 handler 身份断言——SIG_IGN 不可
+    冒充；写入侧由相邻 race 钉覆盖）。红检：finally 漏恢复 → 身份
+    断言红。B 计数：16/16 ✓。
+- 审查轮（本窗）：勘察×3、六 PR 互审（#936 P1 rebased、#941 P1
+  注册修复、#943 P2 边界收紧、#933 note、#938/#939 PASS）、#940
+  （并行会话 PR）PASS+P2。轮次 ≥6 ✓。
+- Windows 腿：NOT RUN。
