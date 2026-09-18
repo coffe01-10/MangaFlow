@@ -1179,3 +1179,80 @@ def test_write_journal_uninterruptible_restores_the_previous_sigterm_handler(
         ), "the previous handler must be restored after the deferred write"
     finally:
         signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)
+
+
+def test_failing_alembic_upgrade_journals_the_typed_failure(tmp_path):
+    """Behavioral pin of the alembic leg's failure journaling (the last
+    uncovered journal path — the source-split pin at :472 asserts the
+    arm's TEXT, and the synthetic-string pin in test_sidecar_journal.py
+    feeds the record by hand; neither drives a REAL failing upgrade).
+
+    A planted api-root whose alembic env raises mid-upgrade must produce:
+    exit 1, journal state=failed with the alembic:<Type>-prefixed detail
+    (the phase-annotated error the last-resort handler used to clobber,
+    #696), and no READY line. The subprocess form reaches the real
+    alembic leg through _run_app — the source inspection cannot.
+    """
+
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    api_root = tmp_path / "api-root"
+    (api_root / "app").mkdir(parents=True)
+    (api_root / "app" / "__init__.py").write_text("", encoding="utf-8")
+    # The prologue validates app/main.py's PRESENCE before the alembic leg.
+    (api_root / "app" / "main.py").write_text("", encoding="utf-8")
+    (api_root / "alembic.ini").write_text(
+        "[alembic]" + chr(10) + "script_location = migrations" + chr(10),
+        encoding="utf-8",
+    )
+    migrations = api_root / "migrations"
+    migrations.mkdir()
+    (migrations / "env.py").write_text(
+        "raise RuntimeError('planted: migration env exploded')\n",
+        encoding="utf-8",
+    )
+
+    token = os.urandom(16).hex()
+    runtime = tmp_path / "runtime" / f"mangaflow-desktop-{token}"
+    runtime.mkdir(parents=True)
+    journal = runtime / "owner.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HELPER_PATH),
+            "app",
+            "--api-root",
+            str(api_root),
+            "--user-data",
+            str(tmp_path / "user-data"),
+        ],
+        env=dict(
+            os.environ,
+            MANGAFLOW_DESKTOP_TOKEN=token,
+            MANGAFLOW_DESKTOP_JOURNAL=str(journal),
+            MANGAFLOW_DISABLE_DOTENV="1",
+            DATABASE_URL="sqlite:///not-a-real-database.db",
+        ),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 1, (
+        f"a failing upgrade must exit 1; stderr: {result.stderr}"
+    )
+    record = json.loads(journal.read_text(encoding="utf-8"))
+    assert record["state"] == "failed", record
+    assert record["error"].startswith("alembic:"), record
+    # alembic's CLI wrapper normalizes env.py failures to CommandError —
+    # the planted message text does not survive, so only the typed prefix
+    # is asserted (a bare RuntimeError payload would NOT be normalized).
+    assert record["token"] == token, record
+    assert "MANGAFLOW_READY" not in result.stdout, (
+        "a failed migration must never publish readiness"
+    )
