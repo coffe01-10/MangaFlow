@@ -45,7 +45,6 @@ function run(command, args, extra = {}) {
   });
 }
 
-const children = [];
 const summary = {
   sha: process.env.MANGAFLOW_SHA ?? "",
   node: process.version,
@@ -85,7 +84,6 @@ async function main() {
     cwd: ROOT,
     env: apiEnv,
   });
-  children.push(api);
   await waitForOwnedHealth({
     url: `${API_ORIGIN}/health`,
     runId: RUN_ID,
@@ -98,7 +96,6 @@ async function main() {
     env: process.env,
     shell: false,
   });
-  children.push(web);
   const webStarted = Date.now();
   let webReady = false;
   while (Date.now() - webStarted < 120_000) {

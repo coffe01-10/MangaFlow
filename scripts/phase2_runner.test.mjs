@@ -22,6 +22,24 @@ test("occupied ports fail closed without contacting unknown health", async () =>
   );
 });
 
+test("a refused connection means the port is free", async () => {
+  // The idle-port happy path: connect() must surface ECONNREFUSED and
+  // assertPortFree must resolve. Without this pin, an inverted idle
+  // branch (resolving into the occupied-refusal) kept every existing
+  // case green and only failed later at startup.
+  const connect = (options) => {
+    const socket = new Socket();
+    queueMicrotask(() => {
+      const error = new Error(`connect ECONNREFUSED ${options.port}`);
+      const coded = /** @type {Error & { code: string }} */ (error);
+      coded.code = "ECONNREFUSED";
+      socket.emit("error", coded);
+    });
+    return socket;
+  };
+  await assert.doesNotReject(() => assertPortFree(8000, connect));
+});
+
 test("health from another instance is rejected", async () => {
   const child = { exitCode: null, owned: true, pid: 4242 };
   await assert.rejects(
