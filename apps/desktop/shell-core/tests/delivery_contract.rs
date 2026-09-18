@@ -459,3 +459,72 @@ fn desktop_export_logs_is_an_async_command() {
         "the rfd save dialog must stay in this command"
     );
 }
+
+/// The dialog commands' threading and mutual-exclusion contract. The pick
+/// commands stay SYNC on purpose: tauri runs sync commands on the main
+/// thread, which is what Windows rfd dialogs require — the export command
+/// went async (#813) and therefore needed the run_on_main_thread dance
+/// for its own dialog. Async-ing a picker without that dance would break
+/// Windows dialogs. And every dialog-opening command claims DIALOG_OPEN
+/// first, so the export and the pickers can never present two native
+/// dialogs at once; the readback command serves registry bytes and must
+/// never open one.
+#[test]
+fn dialog_commands_stay_sync_and_claim_the_dialog_mutex() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/src/main.rs");
+    let source = std::fs::read_to_string(&path).expect("src-tauri main.rs readable");
+
+    // Sync shape: the pickers must NOT go async without the
+    // run_on_main_thread treatment the export command needed.
+    assert!(
+        !source.contains("async fn desktop_pick_file("),
+        "desktop_pick_file must stay sync (main-thread rfd)"
+    );
+    assert!(
+        !source.contains("async fn desktop_pick_directory("),
+        "desktop_pick_directory must stay sync (main-thread rfd)"
+    );
+
+    // Every dialog-opening command claims the DIALOG_OPEN mutex first.
+    for command in ["desktop_pick_file(", "desktop_pick_directory("] {
+        let body = source
+            .split(&format!("fn {command}"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("{command} must exist"))
+            .split("\nfn ")
+            .next()
+            .expect("the command body is bounded by the next fn");
+        assert!(
+            body.contains("claim_dialog()?"),
+            "{command} must claim the dialog mutex before opening a dialog"
+        );
+        assert!(
+            body.contains("rfd::"),
+            "{command} must still be the dialog-opening surface (shape pin)"
+        );
+    }
+    let export_claims = source
+        .split("async fn desktop_export_logs(")
+        .nth(1)
+        .expect("desktop_export_logs must exist")
+        .split("\nfn ")
+        .next()
+        .expect("the export body is bounded by the next fn");
+    assert!(
+        export_claims.contains("claim_dialog()?"),
+        "the export dialog must claim the same mutex (it opens rfd too)"
+    );
+
+    // The readback command serves registry bytes: no dialog, ever.
+    let read_body = source
+        .split("fn desktop_read_picked_file(")
+        .nth(1)
+        .expect("desktop_read_picked_file must exist")
+        .split("\n#[tauri::command]")
+        .next()
+        .expect("the readback body is bounded by the next command");
+    assert!(
+        !read_body.contains("rfd::"),
+        "the readback command must never open a dialog"
+    );
+}

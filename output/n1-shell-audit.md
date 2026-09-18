@@ -480,3 +480,73 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 新增 #509（night/pr-build-info-stamp-refusal）：_replace_dist 的
   stamp-write 失败拒绝钉（bundle 已就位时失败必须传播、无 stamp 无
   .tmp 残留，下次 e2e 拒绝未钉源树）（4 pass）。
+- 第二批产出（勘察三：handshake/picker/ownership/ziparch 变异验证；
+  勘察二：十项修复覆盖缺口排序）：
+  · #927-#932 五枚已被 lead 合入；#846/#899/#898 亦合入。
+  · **master 红灯截获**：#936 合并漏掉第二个 estimator 测试调用点
+    （logs.rs capped 测试）→ master cargo test 红（E0061）——cargo-
+    build-only 门不可见。#944 一行热修（130 lib 绿）。
+  · #933 桥接扩展为全 targets（integration ~70 测试同入默认门）；
+    sum 型防空转守卫（空 doc-test 目标合法 0 passed）。桥接在 master
+    红上正确变红（勘察与热修 PR 相互印证）。
+  · #938：干净 master 默认门红（cross-pid sweep 测试被 #894 MZ 门
+    拒绝真 Linux node）→ 供 PE 形 node 修复；已合入。#930 立案
+    （机制更正：非 #393 拒绝，系 MZ 门）。
+  · #936 返工（P1）：与 #931 合并钉冲突 → rebase 到 9e7299d 联合
+    保留（#931 调用点升 3 参 &[]），MERGEABLE。
+  · #941 返工（P1）：插入位移了 budget 钉的 #[test]（budget 停跑、
+    新钉三重注册跑三次）→ 区域重写，4/4 逐名验证。
+  · #939 PASS（轮审：臂序/前置条件/五钉全过）。
+  · #943：两条 source-split 耐久性钉（#899 目录 fsync 重构防护 +
+    export sync_all 失败臂孤儿清理——c106c43 先例）；P2 边界收紧
+    已返工。
+  · #942 立案：mark_stopped merge-retry 调用点零执行（变异实证），
+    修复面需 lead 设计（注入缝或 clobberer 线程）。
+- 审查轮计数（本窗）：勘察×3 + PR 互审×2（含本轮 P1×2 返工）。
+- Windows 腿：NOT RUN。
+
+## 42. 夜窗 20260918→19（重录二：冲突解决再度吞节，按原文重附于尾）
+
+开跑：fetch + 新分支 night/n1-core-burn-20260918 自 origin/master c68423e
+（#900-#924 大波已入——昨夜 N3 立案的红队 findings 已被并行修复波吸收：
+流式导出+空闲空间预检、relay 空闲超时、umask/权限、SIGTERM 推迟、stub
+限连、grandchild env 剥离、journal 写时包含再验证、node 运行时校验、
+summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏等）。
+基线实测：cargo 全套件 197 绿。本窗策略：新波代码的未钉臂 + 回归面；
+已知候选 #891 亦已被修复（symlink 拒绝 + 4 测试）。
+（附注：#846/#898/#899/#927/#929/#931/#932/#936/#938 均已由 lead 合入；
+#846 的 CONFLICTING 已 rebase 解锁后合入。）
+
+- 第三批产出（勘察二残余 + #934/#935 落钉；全部 test-only，生产零触）：
+  · #946（已合入）：POSIX 臂 fixture 缺 .bin 父目录（os.symlink 不建父）
+    —— 两枚 cross-tree 重锚定测试在一切 Linux 运行即红（Windows CI
+    skip 掩护下入 master）。mkdir(parents=True) 修复，3/3 绿。
+    全量 tests/ 审计另发现 #938-前态 red（已修）与桥接 red（E0061）。
+  · #947 立案：check 门 Windows-only——本周三起 master 红全部对其不可
+    见。附完整 Linux pytest job YAML（本会话 OAuth 无 workflow scope
+    推送被拒，需 lead 或有凭据会话落地）。
+  · #944 hotfix 开放中；#945（并行会话同内容）已交叉链接。
+  · #951：relay 首字节三臂钉（clear-after-first-byte：首字节后 0.6s
+    空闲须存活；默认 30.0 值钉——全测试 monkeypatch 0.3，回归 3000.0
+    不可见；connect-then-close 幽灵释放槽位——break→continue 变异饿死
+    唯一槽位）。28/28。
+  · #952：SIGTERM 恢复半边钉（哨兵 handler 身份断言——SIG_IGN 不可
+    冒充；写入侧由相邻 race 钉覆盖）。红检：finally 漏恢复 → 身份
+    断言红。B 计数：16/16 ✓。
+- 审查轮（本窗）：勘察×3、六 PR 互审（#936 P1 rebased、#941 P1
+  注册修复、#943 P2 边界收紧、#933 note、#938/#939 PASS）、#940
+  （并行会话 PR）PASS+P2。轮次 ≥6 ✓。
+- Windows 腿：NOT RUN。
+
+- 第四批产出：
+  · #956：descendant scrub 的 PYTHON* 尾五员成员钉（原 pin 仅
+    seed PYTHONPATH——删任一尾员全绿；sitecustomize 系 #871 原始
+    载体）。红检：改签名成员名 → 红。开放中。
+  · #951/#952/#955 已被 lead 合入（含 #944/#946——本周批全数落 master）。
+  · 审查轮 R6（验证轮）：#941 返工 VERIFIED（四钉逐名唯一注册）、
+    #943 返工 VERIFIED（边界收紧 + 变异实证：只删 sync_all 臂清理
+    行即红——伪阴性已闭）。
+- 审查轮计数（本窗）：R1-R3 三路勘察、R4 六 PR 互审（截获 #936
+  P1 + master E0061 红）、R5 五 PR 复审（全 PASS）、R6 返工验证。
+  ≥6 ✓。B 计数：17 枚（≥16 ✓）。
+- Windows 腿：NOT RUN。
