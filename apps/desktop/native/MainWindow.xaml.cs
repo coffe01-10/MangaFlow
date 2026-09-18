@@ -271,86 +271,7 @@ public partial class MainWindow : Window
         // 读取超时不是服务死亡，清掉 Connected 会永久停掉轮询（#471-3 的
         // Refresh 处理器同款口径），真正的死亡由 Poll 的 backend.IsRunning
         // 判定。
-        async Task NavigateCore(string section, string query)
-        {
-            if (section == "settings-global") await NavigateAsync("settings-global");
-            else if (ProjectPages.FindBySection(section) is { } definition)
-            {
-                // Home cards pass "project:{id}" to switch identity before opening the section.
-                if (query.StartsWith("project:", StringComparison.Ordinal))
-                {
-                    var id = query["project:".Length..];
-                    var target = state.Projects.FirstOrDefault(p => p.Id == id);
-                    if (target != null && state.CurrentProject?.Id != id)
-                    {
-                        // Record the destination section first: OpenProjectAsync
-                        // navigates to Navigation.Current, so without this the
-                        // requested section would be dropped after the switch.
-                        state.Navigation.Select(definition);
-                        ProjectList.SelectedItem = target;   // triggers OpenProjectAsync
-                        return;
-                    }
-                }
-                await EnsureProjectAsync();
-                await NavigateAsync(section);
-                if (page != (section == "settings" ? "project-settings" : section)) return;
-                state.Navigation.Select(definition);
-                ProjectSections.SelectedItem = definition;
-                // Web deep links (?view=/?character=/?outfit=/?style=/?page=, applied in
-                // project-workspace.tsx + use-assets-workspace.ts) land here: the assets
-                // view preselects the entity, the storyboard view locates the page.
-                var parameters = System.Web.HttpUtility.ParseQueryString(query.TrimStart('?'));
-                if (section == "assets" && ContentHost.Content is AssetsView assets)
-                {
-                    if (parameters["view"] is { } assetView) assets.Switch(assetView);
-                    assets.ApplyDeepLink(parameters["character"], parameters["outfit"], parameters["style"]);
-                }
-                else if (section == "storyboard" && ContentHost.Content is StoryboardView storyboard &&
-                         parameters["page"] is { Length: > 0 } pageId)
-                {
-                    // LoadPagesAsync picks the remembered page after the chapter switch;
-                    // ?character= focuses the first outfit-less VISIBLE panel of that
-                    // character (web storyboard-editor focusCharacterId).
-                    KeyValueStore.Set("storyboard:page:" + state.CurrentProject?.Id, pageId);
-                    _ = storyboard.LocatePageAsync(pageId, parameters["character"]);
-                }
-            }
-        }
-
-        var context = new WorkspaceContext
-        {
-            Api = api,
-            State = state,
-            Window = this,
-            Project = state.CurrentProject,
-            NavigateSection = async (section, query) =>
-            {
-                try { await NavigateCore(section, query ?? ""); }
-                catch (OperationCanceledException) { }
-                catch (Exception error)
-                {
-                    state.Error = ErrorText(error);
-                    state.Status = "页面导航未完成，可重试或重新连接";
-                }
-            },
-            OpenDashboard = async () =>
-            {
-                state.CurrentProject = null;
-                preferences.RecentProject = null;
-                ProjectList.SelectedItem = null;
-                await NavigateAsync("home");
-                if (api != null)
-                {
-                    try { await LoadDashboardAsync(lifetime.Token); }
-                    catch (OperationCanceledException) { }
-                    catch (Exception error)
-                    {
-                        state.Error = ErrorText(error);
-                        state.Status = "已返回主页，但仪表盘读取失败，可重试或重新连接";
-                    }
-                }
-            },
-        };
+        var context = BuildContext();
         if (ContentHost.Content is IWorkspaceView view)
         {
             activeView = view;
@@ -395,9 +316,102 @@ public partial class MainWindow : Window
             case StoryboardView storyboard: storyboard.ActivatePreservingDrafts(context); break;
             case GenerateView generate: generate.ActivatePreservingDrafts(context); break;
             case WorkflowView workflow: workflow.ActivatePreservingDrafts(context); break;
+            // #808: 两个设置页的草稿在控件里，保真激活=只重绑上下文不重载；
+            // 落到 default 的全量 Activate 会 LoadAllAsync/LoadAsync，把拒绝
+            // 弃稿的连接/运行时表单静默清空。
+            case SettingsView settings: settings.ActivatePreservingDrafts(context); break;
+            case ProjectSettingsView projectSettings: projectSettings.ActivatePreservingDrafts(context); break;
             default: view.Activate(context); break;
         }
     }
+
+    // #752 自捕获契约：视图侧在 async void 处理器里直接 await 它——未捕获异常
+    // 会击穿无 DispatcherUnhandledException 兜底的进程。
+    private async Task NavigateCore(string section, string query)
+    {
+        if (section == "settings-global") await NavigateAsync("settings-global");
+        else if (ProjectPages.FindBySection(section) is { } definition)
+        {
+            // Home cards pass "project:{id}" to switch identity before opening the section.
+            if (query.StartsWith("project:", StringComparison.Ordinal))
+            {
+                var id = query["project:".Length..];
+                var target = state.Projects.FirstOrDefault(p => p.Id == id);
+                if (target != null && state.CurrentProject?.Id != id)
+                {
+                    // Record the destination section first: OpenProjectAsync
+                    // navigates to Navigation.Current, so without this the
+                    // requested section would be dropped after the switch.
+                    state.Navigation.Select(definition);
+                    ProjectList.SelectedItem = target;   // triggers OpenProjectAsync
+                    return;
+                }
+            }
+            await EnsureProjectAsync();
+            await NavigateAsync(section);
+            if (page != (section == "settings" ? "project-settings" : section)) return;
+            state.Navigation.Select(definition);
+            ProjectSections.SelectedItem = definition;
+            // Web deep links (?view=/?character=/?outfit=/?style=/?page=, applied in
+            // project-workspace.tsx + use-assets-workspace.ts) land here: the assets
+            // view preselects the entity, the storyboard view locates the page.
+            var parameters = System.Web.HttpUtility.ParseQueryString(query.TrimStart('?'));
+            if (section == "assets" && ContentHost.Content is AssetsView assets)
+            {
+                if (parameters["view"] is { } assetView) assets.Switch(assetView);
+                assets.ApplyDeepLink(parameters["character"], parameters["outfit"], parameters["style"]);
+            }
+            else if (section == "storyboard" && ContentHost.Content is StoryboardView storyboard &&
+                     parameters["page"] is { Length: > 0 } pageId)
+            {
+                // LoadPagesAsync picks the remembered page after the chapter switch;
+                // ?character= focuses the first outfit-less VISIBLE panel of that
+                // character (web storyboard-editor focusCharacterId).
+                KeyValueStore.Set("storyboard:page:" + state.CurrentProject?.Id, pageId);
+                _ = storyboard.LocatePageAsync(pageId, parameters["character"]);
+            }
+        }
+    }
+
+    // #808: 重连换上的新 ApiClient 需要先于离开确认重绑到当前视图——武装中的
+    // 防抖冲刷（ConfirmLeaveAsync → SaveNowAsync）走的是 Context.Api，重绑前
+    // 它仍指向旧客户端（后端已停、实例已 Dispose），冲刷必然失败并弹出假
+    // 「保存失败」；用户选「放弃」就静默丢稿。导航/回主页委托与
+    // ActivateCurrentViewAsync 的自捕获契约同款（#752）。
+    private WorkspaceContext BuildContext() => new WorkspaceContext
+    {
+        Api = api!,
+        State = state,
+        Window = this,
+        Project = state.CurrentProject,
+        NavigateSection = async (section, query) =>
+        {
+            try { await NavigateCore(section, query ?? ""); }
+            catch (OperationCanceledException) { }
+            catch (Exception error)
+            {
+                state.Error = ErrorText(error);
+                state.Status = "页面导航未完成，可重试或重新连接";
+            }
+        },
+        OpenDashboard = async () =>
+        {
+            state.CurrentProject = null;
+            preferences.RecentProject = null;
+            ProjectList.SelectedItem = null;
+            await NavigateAsync("home");
+            if (api != null)
+            {
+                try { await LoadDashboardAsync(lifetime.Token); }
+                catch (OperationCanceledException) { }
+                catch (Exception error)
+                {
+                    state.Error = ErrorText(error);
+                    state.Status = "已返回主页，但仪表盘读取失败，可重试或重新连接";
+                }
+            }
+        },
+    };
 
     private async Task EnsureProjectAsync()
     {
@@ -477,8 +491,11 @@ public partial class MainWindow : Window
             // #428: 同项目分支只由重连触达（重新连接 → ConnectAsync → 此处）。
             // 旧代码直接跳到 ActivateCurrentViewAsync 的全量重载，把未保存的
             // 剧本表单/分镜草稿/导演指令静默清空（#341 只修了 RefreshAsync）。
-            // 离开确认先行：拒绝弃稿则改走保真激活——视图保留草稿，只重绑重连
-            // 换上的新 ApiClient（旧实例已 Dispose，不换会在下次请求抛异常）。
+            // #808: 离开确认先行，但确认里的防抖冲刷会走 Context.Api——先重绑
+            // 重连接上的新 ApiClient，冲刷才有活路（否则旧实例已 Dispose，必弹
+            // 假「保存失败」，选「放弃」就静默丢稿）。拒绝弃稿则改走保真激活。
+            if (api != null && activeView is WorkspaceView rebindable)
+                rebindable.Rebind(BuildContext());
             if (activeView != null && !await activeView.ConfirmLeaveAsync())
             {
                 state.CurrentProject = item;

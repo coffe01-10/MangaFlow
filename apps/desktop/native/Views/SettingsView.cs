@@ -193,6 +193,13 @@ public sealed partial class SettingsView : WorkspaceView
         catch (OperationCanceledException) { }
     }
 
+    /// <summary>
+    /// #808: 重连拒绝弃稿时的保真激活——连接/运行时表单的草稿都在控件里，
+    /// 只重绑上下文（新 ApiClient），不做全量 LoadAllAsync（那会把拒绝弃稿的
+    /// 表单静默清空）。
+    /// </summary>
+    internal void ActivatePreservingDrafts(WorkspaceContext context) => base.Activate(context);
+
     private async Task LoadAllAsync()
     {
         await Task.WhenAll(

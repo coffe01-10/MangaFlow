@@ -856,6 +856,12 @@ public sealed partial class WorkflowView : WorkspaceView
         var restoreToken = workflowLoadVersion;
         var pending = autosave is { Enabled: true };
         autosave?.Stop();
+        // #810: 恢复 POST 之前先排干保存链——排队中的恢复前 PATCH 若在恢复请求
+        // 的 await 窗口里才执行，它快照的是恢复前画布，且 version 可能已被 409
+        // 刷新同步到恢复后的值，这次迟到 PATCH 就会原样覆盖刚恢复的草稿。排干
+        // 后旧编辑先落盘（保留在历史里），恢复再整体替换。链内失败已被吞掉
+        // （SaveAfterAsync），这里不会因前次保存失败而中断恢复。
+        await saveChain;
         var succeeded = false;
         try
         {
@@ -2452,15 +2458,18 @@ public sealed partial class WorkflowView : WorkspaceView
 
     /// <summary>
     /// #428: 重连（重新连接 → ConnectAsync → OpenProjectAsync 同项目分支）在
-    /// 离开确认被拒绝时的保真激活。本视图的确认默认放行（防抖草稿先冲刷
-    /// 落盘）；保存失败时会询问弃稿/留守（A01）。保真语义按同一纪律兜底：重绑
-    /// 新 ApiClient 后把武装中的防抖冲刷到服务端（画布节点/边原地保留，不整链
-    /// 重载）。
+    /// 离开确认被拒绝时的保真激活。保真入口只重绑新 ApiClient 并做一次无提示
+    /// 的防抖冲刷尝试：外层确认刚跑过、留守决定已做，这里再弹一次「保存失败/
+    /// 放弃」既重复，答案还被丢弃（旧实现 await ConfirmLeaveAsync() 不取结果，
+    /// 选「放弃」后画布仍留着已弃的草稿且防抖未武装）。冲刷失败不弹窗，交回
+    /// 防抖重试（画布节点/边原地保留，不整链重载）。
     /// </summary>
     internal async void ActivatePreservingDrafts(WorkspaceContext context)
     {
         base.Activate(context);
-        await ConfirmLeaveAsync();
+        var pendingFlush = autosave is { Enabled: true };
+        autosave?.Stop();
+        if (pendingFlush && !await SaveNowAsync()) ScheduleSave();
     }
 
     // ============ Node visual model ============
