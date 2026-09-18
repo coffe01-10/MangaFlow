@@ -176,14 +176,26 @@ function downloadJson(name: string, value: unknown) {
 // 后端按 JSON 类型比较（布尔/数字与字符串永不相等），发布校验也允许布尔值
 // 条件：true/false/数字必须解析为类型字面量提交，否则 $.ready eq "true"
 // 恒为假分支。仅显式比较符做字面量化；"exists" 不读比较值。
-function parseConditionValue(raw: string, operator: string): string | number | boolean | null {
-  const trimmed = raw.trim();
+function parseInvariantDecimal(trimmed: string): number | undefined {
+  // Number() accepts 0x10 / 0b10 / 1e2; native NumberStyles.Float +
+  // InvariantCulture accepts only decimal/exponent. A graph saved in one
+  // UI and edited in the other must not flip $.x eq 16 vs $.x eq "0x10"
+  // (#821). Reject hex/binary/octal; keep decimal and scientific.
+  if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+    return undefined;
+  }
   const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+export function parseConditionValue(raw: string, operator: string): string | number | boolean | null {
+  const trimmed = raw.trim();
   if (["gt", "gte", "lt", "lte", "eq", "ne", "contains"].includes(operator)) {
     if (trimmed === "true") return true;
     if (trimmed === "false") return false;
     if (trimmed === "null") return null;
-    if (trimmed !== "" && Number.isFinite(numeric)) return numeric;
+    const numeric = parseInvariantDecimal(trimmed);
+    if (numeric !== undefined) return numeric;
   }
   return raw;
 }
