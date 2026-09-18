@@ -782,3 +782,5 @@ reset 至 origin/master 1386570（含 ledger-39 谱系）；flock 时代 CI 红�
 **§42 补充二（20260919 夜 02:19 段）**：`e2e_node_bootstrap.cjs`（14 行，NODE_OPTIONS 预载）全文审——**CLEAN**：run-ID 门（32-hex 精确）只在验收控制器下激活；@next/env require-cache 打桩**移除 dotenv 文件加载**（运行时环境仅来自控制器 allowlist——Next 的 ambient .env/.local 注入通道被封闭），combinedEnv=process.env、parsedEnv 空符合 Next 元组形状；缺失模块即 fail-closed 崩溃。Windows 验收栈审计延至第四文件，零发现维持。
 
 **§42 补充三（20260919 夜 03:00 段）**：`serve_e2e_api.py`（76 行，Job 内 E2E API 服务）全文审——**CLEAN**：adopt 纪律（服务路径只用 assigned_runtime 的 Job 成员校验，"名字含 token 也不 adopt"）；拒复用已存在数据库；allowlist 环境 + `os.environ.clear()` 后强更新（uvicorn 进程零 ambient 泄漏）；`QUEUE_ENABLED=false` 与 `GOOGLE_GENAI_USE_VERTEXAI=false`（队列隔离与禁付费供应商**双纪律**代码化）；loopback uvicorn；无 API 侧删除/atexit（外层控制器拥有 teardown——单一所有权）。Windows 验收栈审计**第五文件**，零发现维持。
+
+**§42 补充四（20260919 夜 03:15 段）**：`e2e_fixtures.py`（409 行，验收种子数据）全文审——**CLEAN**：全 ORM 操作（零 shell/eval/exec sink）、确定性固定数据（1×1 PNG 十六进制、64-hex digest 形键名零穿越）、`engine.dispose()` 无连接泄漏、真实 `create_thumbnails` 服务（验收有意执行真管线）。**Windows 验收栈审计闭环：六文件全读全审，零发现**（owned_processes/e2e_runtime/run_e2e_owned/e2e_node_bootstrap/serve_e2e_api/e2e_fixtures；Windows 活体 NOT RUN 维持）。
