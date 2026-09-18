@@ -260,6 +260,10 @@ WEB_RELAY_PORT = 39443
 # client is the local Next standalone server; 128 is two orders of magnitude
 # above anything it pools while bounding the helper's thread count.
 WEB_RELAY_MAX_CONNECTIONS = 128
+# Stub-mode health server (#873): ThreadingHTTPServer is thread-per-accept
+# with no cap. Reuse the relay limiter so a local flood cannot grow the
+# helper without bound; 128 is the same generous ceiling as the relay.
+STUB_MAX_CONNECTIONS = WEB_RELAY_MAX_CONNECTIONS
 
 
 class _RelayLimiter:
@@ -577,14 +581,42 @@ def _spawn_grandchild() -> subprocess.Popen[str] | None:
 class _StubServer(ThreadingHTTPServer):
     """stub 模式的健康服务器，绑定策略与 ``_bind_loopback`` 一致：
     Windows 上不设 SO_REUSEADDR（``allow_reuse_address``），改设
-    SO_EXCLUSIVEADDRUSE，避免同端口二次绑定劫持；Unix 行为不变。"""
+    SO_EXCLUSIVEADDRUSE，避免同端口二次绑定劫持；Unix 行为不变。
+
+    Live connections are bounded by :class:`_RelayLimiter` (#873): overflow
+    is closed immediately instead of spawning another handler thread.
+    """
 
     allow_reuse_address = sys.platform != "win32"
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._limiter = _RelayLimiter(STUB_MAX_CONNECTIONS)
+        super().__init__(*args, **kwargs)
 
     def server_bind(self) -> None:
         if sys.platform == "win32":
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+    def process_request(self, request, client_address) -> None:
+        if not self._limiter.try_acquire():
+            try:
+                request.close()
+            except OSError:
+                pass
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._limiter.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._limiter.release()
 
 
 class _StubHandler(BaseHTTPRequestHandler):
