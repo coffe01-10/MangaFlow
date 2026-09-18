@@ -437,18 +437,24 @@ def test_runner_rejects_pytest_selection_flags():
     """The trailing "$@" on the pytest invocation must never carry
     selection flags: `-k relay` would run a subset of the pinned contract
     files, pipefail+tee would preserve pytest's 0, and the last-run log
-    would record a green full-contract run that never happened."""
+    would record a green full-contract run that never happened. Both the
+    spaced and the ATTACHED spellings pytest accepts must be covered."""
     script = _SCRIPT.read_text(encoding="utf-8")
-    for flag in ("-k", "-m", "--deselect", "--ignore", "-p", "--collect-only", "-x", "--maxfail", "--lf", "--ff"):
-        assert f"'{flag}'" in script or f'"{flag}"' in script, (
-            f"the selection-flag guard must refuse {flag!r}"
+    for flag in ("-k", "-m", "--deselect", "--ignore", "-p",
+                 "--collect-only", "-x", "--maxfail", "--lf", "--ff"):
+        assert flag in script, f"the selection-flag guard must refuse {flag!r}"
+    # argparse accepts `--opt=value`; a bare-token case lets those through.
+    for attached in ("-k*", "-m*", "-p*", "--deselect=*", "--ignore=*", "--maxfail=*"):
+        assert attached in script, (
+            f"the guard must also refuse the attached form {attached!r}"
         )
-    assert 'exit 2' in script, "the guard must fail loudly, not filter silently"
+    assert "exit 2" in script, "the guard must fail loudly, not filter silently"
 
 
 def test_runner_rejects_a_selection_flag_end_to_end(tmp_path):
-    """Behavioral form: invoking the runner body's arg check with -k must
-    exit 2 with the diagnosis before pytest is ever spawned."""
+    """Behavioral form: invoking the runner body's arg check with each
+    shape — spaced and attached — must exit 2 with the diagnosis before
+    pytest is ever spawned."""
     probe = tmp_path / "argcheck.sh"
     # Extract the guard loop verbatim from the shipped script so the pin
     # tracks the real implementation instead of a copy.
@@ -460,15 +466,27 @@ def test_runner_rejects_a_selection_flag_end_to_end(tmp_path):
         + "\n".join(lines[start : end + 1])
         + '\necho PYREACHED\n',
         encoding="utf-8",
+        newline="\n",
     )
-    done = subprocess.run(
-        [BASH, str(probe), "-k", "relay"],
-        capture_output=True,
-        text=True,
-    )
-    assert done.returncode == 2, done.stdout + done.stderr
-    assert "would silently shrink the contract run" in done.stderr, done.stderr
-    assert "PYREACHED" not in done.stdout, done.stdout
+    refused = [
+        ["-k", "relay"],
+        ["--ignore=apps/desktop/scripts/test_sidecar_e2e.py"],
+        ["-kexpr"],
+        ["--deselect=tests::test_x"],
+        ["--maxfail=1"],
+        ["--lf"],
+    ]
+    for argv in refused:
+        done = subprocess.run(
+            [BASH, str(probe), *argv],
+            capture_output=True,
+            text=True,
+        )
+        assert done.returncode == 2, f"{argv}: {done.stdout + done.stderr}"
+        assert "would silently shrink the contract run" in done.stderr, (
+            f"{argv}: {done.stderr}"
+        )
+        assert "PYREACHED" not in done.stdout, f"{argv}: {done.stdout}"
     # A non-selection argument passes the guard untouched.
     done = subprocess.run(
         [BASH, str(probe), "--verbose-ok"],

@@ -173,10 +173,13 @@ E2E_LOG_PATH="$DESKTOP_ROOT/dist/e2e-last-run.log"
 # Selection flags are refused, not passed through: `-k relay` would run a
 # SUBSET of the pinned files, pipefail+tee would preserve pytest's 0, and
 # the last-run log would record a green full-contract run that never
-# happened — the same falsification an unlisted file would cause.
+# happened — the same falsification an unlisted file would cause. Every
+# pattern is anchored with `*` too: pytest accepts the attached form
+# (`--ignore=<path>`, `--deselect=<nodeid>`, `--maxfail=1`, `-kexpr`),
+# and a bare-token match would let those shrink the run untouched.
 for arg in "$@"; do
   case "$arg" in
-    '-k'|'-m'|'--deselect'|'--ignore'|'-p'|'--co'|'--collect-only'|'-x'|'--maxfail'|'--lf'|'--ff')
+    -k|-k*|-m|-m*|--deselect|--deselect=*|--ignore|--ignore=*|-p|-p*|--co|--collect-only|-x|--maxfail|--maxfail=*|--lf|--ff)
       echo "run-sidecar-e2e: selection flag '$arg' would silently shrink the contract run" >&2
       exit 2
       ;;
