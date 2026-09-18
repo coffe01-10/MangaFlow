@@ -3478,7 +3478,25 @@ mod tests {
                 let destination = std::env::temp_dir()
                     .join(format!("mfd-enospc-{}.zip", crate::protocol::new_token()));
                 let result = export_logs_zip(&user_data, &destination);
-                assert!(result.is_err(), "the size-capped write must fail");
+                // Not just is_err: the failure must be the SIZE CAP
+                // surfacing through the Io arm (EFBIG/ENOSPC preserved as
+                // the wrapped error's raw code). A mutation that maps this
+                // arm to any other Err — e.g. a fabricated
+                // InsufficientSpace — must fail the pin, or the streaming
+                // failure's error surface is unguarded.
+                match result {
+                    Err(ExportError::Io(io_error)) => {
+                        assert!(
+                            matches!(
+                                io_error.raw_os_error(),
+                                Some(libc::EFBIG) | Some(libc::ENOSPC)
+                            ),
+                            "the failure must be the size cap (EFBIG/ENOSPC), got: {io_error}"
+                        );
+                    }
+                    Err(other) => panic!("expected the Io write-failure arm, got {other:?}"),
+                    Ok(report) => panic!("the size-capped write must fail: {report:?}"),
+                }
                 let pending = destination.with_file_name(format!(
                     "{}.pending",
                     destination.file_name().unwrap().to_string_lossy()
