@@ -574,3 +574,8 @@ summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏
 - #947 重试：本会话凭证确实缺 workflow scope（push 二次被拒）——
   完整 YAML 留在 #947，需 lead 或有凭据会话落地。阻塞分支已清理。
 - #943 MERGEABLE（rebase 后等 CI）。
+- 审查轮 R8（认证轮）：master f8f518c（#958 night-watch 合入）三层
+  全绿——cargo 205/0、tests/ 1595/109、scripts sweep 194/2。连续两轮
+  认证无漂移。
+- #943 MERGEABLE 维持（等 lead/CI）；#939/#941/#952/#955/#956/#957
+  #933/#944/#946 全部合入确认。本窗 B 计数：18 枚（≥16 ✓）。
