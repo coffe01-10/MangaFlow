@@ -932,3 +932,17 @@
   前置块 + 我支的 dist/frontend 提取块）同时留下——chunk 门双跑、init×2 破坏 count==1
   源序钉（test_static_build_smoke_gate_failure_flag_precedes_both_loops 红）。去重：
   保留 master 的 DS-04 顺序，entry 循环换提取函数；删除 lock 后的冗余块。20 tests 绿。
+
+- **§35 补遗二十二（夜班三修复交叉审，CLEAN）**：#883（RunLog::create 拒绝 logs-root
+  符号链接——#610 族 containment 补全 create 腿；symlink_metadata 判据在 create_dir_all
+  之后仍有效（目标存在时不误判）；深处链接由 open_append_regular 的 canonicalize 比较
+  互补覆盖，Unix 门测试种真实 symlink 断言 InvalidInput）；#884（start-native 的
+  -UserData 包含 shell data dir 拒绝——POSIX 臂）；#886（wait-for-health 预算化——
+  冷 CI runner 的截止放宽）。三枚均有测试、无生产回归面。
+- **串行证据**：tip b8608f8 全量 **180 passed + 2 skipped**（exit=0，溯源门重建后）；
+  cargo **171/0**（b638c49 基线）。
+
+- **§35 补遗二十三（窗口收尾认证，tip 898 合并后）**：真 runner **180 passed + 2 skipped**
+  (exit=0) + cargo **181/0**（#898 测试基建唯一叶修复后）。跨窗族谱产出 PR 30+（绝大多数
+  已并）；评审轮 22–31（10 轮，含 3 次 CRITICAL/REQUEST_CHANGES 实证抓错）。窗口 09:00
+  前维持待命监控。
