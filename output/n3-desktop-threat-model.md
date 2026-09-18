@@ -780,3 +780,5 @@ reset 至 origin/master 1386570（含 ledger-39 谱系）；flock 时代 CI 红�
 **§42 补充（20260918 夜 06:30 段）**：基线 **ad0a841** 认证——runner **208 passed, 2 skipped**（+1 系 #946 的 N1 junction 钉入 master；该变更位于 N1-Core 工作树的测试文件，非本 Goal 审计面）；shell-core **201/201**。#945/#946 合入后 export_space_needed 三参形态 + collect_skips 计数三钉全绿（3/3 复验）。
 
 **§42 补充二（20260919 夜 02:19 段）**：`e2e_node_bootstrap.cjs`（14 行，NODE_OPTIONS 预载）全文审——**CLEAN**：run-ID 门（32-hex 精确）只在验收控制器下激活；@next/env require-cache 打桩**移除 dotenv 文件加载**（运行时环境仅来自控制器 allowlist——Next 的 ambient .env/.local 注入通道被封闭），combinedEnv=process.env、parsedEnv 空符合 Next 元组形状；缺失模块即 fail-closed 崩溃。Windows 验收栈审计延至第四文件，零发现维持。
+
+**§42 补充三（20260919 夜 03:00 段）**：`serve_e2e_api.py`（76 行，Job 内 E2E API 服务）全文审——**CLEAN**：adopt 纪律（服务路径只用 assigned_runtime 的 Job 成员校验，"名字含 token 也不 adopt"）；拒复用已存在数据库；allowlist 环境 + `os.environ.clear()` 后强更新（uvicorn 进程零 ambient 泄漏）；`QUEUE_ENABLED=false` 与 `GOOGLE_GENAI_USE_VERTEXAI=false`（队列隔离与禁付费供应商**双纪律**代码化）；loopback uvicorn；无 API 侧删除/atexit（外层控制器拥有 teardown——单一所有权）。Windows 验收栈审计**第五文件**，零发现维持。
