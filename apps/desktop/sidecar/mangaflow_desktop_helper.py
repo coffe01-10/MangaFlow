@@ -567,8 +567,10 @@ def _spawn_grandchild() -> subprocess.Popen[str] | None:
     return subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(3600)"],
         preexec_fn=_preexec,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=_descendant_env(),
     )
 
 
@@ -946,6 +948,32 @@ def _node_child_env() -> dict[str, str]:
     }
     return {
         name: value for name, value in os.environ.items() if name.upper() not in dropped
+    }
+
+
+def _descendant_env() -> dict[str, str]:
+    """Env for the test grandchild (#871).
+
+    Starts from :func:`_node_child_env` (handshake secrets, app wiring,
+    LD_PRELOAD) and also drops Python auto-load hooks. A PYTHONPATH-planted
+    ``sitecustomize`` in the descendant used to run at startup and could
+    consume the GO line on the inherited protocol stdin. Combined with
+    ``stdin=DEVNULL`` at the Popen site, the grandchild cannot see the
+    handshake pipe.
+    """
+
+    dropped = {
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "PYTHONSAFEPATH",
+        "PYTHONUSERBASE",
+        "PYTHONEXECUTABLE",
+    }
+    return {
+        name: value
+        for name, value in _node_child_env().items()
+        if name.upper() not in dropped
     }
 
 
