@@ -39,6 +39,7 @@ environment and secrets are never written to the journal.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import json
 import os
@@ -247,14 +248,12 @@ def _write_journal(journal: Path, record: dict) -> None:
     # fsync closes the residual (POSIX; a directory that cannot be
     # opened must not mask the successful publish).
     if os.name == "posix":
-        try:
+        with contextlib.suppress(OSError):
             dir_fd = os.open(journal.parent, os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
             finally:
                 os.close(dir_fd)
-        except OSError:
-            pass
 
 
 def _write_journal_uninterruptible(journal: Path, record: dict) -> None:

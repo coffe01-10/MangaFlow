@@ -469,3 +469,36 @@ def test_write_journal_fsyncs_payload_and_parent_dir(tmp_path, monkeypatch):
         f"got {len(fsynced_fds)} fsync call(s)"
     )
     assert journal.read_text(encoding="utf-8") != ""
+
+
+def test_write_journal_uninterruptible_defers_sigterm_and_restores(tmp_path, monkeypatch):
+    """#869: the terminal failure write must survive a cooperative-stop
+    SIGTERM — the handler is set to SIG_IGN for the duration and
+    RESTORED after, and the record lands. A SIGTERM delivered DURING the
+    write is ignored (the deferral); the caller then exits non-zero and
+    the shell's mark_stopped can overlay stopped."""
+
+    import signal as signal_module
+
+    helper = _load_helper()
+    journal = _journal_path(tmp_path)
+    record = _record("failed")
+
+    sentinel = object()
+    observed: list[object] = []
+
+    def recording_signal(sig, handler):
+        observed.append(handler)
+        return sentinel
+
+    monkeypatch.setattr(helper.signal, "getsignal", lambda sig: sentinel)
+    monkeypatch.setattr(helper.signal, "signal", recording_signal)
+
+    helper._write_journal_uninterruptible(journal, record)
+
+    assert observed == [signal_module.SIG_IGN, sentinel], (
+        "the handler must be SIG_IGN for the duration, then the sentinel "
+        "(previous) restored"
+    )
+    monkeypatch.undo()
+    assert json.loads(journal.read_text(encoding="utf-8")) == record
