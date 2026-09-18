@@ -579,3 +579,8 @@ summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏
   认证无漂移。
 - #943 MERGEABLE 维持（等 lead/CI）；#939/#941/#952/#955/#956/#957
   #933/#944/#946 全部合入确认。本窗 B 计数：18 枚（≥16 ✓）。
+- R9（轻量核）：da2cac4 相对 R8 基线（f8f518c）仅账本增量（ledger-42e
+  + 本分支 #943 rebase 回合），生产码零变更——R8 三层全绿认证继续有
+  效，无需重跑。PickError Display 钉复核在位（pick_error_display_
+  embeds_each_variants_data，13 臂含 Io 内嵌）。surface 全面饱和状态
+  维持：三路勘察 + 两轮全量认证 + 19 PR 后无新缺口。
