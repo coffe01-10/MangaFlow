@@ -268,6 +268,12 @@ def test_sweep_reclaims_cross_pid_crash_remnants(tmp_path):
     src_tree = _make_source(tmp_path)
     res = tmp_path / "src-tauri" / "web"
     _make_previous(res)
+    # The #894 MZ gate verifies the staged runtime before the swap: this
+    # test must supply a PE-shaped node (the real Linux node is an ELF and
+    # is refused before the sweep ever runs — the pre-27aaaba signature
+    # let assemble find it on PATH).
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"MZnode-runtime")
 
     other_pid = os.getpid() + 4321
     debris_old = res.parent / f"{res.name}.old-{other_pid}"
@@ -280,7 +286,7 @@ def test_sweep_reclaims_cross_pid_crash_remnants(tmp_path):
     # NO getpid patch: the debris names stay foreign to the assemble's own
     # _clear/finally (real-pid names), so the sweep - not the ordinary
     # cleanup - is what reclaims them.
-    module.assemble(src_tree, res)
+    module.assemble(src_tree, res, node)
 
     assert res.exists()
     assert (res / "standalone" / "server.js").read_bytes() == b"server-entry"
