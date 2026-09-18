@@ -535,7 +535,7 @@ fn dialog_commands_stay_sync_and_claim_the_dialog_mutex() {
     // (sync = main-thread rfd); this is the mirror half.
     assert!(
         source.contains("async fn desktop_read_picked_file("),
-        "the readback must stay async: a sync form puts the 20 MiB read + "
-        "base64 encode back on the UI thread (#316)"
+        "the readback must stay async: a sync form puts the 20 MiB read + \
+        base64 encode back on the UI thread (#316)"
     );
 }
