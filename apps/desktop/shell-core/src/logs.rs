@@ -750,7 +750,14 @@ impl RunLog {
             eprintln!("mangaflow-desktop: shell log rotation failed: {error}");
         }
         let written = match active.file.as_mut() {
-            Some(file) => file.write_all(&payload),
+            Some(file) => {
+                // Durability: write_all only updates the page cache. A power
+                // loss before the bytes reach disk drops the last milestone
+                // — the forensic record export and post-crash readers use.
+                // Mirror the journal writers (#824): fsync the payload
+                // before returning success. sync_all flushes first.
+                file.write_all(&payload).and_then(|()| file.sync_all())
+            }
             None => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "run log file is unavailable",
@@ -1264,7 +1271,16 @@ fn export_logs_with(
         .write(true)
         .create_new(true)
         .open(&pending)
-        .and_then(|mut file| file.write_all(&archive))
+        .and_then(|mut file| {
+            // Durability: the pending sibling is the complete archive that
+            // place_archive then publishes. Without an fsync here a power
+            // loss after write_all and before the rename/hard_link can
+            // leave a torn zip at the user-chosen path (or a zero-length
+            // pending that placement then publishes). Mirror the journal
+            // writers: payload fsync before the publish step.
+            file.write_all(&archive)?;
+            file.sync_all()
+        })
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::AlreadyExists => ExportError::PendingIsSymlink,
             _ => {
@@ -2088,6 +2104,62 @@ mod tests {
         );
         assert!(log.ends_with('\n'), "each record is one newline-terminated line");
         let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// Milestone writes must fsync the payload before record() returns
+    /// success: write_all only updates the page cache, and a power loss
+    /// would drop the last forensic line. Structural pin — a File wrapper
+    /// mock is not in this crate, and the Python journal twins pin the
+    /// same way. Reverting the sync_all (or moving it off this path)
+    /// flips this red.
+    #[test]
+    fn run_log_record_fsyncs_the_payload_after_write() {
+        let source = include_str!("logs.rs");
+        let after = source
+            .split("pub fn record(")
+            .nth(1)
+            .expect("RunLog::record must exist");
+        let body = after
+            .split("\nimpl ")
+            .next()
+            .expect("record body is bounded by the next impl");
+        let write_at = body
+            .find("write_all(&payload)")
+            .expect("record must write the milestone bytes");
+        let sync_at = body
+            .find("sync_all()")
+            .expect("record must fsync the payload after writing it");
+        assert!(
+            write_at < sync_at,
+            "fsync must follow write_all on the milestone path: write@{write_at} sync@{sync_at}"
+        );
+    }
+
+    /// The export stages the zip in a .pending sibling then publishes it.
+    /// The pending file must be fsynced after write_all and before
+    /// place_archive, or a crash publishes a torn archive. Structural pin
+    /// matching the journal writers.
+    #[test]
+    fn export_pending_write_fsyncs_the_archive_before_placement() {
+        let source = include_str!("logs.rs");
+        let after = source
+            .split("let archive = zip.finish();")
+            .nth(1)
+            .expect("export stages zip.finish() into the pending sibling");
+        let body = after
+            .split("place_archive(")
+            .next()
+            .expect("placement follows the pending write");
+        let write_at = body
+            .find("write_all(&archive)")
+            .expect("export must write the archive bytes");
+        let sync_at = body
+            .find("sync_all()")
+            .expect("export must fsync the pending archive before placement");
+        assert!(
+            write_at < sync_at,
+            "fsync must follow write_all on the pending archive: write@{write_at} sync@{sync_at}"
+        );
     }
 
     #[test]
