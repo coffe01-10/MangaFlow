@@ -938,3 +938,57 @@ def test_relay_saturation_log_is_rate_limited(monkeypatch):
             client.close()
         stop()
         raise
+
+
+def test_relay_first_byte_timeout_unwinds_and_releases_the_slot(monkeypatch):
+    """The #825 first-byte deadline (client→API pump): an idle TCP client
+    that connects but never sends must be reaped after the deadline —
+    the client sees a definite end, the relay slot is released, and the
+    next client is served. Without the deadline the idle client would pin
+    a pump thread + slot forever.
+
+    The deadline is monkeypatched to 0.3s (the helper reads the module
+    global at pump start), keeping the pin fast; the production value is
+    30s. The budget policy note covers the read guards' shape."""
+    api = StubApi()
+    try:
+        monkeypatch.setattr(helper, "RELAY_FIRST_BYTE_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 1)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            idle = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                # An idle client sends NOTHING: the deadline fires on the
+                # client→API pump, its SHUT_WR unwinds the upstream leg,
+                # and the client sees a definite end (no response bytes —
+                # the API never saw a complete request). The end must also
+                # arrive PROMPTLY: a slow end would mean a fallback timeout
+                # (the stub's 10s read guard) is masking the relay deadline
+                # — the mutant measured 10.5s; the deadline here is 0.3s.
+                import time as _t
+                _started = _t.monotonic()
+                assert read_until_closed(idle, timeout_seconds=15) == b"", (
+                    "an idle client must see a definite end, not a hang"
+                )
+                _elapsed = _t.monotonic() - _started
+                assert _elapsed < 5, (
+                    f"the first-byte deadline must end the idle client "
+                    f"promptly, not via a slower fallback timeout: {_elapsed:.1f}s"
+                )
+            finally:
+                idle.close()
+
+            # The slot must be free again: with the cap at 1, the next
+            # client is served end-to-end (the unwind releases the slot —
+            # a leak here would strand this exchange as overflow).
+            served = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                served.sendall(REQUEST)
+                body = read_response(served, timeout_seconds=15)
+            finally:
+                served.close()
+            assert body.endswith(b"ok"), body
+        finally:
+            stop()
+    finally:
+        api.close()
