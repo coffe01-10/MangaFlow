@@ -957,3 +957,6 @@
   +420 行测试钉：SIGTERM restore、stub cap relay linkage、descendant scrub tail、
   first-byte deadline 三臂）并入后——真 runner **214 passed + 2 skipped**（exit=0）+
   cargo **205/0**。与我方钉族（#825 延迟界、#900 tail 分段计数、#709 mkfifo 门）无冲突。
+
+- **§35 补遗二十七（master da2cac4 同步）**：#960（他组 night-watch-2b 的账本投递，
+  n3 谱系 +2 行）并入；夜分支同步无冲突。open = #959/#954（我方）待 lead。
