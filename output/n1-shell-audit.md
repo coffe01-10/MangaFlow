@@ -550,3 +550,43 @@ summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏
   P1 + master E0061 红）、R5 五 PR 复审（全 PASS）、R6 返工验证。
   ≥6 ✓。B 计数：17 枚（≥16 ✓）。
 - Windows 腿：NOT RUN。
+
+- 第五批产出：
+  · #957：对话命令面的形状钉——picker 必须保持 SYNC（tauri 同步命令
+    跑主线程 = Windows rfd 对话框所需；export 转 async 后才需要
+    run_on_main_thread 舞步——picker 若同样转 async 而不加舞步会静默
+    破坏 Windows 对话框——该形状此前无钉）；三个开对话框命令必须先
+    claim DIALOG_OPEN 互斥；readback 命令永不弹对话框。红检：删
+    pick_file 的 claim → 钉红。
+  · #933 rebase 到 289d330（原等待 #944；#944 已合并）→ MERGEABLE。
+  · #940（并行会话 relay 首字节钉）轮审 PASS：unwind/slot-release
+    确定性、latency 臂 ~16x 余量、无重名；P2 反馈 FIN-before-release
+    窗口建议复用 exchange_after_release。
+  · 合入确认：#944/#946/#951/#952/#955/#956 全部入 master。
+  · 流程披露：账本提交两度误落 PR 分支（checkout 守卫绕过）——均已
+    分支搬运修复；改为 scratch-file 批量记账降低切换频率。
+- 审查轮 R7（认证轮）：master 6c45768 三层全绿——cargo 203（含 #944
+  E0061 修复与全部新钉）、tests/ 1595 passed/109 skipped、scripts
+  bridge-style sweep 194/2。master 红灯清零确认（#944 已合）。
+- #943 rebase 解锁：与并行 fsync-order positional 精修的 EOF 尾冲突
+  → 联合保留四枚耐久性钉（对 master 缺席逐一核验后插入），135/135
+  lib 绿，MERGEABLE。
+- #947 重试：本会话凭证确实缺 workflow scope（push 二次被拒）——
+  完整 YAML 留在 #947，需 lead 或有凭据会话落地。阻塞分支已清理。
+- #943 MERGEABLE（rebase 后等 CI）。
+- 审查轮 R8（认证轮）：master f8f518c（#958 night-watch 合入）三层
+  全绿——cargo 205/0、tests/ 1595/109、scripts sweep 194/2。连续两轮
+  认证无漂移。
+- #943 MERGEABLE 维持（等 lead/CI）；#939/#941/#952/#955/#956/#957
+  #933/#944/#946 全部合入确认。本窗 B 计数：18 枚（≥16 ✓）。
+- R9（轻量核）：da2cac4 相对 R8 基线（f8f518c）仅账本增量（ledger-42e
+  + 本分支 #943 rebase 回合），生产码零变更——R8 三层全绿认证继续有
+  效，无需重跑。PickError Display 钉复核在位（pick_error_display_
+  embeds_each_variants_data，13 臂含 Io 内嵌）。surface 全面饱和状态
+  维持：三路勘察 + 两轮全量认证 + 19 PR 后无新缺口。
+- 第四批补：alembic 腿失败 journal 行为钉（#964，窗分支载体）——
+  种植升级中爆炸的 migrations/env.py，真子进程跑 _run_app：exit 1 +
+  journal failed + alembic:<Type> 前缀（alembic 归一化吞 payload 文本，
+  仅断言类型前缀）+ 无 READY。红检：删腿的 journal 调用 → 红。
+  45 passed/2 skipped。B 计数（PR 数）：#964 含账本载体，独立 PR
+  计 18（含 #943 MERGEABLE）。
