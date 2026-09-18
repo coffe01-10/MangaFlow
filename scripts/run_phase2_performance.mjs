@@ -45,7 +45,6 @@ function run(command, args, extra = {}) {
   });
 }
 
-const children = [];
 const summary = {
   sha: process.env.MANGAFLOW_SHA ?? "",
   node: process.version,
