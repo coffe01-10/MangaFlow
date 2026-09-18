@@ -93,16 +93,7 @@ public partial class MainWindow : Window
             try { await PollInterval.LoadAsync(api, lifetime.Token); }
             catch (Exception) when (!lifetime.Token.IsCancellationRequested) { }
             ApplyPollIntervals();
-            if (state.CurrentProject == null && preferences.RecentProject != null)
-            {
-                var recent = state.Projects.FirstOrDefault(p => p.Id == preferences.RecentProject);
-                if (recent != null) ProjectList.SelectedItem = recent;
-                else await OpenProjectAsync(state.Projects.FirstOrDefault());
-            }
-            else await OpenProjectAsync(state.CurrentProject ?? state.Projects.FirstOrDefault());
-            // OpenProjectAsync already activated the project view; only activate when
-            // no project opened (home stays on screen).
-            if (state.CurrentProject == null) await ActivateCurrentViewAsync();
+            await RestoreWorkspaceAfterConnectAsync();
             state.Status = "已就绪 · Ctrl+K 快速切换项目";
         }
         catch (OperationCanceledException) when (closing) { }
@@ -413,6 +404,20 @@ public partial class MainWindow : Window
             }
         },
     };
+
+    /// Cold start stays on the home dashboard. Auto-selecting RecentProject
+    /// (or falling through to Projects[0]) jumped into a workspace as soon as
+    /// the sidecar connected. Reconnect while already inside a project still
+    /// rebinds via OpenProjectAsync so #428 draft preservation keeps working.
+    private async Task RestoreWorkspaceAfterConnectAsync()
+    {
+        if (state.CurrentProject != null)
+        {
+            await OpenProjectAsync(state.CurrentProject);
+            return;
+        }
+        await ActivateCurrentViewAsync();
+    }
 
     private async Task EnsureProjectAsync()
     {
