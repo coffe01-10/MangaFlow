@@ -34,10 +34,16 @@ pytestmark = [
 
 
 def _run_guard(dist: Path) -> subprocess.CompletedProcess:
+    # The guard is a Node script: its stdout/stderr are ALWAYS UTF-8. Decode
+    # explicitly — text=True alone uses the host locale, and on a cp1252
+    # runner the NBSP-case's `full_name in result.stderr` assert fails over
+    # mojibake even though the guard behaved correctly (master CI red).
     return subprocess.run(
         ["node", str(GUARD), str(dist)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
 
