@@ -31,8 +31,9 @@ test("a refused connection means the port is free", async () => {
     const socket = new Socket();
     queueMicrotask(() => {
       const error = new Error(`connect ECONNREFUSED ${options.port}`);
-      error.code = "ECONNREFUSED";
-      socket.emit("error", error);
+      const coded = /** @type {Error & { code: string }} */ (error);
+      coded.code = "ECONNREFUSED";
+      socket.emit("error", coded);
     });
     return socket;
   };
