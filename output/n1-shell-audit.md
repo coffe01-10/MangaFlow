@@ -480,14 +480,26 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 新增 #509（night/pr-build-info-stamp-refusal）：_replace_dist 的
   stamp-write 失败拒绝钉（bundle 已就位时失败必须传播、无 stamp 无
   .tmp 残留，下次 e2e 拒绝未钉源树）（4 pass）。
-
-## 42. 夜窗 20260918→19（分支 night/n1-core-burn-20260918，基线 c68423e）
-
-开跑：fetch + 新分支自 origin/master（#900-#924 大波已入——昨夜 N3 立案
-的整批红队 findings 已被并行修复波吸收：流式导出+空闲空间预检、relay
-空闲超时、umask/权限、SIGTERM 推迟、stub 限连、grandchild env 剥离、
-journal 写时包含再验证、node 运行时校验、summary 写守卫、owned 进程
-分配前窗口、clone 排序、静态读 O_NOFOLLOW 围栏等）。
-- 本窗策略：转向「新波代码的未钉臂 + 回归面」；已知候选 #891 亦已被
-  修复（symlink 拒绝 + 4 测试在 test_dist_build_lock.py）。
-- 勘察：两路子代理（流式导出臂 / 十项修复的覆盖缺口）在飞。
+- 首批产出（覆盖勘察两路子代理：流式导出臂 / 十项修复覆盖缺口）：
+  · #927：BLOCKED 拒绝的 --stop-containers 臂钉（唯一缺口：删
+    args.stop_containers → --dry-run --stop-containers 退出 0 仍绿；
+    红检实证）。B1。
+  · #929：#894 PATHEXT shim 拒绝钉跨平台化（原 Windows-only skip =
+    该拒绝从未在 Linux/dev 执行；os.name 运行时可钉）——红检：删
+    endswith 条件 → DID NOT RAISE。B2。
+  · #931：#813 流式预检的等号边界钉（available==needed 必须通过；
+    <-1 拒绝且 InsufficientSpace 双字段如实——注入测试此前仅
+    Some(0)，< 误成 <= 全绿）。红检实证。B3。
+  · #932：流中写失败的错误面钉（rlimit 子进程原仅 is_err——伪报
+    InsufficientSpace 变异全绿；现断言 raw code ∈ {EFBIG, ENOSPC}）。
+    红检（子进程端到端）。B4。流程：本 PR 首次提交又遭 checkout 抹
+    未提交编辑（标记 grep 误用宽模式放过一次）——精确标记复核后重
+    应用，commit-first 恢复。
+  · #933：cargo test --lib 桥接入默认门（check.yml 仅 cargo build
+    ——Rust 钉从未在任何自动门执行）；POSIX 门控保 Windows 姿态。
+    B5。
+  · Issue #930：tests/test_assemble_web_resources.py 的
+    test_sweep_reclaims_cross_pid_crash_remnants 在干净 master 上即
+    红（#393 拒绝臂触发）——默认门红旗，独立立案。
+  · Issue #934/#935：N2 面（relay 空闲超时三臂 / SIGTERM 恢复）
+    未钉缺口转 N2 立案。
