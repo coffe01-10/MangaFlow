@@ -390,6 +390,89 @@ def test_helper_registers_sigterm_exit_zero(tmp_path):
         signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)
 
 
+def test_write_journal_uninterruptible_ignores_sigterm_during_write(
+    tmp_path, monkeypatch
+):
+    """#869: a SIGTERM landing mid-write must not abort the publish.
+
+    The cooperative-stop handler is ``sys.exit(0)``. Without the
+    uninterruptible wrapper, ``raise_signal(SIGTERM)`` inside the write
+    unwinds with SystemExit(0) and leaves the journal unpublished.
+    """
+    import signal as signal_module
+
+    token = "0123456789abcdef0123456789abcdef"
+    journal = tmp_path / "runtime" / f"mangaflow-desktop-{token}" / "owner.json"
+    journal.parent.mkdir(parents=True)
+
+    real = helper._write_journal
+
+    def write_and_term(path, record):
+        signal_module.raise_signal(signal_module.SIGTERM)
+        return real(path, record)
+
+    monkeypatch.setattr(helper, "_write_journal", write_and_term)
+    helper.signal.signal(signal_module.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        helper._write_journal_uninterruptible(
+            journal,
+            {"version": 1, "token": token, "role": "app", "state": "failed"},
+        )
+    finally:
+        signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)
+
+    assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "failed"
+
+
+def test_last_resort_publishes_failed_when_sigterm_lands_during_journal(
+    tmp_path, monkeypatch
+):
+    """#869: last-resort must publish ``failed`` even if SIGTERM races the
+    write, and must still exit 1 (not the cooperative-stop 0)."""
+    import signal as signal_module
+
+    token = "0123456789abcdef0123456789abcdef"
+    journal = tmp_path / "runtime" / f"mangaflow-desktop-{token}" / "owner.json"
+    journal.parent.mkdir(parents=True)
+
+    real = helper._write_journal
+
+    def write_and_term(path, record):
+        signal_module.raise_signal(signal_module.SIGTERM)
+        return real(path, record)
+
+    def _fail(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sys, "argv", [str(HELPER_PATH), "stub"])
+    monkeypatch.setattr(helper, "_read_context", lambda: (token, journal))
+    monkeypatch.setattr(helper, "_run_stub", _fail)
+    monkeypatch.setattr(helper, "_write_journal", write_and_term)
+    logged: list[str] = []
+    monkeypatch.setattr(helper, "_log", lambda message: logged.append(message))
+
+    previous = signal_module.getsignal(signal_module.SIGTERM)
+    try:
+        code = helper.main()
+    finally:
+        signal_module.signal(signal_module.SIGTERM, previous)
+
+    assert code == 1, f"failure must not be masked as exit 0: {code}"
+    assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "failed"
+    assert any("boom" in line for line in logged), logged
+
+
+def test_alembic_failure_write_is_uninterruptible():
+    """#869: the alembic failure arm must publish through the SIGTERM-
+    deferred writer. A regression that goes back to bare ``_write_journal``
+    re-opens the lost-terminal-record leak."""
+    import inspect
+
+    source = inspect.getsource(helper._run_app)
+    alembic_arm = source.split("alembic:")[-1].split("raise")[0]
+    assert "_write_journal_uninterruptible" in alembic_arm, alembic_arm
+
+
 @pytest.mark.parametrize(
     "bad_token",
     [

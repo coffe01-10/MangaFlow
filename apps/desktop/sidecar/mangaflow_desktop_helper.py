@@ -200,6 +200,28 @@ def _write_journal(journal: Path, record: dict) -> None:
     os.replace(pending, journal)
 
 
+def _write_journal_uninterruptible(journal: Path, record: dict) -> None:
+    """Publish ``record`` with SIGTERM deferred until after the write (#869).
+
+    The cooperative-stop handler is ``sys.exit(0)``. SystemExit is a
+    BaseException, so it is not caught by ``except (OSError, RuntimeError)``
+    around the last-resort write, and it also aborts the alembic failure
+    write before ``raise``. Either way the journal stays non-terminal
+    (created/ready) and the stale-runtime sweep never reclaims the
+    directory. SIGTERM is ignored for the duration of this write; a
+    terminal failure record is more important than the cooperative-stop
+    exit-0. The caller then exits 1 (failure) or re-raises; the shell's
+    ``mark_stopped`` can still overlay stopped (terminal→terminal is
+    allowed).
+    """
+    previous = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        _write_journal(journal, record)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def _bind_loopback() -> socket.socket:
     """Atomically claim an ephemeral loopback port for the API server.
 
@@ -754,7 +776,7 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             command.upgrade(alembic_config, "head")
         except BaseException as error:  # noqa: BLE001 - journal the failure, then exit
             record.update(state="failed", error=f"alembic:{type(error).__name__}")
-            _write_journal(journal, record)
+            _write_journal_uninterruptible(journal, record)
             raise
 
         if args.fake_channel:
@@ -1367,7 +1389,7 @@ def main() -> int:
     except BaseException as error:  # noqa: BLE001 - last-resort failure journal
         _merge_last_resort_failure(record, error)
         try:
-            _write_journal(journal, record)
+            _write_journal_uninterruptible(journal, record)
         except (OSError, RuntimeError):
             # OSError: the write itself failed. RuntimeError: the #686/#692
             # guards (planted link/FIFO at the journal or pending names)
