@@ -626,6 +626,66 @@ def test_process_stop_failure_is_not_completion_and_can_retry(process_tree, monk
     assert not process_tree.directory.exists()
 
 
+@pytest.mark.parametrize(
+    "module_rel",
+    ["scripts/owned_processes.py", "tests/integration/process_resources.py"],
+)
+def test_write_record_fsyncs_payload_and_commits_the_rename_dir_entry(
+    tmp_path, monkeypatch, module_rel
+):
+    """#874 durability parity with the sidecar journal twins: the payload
+    fsync commits the bytes, and (POSIX-only) a parent-dir fsync after the
+    replace commits the rename's directory entry — without it a power loss
+    can revert owner.json to missing/prior, which recovery refuses to clean.
+    The scripts/ module and its tests/integration twin are pinned together so
+    the copy cannot drift. Windows runs only the payload fsync; the POSIX
+    tail is pinned behaviorally there and structurally here (Windows cannot
+    execute it)."""
+    import importlib.util
+    import inspect
+    import json
+    import os
+
+    module_path = Path(__file__).resolve().parents[1] / module_rel
+    spec = importlib.util.spec_from_file_location(
+        f"fsync_pin_{Path(module_rel).stem}", module_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    real_fsync, real_replace = os.fsync, os.replace
+    calls: list[tuple[str, object]] = []
+
+    def fsync_spy(fd):
+        calls.append(("fsync", fd))
+        return real_fsync(fd)
+
+    def replace_spy(source_path, destination_path, **kwargs):
+        calls.append(("replace", str(source_path)))
+        return real_replace(source_path, destination_path, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", fsync_spy)
+    monkeypatch.setattr(os, "replace", replace_spy)
+
+    journal = tmp_path / "mangaflow-process-test" / "owner.json"
+    journal.parent.mkdir()
+    module._write_record(journal, {"version": 1, "state": "created"})
+
+    fsyncs = [call for call in calls if call[0] == "fsync"]
+    replaces = [call for call in calls if call[0] == "replace"]
+    assert len(replaces) == 1, f"exactly one publish rename: {calls}"
+    assert len(fsyncs) == (2 if os.name == "posix" else 1), (
+        f"payload fsync plus the POSIX dir-entry tail: {calls}"
+    )
+    assert calls.index(fsyncs[0]) < calls.index(replaces[0]), (
+        f"the payload must be durable before the rename: {calls}"
+    )
+    assert replaces[0][1].endswith("owner.pending"), calls
+    assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "created"
+    source = inspect.getsource(module._write_record)
+    assert 'os.name == "posix"' in source and "O_RDONLY" in source, source
+
+
 @pytest.mark.parametrize("ending", ["kill", "abrupt"])
 def test_controller_death_kills_tree_and_journal_can_be_recovered(tmp_path, ending):
     import json
