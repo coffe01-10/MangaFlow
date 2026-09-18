@@ -91,6 +91,24 @@ internal static class NativeStyleChecks
                 for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) if (pixels[(y * width + x) * 4 + 3] > 32) { left = Math.Min(left, x); right = Math.Max(right, x); }
                 Require((right - left + 1.0) / width >= .9, "icon artwork should fill at least 90% of each viewport");
             }
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            string? styleSource = null;
+            while (dir != null)
+            {
+                foreach (var relative in new[]
+                {
+                    Path.Combine("native", "Views", "StyleWorkspace.cs"),
+                    Path.Combine("apps", "desktop", "native", "Views", "StyleWorkspace.cs"),
+                })
+                {
+                    var candidate = Path.Combine(dir.FullName, relative);
+                    if (File.Exists(candidate)) { styleSource = File.ReadAllText(candidate); break; }
+                }
+                if (styleSource != null) break;
+                dir = dir.Parent;
+            }
+            Require(styleSource != null && styleSource.Contains("可能解除已有绑定") && styleSource.Contains("restoringKind"),
+                "style kind flip confirms like sibling surfaces and restores on cancel (#829)");
             Console.WriteLine("PASS: style layout, remembered mode, profile/palette schema, draft preservation and conflict version, 4-stage activation gates, async candidates, mutation dedup, detached response, all icon sizes >=90% artwork coverage");
             Console.WriteLine("UI checks use HTTP fixtures; provider generation and real-window interaction NOT RUN.");
         }

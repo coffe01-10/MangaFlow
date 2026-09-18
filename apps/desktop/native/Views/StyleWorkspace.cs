@@ -194,7 +194,29 @@ internal sealed class StyleWorkspace : StackPanel
                 if (dialog.ShowDialog() == true && dialog.Value.Trim().Length > 0) await UpdateAssetAsync(asset.Id, HttpMethod.Patch, new { display_name = dialog.Value.Trim() });
             }, "Compact"));
             var kind = SceneWorkspace.Select("参考用途", ("STYLE_REFERENCE", "漫画风格"), ("CHARACTER_REFERENCE", "人物参考"), ("OUTFIT_REFERENCE", "服装参考"), ("SCENE_REFERENCE", "场景参考"));
-            kind.Margin = new Thickness(8, 0, 8, 0); kind.SelectionChanged += async (_, _) => { if (SceneWorkspace.Value(kind) != asset.Kind) await UpdateAssetAsync(asset.Id, HttpMethod.Patch, new { kind = SceneWorkspace.Value(kind) }); }; actions.Children.Add(kind);
+            kind.Margin = new Thickness(8, 0, 8, 0);
+            foreach (ComboBoxItem item in kind.Items)
+                if (Equals(item.Tag, asset.Kind)) { kind.SelectedItem = item; break; }
+            var restoringKind = false;
+            kind.SelectionChanged += async (_, _) =>
+            {
+                if (restoringKind || saving) return;
+                var next = SceneWorkspace.Value(kind);
+                if (next.Length == 0 || next == asset.Kind) return;
+                string LabelOf(string id) => kind.Items.OfType<ComboBoxItem>().FirstOrDefault(i => Equals(i.Tag, id))?.Content?.ToString() ?? id;
+                if (MessageBox.Show(View.WindowHost(),
+                    $"将把「{asset.Name}」的用途从「{LabelOf(asset.Kind)}」改为「{LabelOf(next)}」，可能解除已有绑定。确定继续吗？",
+                    "更改参考用途", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                {
+                    restoringKind = true;
+                    foreach (ComboBoxItem item in kind.Items)
+                        if (Equals(item.Tag, asset.Kind)) { kind.SelectedItem = item; break; }
+                    restoringKind = false;
+                    return;
+                }
+                await UpdateAssetAsync(asset.Id, HttpMethod.Patch, new { kind = next });
+            };
+            actions.Children.Add(kind);
             actions.Children.Add(Kit.Act("删除", async (_, _) => { if (MessageBox.Show(View.WindowHost(), $"删除“{asset.Name}”？这会影响使用该图的参考档案。", "删除参考页", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes) await UpdateAssetAsync(asset.Id, HttpMethod.Delete); }, "CompactDanger"));
             body.Children.Add(actions);
             tiles.Children.Add(Surface(body, selected.Contains(asset.Id)));
