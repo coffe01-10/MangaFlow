@@ -2598,4 +2598,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
     }
 
+
+    /// The canonical-escape sub-arm of the write-time containment recheck:
+    /// a journal parent that is a REAL directory (no link involved)
+    /// outside the user-data root must refuse — every leaf guard passes
+    /// here (names absent, nothing is a link), and the swapped-dir link
+    /// pin fires its own earlier arm, so only the canonical containment
+    /// knows this location is wrong. Mutation-verified: a `&& false` on
+    /// this check survives the entire suite otherwise.
+    #[test]
+    fn write_journal_atomic_refuses_a_real_parent_outside_the_user_data_root() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-canonical-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        std::fs::create_dir_all(&user_data).unwrap();
+        let outside = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-canonical-out-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let outside_runtime = outside
+            .join("runtime")
+            .join(format!("mangaflow-desktop-{}", "d".repeat(32)));
+        std::fs::create_dir_all(&outside_runtime).unwrap();
+
+        let result = write_journal_atomic(
+            &outside_runtime.join(JOURNAL_NAME),
+            &serde_json::json!({ "state": "stopped" }),
+            &user_data,
+        );
+
+        let error = result
+            .expect_err("a real parent outside the user-data root must refuse");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(
+            error.to_string().contains("escapes the user-data root"),
+            "the refusal must name the containment escape: {error}"
+        );
+        assert!(
+            !outside_runtime.join(JOURNAL_NAME).exists(),
+            "nothing may be written at the escaped location"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
 }
