@@ -3790,4 +3790,68 @@ mod tests {
             "the redirected staging/placement must leave nothing behind: {orphans:?}"
         );
     }
+
+    /// The free-space precheck's comparison must be EXACT: an export whose
+    /// estimated need exactly equals the available bytes must PASS (the
+    /// `<` refusal fires only BELOW), and the InsufficientSpace fields
+    /// must report both sides (needed from the member set, available from
+    /// the seam) so the operator dialog states the real gap. Driven
+    /// entirely through the available_bytes seam — no real disk query.
+    #[test]
+    fn export_space_precheck_boundary_is_exact_and_reports_both_sides() {
+        let user_data = temp_user_data("space-boundary");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("real.log"), "0123456789").unwrap();
+
+        // Compute the exact need through the same estimator and the same
+        // member walk the precheck performs.
+        let mut members: Vec<(String, std::path::PathBuf, u64)> = Vec::new();
+        let mut skipped: Vec<SkippedEntry> = Vec::new();
+        let logs_canonical = logs.canonicalize().unwrap();
+        collect_members(&logs, &logs_canonical, "", 0, &mut members, &mut skipped).unwrap();
+        let needed = export_space_needed(&members, EXPORT_MAX_TOTAL_BYTES);
+
+        // available == needed: must PASS (refusing an exactly-enough
+        // export would make the precheck order-dependent guesswork).
+        let destination =
+            std::env::temp_dir().join(format!("mfd-boundary-eq-{}.zip", crate::protocol::new_token()));
+        let report = export_logs_with(
+            &user_data,
+            &destination,
+            false,
+            ExportLimits {
+                max_members: EXPORT_MAX_MEMBERS,
+                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+                available_bytes: Some(needed),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.files, vec!["real.log"], "{report:?}");
+
+        // available == needed - 1: must refuse, and the error must carry
+        // BOTH numbers (the operator dialog states the real gap).
+        let destination_short =
+            std::env::temp_dir().join(format!("mfd-boundary-short-{}.zip", crate::protocol::new_token()));
+        let result = export_logs_with(
+            &user_data,
+            &destination_short,
+            false,
+            ExportLimits {
+                max_members: EXPORT_MAX_MEMBERS,
+                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+                available_bytes: Some(needed - 1),
+            },
+        );
+        match result {
+            Err(ExportError::InsufficientSpace { needed: n, available: a }) => {
+                assert_eq!(n, needed, "needed must be the estimator's output");
+                assert_eq!(a, needed - 1, "available must be the seam value");
+            }
+            other => panic!("expected InsufficientSpace, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&destination);
+        let _ = fs::remove_dir_all(&destination_short);
+    }
 }
