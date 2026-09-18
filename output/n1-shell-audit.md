@@ -565,3 +565,9 @@ summary 写守卫、owned 进程分配前窗口、clone 排序、静态读围栏
   · 合入确认：#944/#946/#951/#952/#955/#956 全部入 master。
   · 流程披露：账本提交两度误落 PR 分支（checkout 守卫绕过）——均已
     分支搬运修复；改为 scratch-file 批量记账降低切换频率。
+- 审查轮 R7（认证轮）：master 6c45768 三层全绿——cargo 203（含 #944
+  E0061 修复与全部新钉）、tests/ 1595 passed/109 skipped、scripts
+  bridge-style sweep 194/2。master 红灯清零确认（#944 已合）。
+- #943 rebase 解锁：与并行 fsync-order positional 精修的 EOF 尾冲突
+  → 联合保留四枚耐久性钉（对 master 缺席逐一核验后插入），135/135
+  lib 绿，MERGEABLE。
