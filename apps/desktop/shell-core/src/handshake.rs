@@ -533,6 +533,53 @@ mod tests {
     /// form the whole wait lands near the 300ms timeout; the fixed-2s
     /// regression overshoots to ~2s and fails the wall-clock bound.
     #[test]
+    /// The dies-MID-POLL arm must fail FAST with BrokenPipe, not ride the
+    /// budget out to TimedOut: first liveness check passes, the health
+    /// attempt itself fails, and the loop-top recheck then observes the
+    /// death. The accidental coverage (a one-shot squatter closing with
+    /// the request unread) caught this mutant only via an RST racing the
+    /// 200 — here the death is deterministic: a counter closure goes
+    /// false after the first failed attempt against a peer that accepts
+    /// and immediately closes, so attempt 2's loop-top recheck must fire
+    /// BrokenPipe well inside the budget.
+    #[test]
+    fn wait_for_health_fails_fast_when_the_helper_dies_mid_poll() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        // Drain accepts in a thread: each connection is closed immediately
+        // (no response), so every attempt fails quickly.
+        let drainer = std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                drop(stream);
+            }
+        });
+
+        let attempts = std::cell::Cell::new(0u32);
+        let alive = || {
+            let n = attempts.get();
+            attempts.set(n + 1);
+            n == 0 // alive for the first check only: dies mid-poll
+        };
+
+        let started = std::time::Instant::now();
+        let result = wait_for_health(&origin, Duration::from_secs(30), alive);
+        drop(drainer);
+
+        match result {
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe,
+                "the death must surface as the liveness arm, got: {error}"
+            ),
+            Ok(()) => panic!("a dead helper must not pass the health gate"),
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the liveness arm must fail fast, not ride the budget: {elapsed:?}"
+        );
+    }
+
     fn wait_for_health_bounds_each_attempt_by_the_remaining_budget() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
