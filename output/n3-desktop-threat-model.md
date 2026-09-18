@@ -776,3 +776,5 @@ reset 至 origin/master 1386570（含 ledger-39 谱系）；flock 时代 CI 红�
 - **#930 PATHEXT shim 拒绝全主机驱动**（跨平台化）+ **#926 已合**（fsync-order 钉作用域修正，见 #925）。
 
 **认证**：logs 家族 **45/45**；runner 全量 **207 passed, 2 skipped**（bundle 重建后）。
+
+**§42 补充（20260918 夜 06:30 段）**：基线 **ad0a841** 认证——runner **208 passed, 2 skipped**（+1 系 #946 的 N1 junction 钉入 master；该变更位于 N1-Core 工作树的测试文件，非本 Goal 审计面）；shell-core **201/201**。#945/#946 合入后 export_space_needed 三参形态 + collect_skips 计数三钉全绿（3/3 复验）。
