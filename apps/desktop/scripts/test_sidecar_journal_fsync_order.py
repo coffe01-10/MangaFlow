@@ -76,17 +76,33 @@ def test_write_journal_fsyncs_the_payload_before_the_replace(
 
     helper._write_journal(journal, _record("ready"))
 
-    fsync_calls = [c for c in calls if c[0] == "fsync"]
-    replace_calls = [c for c in calls if c[0] == "replace"]
-    assert len(fsync_calls) == 1, f"exactly one payload fsync: {calls}"
-    assert len(replace_calls) == 1, f"exactly one publish: {calls}"
-    assert calls.index(fsync_calls[0]) < calls.index(replace_calls[0]), (
-        f"fsync must precede the replace: {calls}"
+    fsync_positions = [i for i, c in enumerate(calls) if c[0] == "fsync"]
+    replace_positions = [i for i, c in enumerate(calls) if c[0] == "replace"]
+    assert len(replace_positions) == 1, f"exactly one publish: {calls}"
+    replace_pos = replace_positions[0]
+    # Contract 1 (order): exactly ONE payload fsync, BEFORE the publish.
+    pre_replace = [i for i in fsync_positions if i < replace_pos]
+    assert len(pre_replace) == 1, (
+        f"exactly one payload fsync before the publish: {calls}"
+    )
+    # Contract 2 (the #900 durability tail): the parent DIRECTORY fsync
+    # lands AFTER the publish — a power loss before the directory entry
+    # commits reverts the journal to missing/prior (which the sweep does
+    # not reclaim). The tail's fd is the runtime directory, not the
+    # pending payload's.
+    post_replace = [i for i in fsync_positions if i > replace_pos]
+    assert len(post_replace) == 1, (
+        f"the directory-entry durability tail must fsync once after the "
+        f"publish: {calls}"
     )
     # The fsynced fd is the pending payload's, and the publish renames the
     # pending sibling onto the journal (never a direct write).
-    assert isinstance(fsync_calls[0][1], int), f"fsync got a real fd: {calls}"
-    assert replace_calls[0][1].endswith("owner.json.helper.pending"), (
+    payload_fsync_call = calls[pre_replace[0]]
+    assert isinstance(payload_fsync_call[1], int), (
+        f"fsync got a real fd: {calls}"
+    )
+    publish_call = calls[replace_pos]
+    assert publish_call[1].endswith("owner.json.helper.pending"), (
         f"the pending sibling is what gets published: {calls}"
     )
     assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "ready"
