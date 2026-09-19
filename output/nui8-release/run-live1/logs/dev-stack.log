@@ -1,0 +1,38 @@
+
+> mangaflow-ai@0.2.0 dev
+> concurrently -n web,api -c cyan,magenta "npm run dev:web" "npm run dev:api"
+
+[web] 
+[web] > mangaflow-ai@0.2.0 dev:web
+[web] > npm run dev --workspace @mangaflow/web
+[web] 
+[api] 
+[api] > mangaflow-ai@0.2.0 dev:api
+[api] > .venv\Scripts\python.exe -m uvicorn app.main:app --reload --app-dir apps/api --host 127.0.0.1 --port 8000
+[api] 
+[web] 
+[web] > @mangaflow/web@0.2.0 dev
+[web] > next dev --hostname 127.0.0.1
+[web] 
+[api] INFO:     Will watch for changes in these directories: ['D:\\��ý��\\����������']
+[api] INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[api] INFO:     Started reloader process [20188] using WatchFiles
+[api] INFO:     Started server process [26864]
+[api] INFO:     Waiting for application startup.
+[api] INFO:     Application startup complete.
+[api] INFO:     127.0.0.1:8282 - "GET /api/v1/health HTTP/1.1" 200 OK
+[web] ▲ Next.js 16.3.3 (Turbopack)
+[web] - Local:         http://127.0.0.1:3000
+[web] - Network:       http://127.0.0.1:3000
+[web] ✓ Ready in 8.5s
+[web] ✓ Running next.config.ts took 903ms
+[web] - Experiments (use with caution):
+[web]   · optimizePackageImports
+[web] 
+[web]  GET / 200 in 1486ms (next.js: 297ms, proxy.ts: 724ms, application-code: 465ms)
+[api] INFO:     127.0.0.1:4793 - "GET /api/v1/health HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4800 - "GET /api/v1/projects/nui67-main/exports HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:8797 - "GET /api/v1/projects/ HTTP/1.1" 307 Temporary Redirect
+[api] INFO:     127.0.0.1:8838 - "GET /api/v1/exports/9489de44-c30f-43ef-bb70-c9a61eebd39b/download?project_id=a5f49d96-a4d9-4928-9b27-99208b4c5755 HTTP/1.1" 404 Not Found
+[api] WARNING:  WatchFiles detected changes in 'scripts\nui67_seed.py'. Reloading...
+[api]  

@@ -1,0 +1,16 @@
+﻿SCROLLER name=项目页面导航 extent=0x0 viewport=0x0 vPct=0 hPct=-1 vScrollable=True
+  SetScrollPercent THREW: RuntimeException: 在此对象上找不到属性“ScrollVerticalPercent”。请确认该属性存在并且可设置。
+  Scroll(LargeDown) THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。
+  sweep THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。
+SCROLLER name=素材库滚动区 extent=0x0 viewport=0x0 vPct=0 hPct=-1 vScrollable=True
+  SetScrollPercent THREW: RuntimeException: 在此对象上找不到属性“ScrollVerticalPercent”。请确认该属性存在并且可设置。
+  Scroll(LargeDown) THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。
+  sweep THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。
+SCROLLER name=素材开始日期 extent=0x0 viewport=0x0 vPct=-1 hPct=-1 vScrollable=False
+  SetScrollPercent THREW: RuntimeException: 在此对象上找不到属性“ScrollVerticalPercent”。请确认该属性存在并且可设置。
+  Scroll(LargeDown) THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。
+  sweep THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。
+SCROLLER name=素材结束日期 extent=0x0 viewport=0x0 vPct=-1 hPct=-1 vScrollable=False
+  SetScrollPercent THREW: RuntimeException: 在此对象上找不到属性“ScrollVerticalPercent”。请确认该属性存在并且可设置。
+  Scroll(LargeDown) THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。
+  sweep THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。

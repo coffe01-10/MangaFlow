@@ -1,0 +1,25 @@
+{
+  "name": "keepalive-offline",
+  "at": "2026-09-19 20:14:17",
+  "note": null,
+  "buckets": {
+    "idle-gap-read": {
+      "ok": 10,
+      "failed": 0
+    },
+    "burst": {
+      "ok": 10,
+      "failed": 0
+    },
+    "idle-gap-save": {
+      "ok": 10,
+      "failed": 0
+    }
+  },
+  "failures": [],
+  "extra": {
+    "server_accepted_sockets": 21,
+    "server_saw_half_close": 0,
+    "transport_diagnostic": "[mangaflow-api] PATCH http://127.0.0.1:2473/projects \u4F20\u8F93\u5931\u8D25: HttpRequestException \u003C- SocketException:ConnectionRefused"
+  }
+}

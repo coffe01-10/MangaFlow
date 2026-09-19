@@ -1,0 +1,24 @@
+{
+  "name": "keepalive-offline",
+  "at": "2026-09-19 17:29:42",
+  "note": null,
+  "buckets": {
+    "idle-gap-read": {
+      "ok": 20,
+      "failed": 0
+    },
+    "burst": {
+      "ok": 20,
+      "failed": 0
+    },
+    "idle-gap-save": {
+      "ok": 20,
+      "failed": 0
+    }
+  },
+  "failures": [],
+  "extra": {
+    "server_accepted_sockets": 41,
+    "server_saw_half_close": 0
+  }
+}
