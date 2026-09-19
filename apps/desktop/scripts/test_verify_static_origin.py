@@ -178,6 +178,19 @@ def test_reaped_helper_guard_precedes_platform_kill_branches():
     )
 
 
+def test_static_fixture_answers_head_without_a_get_shaped_body():
+    """HTTP semantics: a HEAD response must not carry a body — a strict
+    client (curl -I) hanging on a GET-shaped HEAD response is worse than
+    an honest 501 from this D5-only fixture. Static mode answers 501
+    with a short text body; plan-B mode (same server shape) never sees
+    HEAD from the D5 flow either."""
+
+    source = _source()
+    assert 'req.method === "HEAD"' in source, (
+        "the static fixture must answer HEAD without a GET-shaped body"
+    )
+    assert 'HEAD not implemented' in source
+
 def test_plan_b_api_evidence_filters_by_path_not_origin():
     """Plan-B's API-evidence filter must select /api/ PATHS, not the web
     origin prefix (round-8 review): in plan-B the page origin also serves
