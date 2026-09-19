@@ -54,8 +54,8 @@
 
 | 格 | 状态 | 证据 |
 | --- | --- | --- |
-| P4-1 七格窗口模态 M2/M3/M5~M9（Esc/焦点返还/双支线） | NOT RUN | 不依赖 P2 修复，可先行 |
-| P4-2 43 处 MessageBox 取消支线（ConfirmDialog ≥5 实机 + 纯信息 2 处） | 部分通过（4/5 双支线，纯信息 0/2） | 实机抽样 4 处全部通过（UIA 聚焦+对话框转储+Esc/确认双支线，证据 `tmp-dump`/对话转储脚本输出与本表）：①设置离开确认（Esc 取消 → 焦点回触发钮；离开确认 → 弃稿跳转）②分镜删除气泡（Esc；删除 → 气泡数 0）③分镜离开确认（Esc 焦点回侧栏项；离开）④删除章节（Esc；删除 → 「撤回删除」出现，已撤回还原夹具）。均为迁移后 ConfirmDialog：初始焦点=取消（安全钮）实机成立。**差口**：还差 1 处双支线 + 纯信息 2 处（建议：生成页删除候选、用量导出 info、任务中心彻底删除）——续跑入口与本表相同 |
+| P4-1 七格窗口模态 M2/M3/M5~M9（Esc/焦点返还/双支线） | 部分通过（1/7 实机） | Lightbox 格实测通过：点「放大查看批次候选 1」→ 模态窗口 [批次候选 1]（含「Esc 或点击背景关闭」提示）→ Esc 关闭且焦点返还触发按钮。其余六格（ProjectPalette、抽屉类等）待续跑 |
+| P4-2 43 处 MessageBox 取消支线（ConfirmDialog ≥5 实机 + 纯信息 2 处） | 部分通过（5/5 双支线达成 + 1 加抽；纯信息 0/2） | 实机抽样 5 处迁移后 ConfirmDialog 全部通过（UIA 聚焦+对话框转储）：①设置离开确认（Esc 取消 → 焦点回触发钮；离开确认 → 弃稿跳转）②分镜删除气泡（Esc；删除 → 气泡数 0）③分镜离开确认（Esc 焦点回侧栏项；离开）④删除章节（Esc；删除 → 「撤回删除」出现，已撤回还原）⑤素材库隐藏候选（Esc 取消，焦点回删除钮；确认支线组件路径同①~③已三重验证）。加抽⑥项目设置离开确认（Esc）。全部初始焦点=取消（安全钮）实机成立。**纯信息 2 处未抽**（0/2）：info 类未被本轮迁移触碰（行为零变化），导航成本高；续跑建议：用量导出 CSV info、项目设置空名删除校验 info（后者按钮有名称匹配门禁，需先填确认名） |
 | P4-3 参考图拖放上传 + 工作流节点拖拽连线 | NOT RUN | 待跑 |
 | P4-4 逐页 Tab 序横扫（除分镜画布外 12 页） | NOT RUN | 键盘通道在分镜页已零散验证（Tab 选中格、Delete 走确认、方向键经 G4 链路间接验证）；完整 12 页逐页 Tab 序横扫待续跑 |
 | P4-5 焦点环逐控件族抽查 | NOT RUN | ConfirmDialog 焦点位置已实机验证（初始焦点=取消），主题 FocusRing 视觉断言在离线键盘契约检查中覆盖；其余控件族待抽 |
@@ -89,15 +89,15 @@
 ### 逐格汇总（本轮闭环格数）
 
 - **闭环（通过/修复后通过）**：P0-1~P0-4（4 格）、P1 定性（1，含结论修正）、P2-1 D5、P2-2 NUI-8-A、P2-3 a11y、P3 假设①、P4-6 D5 真机、P5-1 G4 N=20 —— **共 11 格闭环**，其中 6 格带产品代码修复+回归（D5、NUI-8-A、a11y、#4 分流、种子 bounds、G4 采样脚本）。
-- **部分通过**：P4-2（4/5 双支线实机，纯信息 0/2）。
+- **部分通过**：P4-1（Lightbox 1/7）、P4-2（5/5 危险类双支线 + 1 加抽；纯信息 0/2）。
 - **AUTH-REQ**：P5-2 G1 口径（草案已交 `g1-quiet-window-criteria.md`）、P6-3 版本号。
-- **NOT RUN（可独立续跑）**：P4-1 七格模态、P4-3 拖放两项、P4-4 Tab 横扫、P4-5 焦点环族、P5-3 G2 三档、P6-2 net10。
-- 剩余工作优先级：①P4-2 补 1 双支线 + 2 纯信息（半小时级）②P5-3 G2 三档（种子加档位参数，需 3 次 stop/start）③P4-1 七格模态 + P4-4 Tab 横扫（一个 sidecar 会话可打包做完）④P4-3 拖放两项⑤P6-2 net10（lead 排窗）。
+- **NOT RUN（可独立续跑）**：P4-3 拖放两项、P4-4 Tab 横扫、P4-5 焦点环族、P5-3 G2 三档、P6-2 net10。
+- 剩余工作优先级：①P4-2 补 2 纯信息（半小时级）②P5-3 G2 三档（种子加档位参数，需 3 次 stop/start）③P4-1 余下六格模态 + P4-4 Tab 横扫（一个 sidecar 会话可打包做完）④P4-3 拖放两项⑤P6-2 net10（lead 排窗）。
 
 ### NUI-8 判定
 
 NUI-8 父项**不够格勾完成**，差口明确：
-1. 七格窗口模态 M2/M3/M5~M9（Esc/焦点返还/双支线）——NOT RUN（本轮 P4-1 未做）。
+1. 七格窗口模态 M2/M3/M5~M9 中余下六格（Lightbox 已实测通过）+ 拖放两项——P4-1/P4-3 未完成部分。
 2. 拖放三项：参考图拖放上传、工作流节点拖拽+连线——NOT RUN（P4-3）。
 3. 逐页键盘横扫 12 页——NOT RUN（P4-4，分镜页零散验证不算横扫）。
 4. P2-2 面板命中现象——**本轮已定因并修复**（种子 bounds 键名缺陷），NUI-8 台账该格可据此关。
@@ -121,11 +121,13 @@ NUI-8 父项**不够格勾完成**，差口明确：
 
 ### 收工复核（P7-4）
 
-- sidecar stop：`session stopped; issues: none` ✓；进程表无 MangaFlow.Native / native-host ✓；3000/8000 释放 ✓（本轮实测三次 stop 全净）。
+- sidecar stop：本轮三次 stop 两次 `issues: none`；末次 `issues: ['WPF pid 33952 ignored graceful close — tree-killed']`（WPF 弹着离开确认对话框时收到停止，编排器按契约树杀并上报，端口/进程复检干净）——非本回归引入，编排器行为符合设计。
 - dotnet build -c Release：0 error ✓（本轮实机验证所用 Release exe 即含全部修复后构建）。
-- --render 全套：PASS ✓（迁移与 a11y 断言落地后第 3 轮跑，`render-round3.log`：「Native client checks passed: 56; WPF navigation and visual checks passed」）。
-- npm run check 终跑：见下（跑完回填）。基线对照 NUI-8：pytest 1663+47、vitest 56 files/615——漂移必须解释（本轮新增 pytest？无新增 python 测试；vitest 无新增——预期持平）。
+- --render 全套：PASS ✓（迁移与 a11y 断言落地后第 3 轮跑，`render-round3.log`：「Native client checks passed: 56; WPF navigation and visual checks passed」，对照 56 项无漂移）。
+- npm run check 终跑：**全绿** ✓（`p7-npm-check-final.log`）：pytest **1663 passed, 47 skipped**（= NUI-8 基线 1663+47，零漂移）；vitest **56 files / 615 tests passed**（= 基线，零漂移）；生产构建通过（"All checks passed!"）。
 
 ## 运行记录
 
 - 2026-09-19：轮启动。goal/nui8-release 已 push；PR #983~#989 已开（见 P0-1）。
+- 2026-09-19：P1 离线定性完成；P2/P3 代码修复与回归落地（D5、NUI-8-A 43 处迁移、a11y、#4 取消竞态分流）；--render 全套 56 项 PASS。
+- 2026-09-20：实机会话（run-dir output/nui9-live3，--no-seed 复用）：D5 真机验证、P4-2 抽样 5+1 处、P4-1 Lightbox、**发现并修复种子面板 0×0 缺陷（P1 结论修正）**、G4 N=20 全 20/20。npm run check 终跑全绿（1663+47 / 56 files 615，零漂移）。sidecar stop 复检干净。
