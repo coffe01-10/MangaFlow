@@ -16,7 +16,7 @@ public static class JsonFields
             ? value.GetString() : null;
     public static int Number(this JsonElement json, string name) =>
         json.ValueKind == JsonValueKind.Object &&
-        json.TryGetProperty(name, out var value) && value.TryGetInt32(out var number) ? number : 0;
+        json.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.Number && value.TryGetInt32(out var number) ? number : 0;
     public static double Decimal(this JsonElement json, string name, double fallback = 0) =>
         json.ValueKind == JsonValueKind.Object &&
         json.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.Number && value.TryGetDouble(out var number)
