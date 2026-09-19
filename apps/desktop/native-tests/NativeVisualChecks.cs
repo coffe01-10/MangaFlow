@@ -43,6 +43,15 @@ internal static class NativeVisualChecks
                     using var file = File.Create(Path.Combine(output, $"native-dashboard-{width}.png"));
                     encoder.Save(file);
                 }
+                // ImageBox template regression: a DefaultStyleKey override without any
+                // theme style left the control with no template, so every image in the
+                // real client rendered blank (offline checks asserted URLs, not pixels).
+                var imageBox = new MangaFlow.Native.Controls.ImageBox { Content = new TextBlock { Text = "IMG" } };
+                imageBox.Measure(new Size(120, 120));
+                imageBox.Arrange(new Rect(0, 0, 120, 120));
+                imageBox.UpdateLayout();
+                if (System.Windows.Media.VisualTreeHelper.GetChildrenCount(imageBox) == 0)
+                    throw new Exception("ImageBox has no control template: content never renders (all images blank)");
                 // No Show(): construct the real shell and render only its content tree.
                 // The startup Loaded handler is not attached to a presentation source.
                 var window = new MainWindow("", Path.Combine(Path.GetTempPath(), "mangaflow-unused-visual-fixture"))

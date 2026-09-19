@@ -201,9 +201,6 @@ public sealed class ImageBox : ContentControl
 
     private CancellationTokenSource? load;
 
-    static ImageBox() => DefaultStyleKeyProperty.OverrideMetadata(
-        typeof(ImageBox), new FrameworkPropertyMetadata(typeof(ImageBox)));
-
     public ImageBox()
     {
         Focusable = false;
