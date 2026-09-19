@@ -12,6 +12,22 @@ if (args.Contains("--sidebar"))
     NativeSidebarChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-sidebar-checks"));
     return 0;
 }
+// NUI-8 defect #4: keep-alive / pooled-connection lifecycle. Offline runs the
+// in-process uvicorn-emulating server (CI gate); live mode replays the acceptance
+// load against a running sidecar and writes the full exception chain to disk.
+if (args.Contains("--keepalive"))
+{
+    NativeKeepAliveChecks.RunOffline(args.FirstOrDefault(a => !a.StartsWith("--")) ??
+        Path.Combine(Path.GetTempPath(), "mangaflow-keepalive-checks"));
+    return 0;
+}
+if (args.Contains("--keepalive-live"))
+{
+    var origin = (args.FirstOrDefault(a => a.StartsWith("--origin=")) ?? "--origin=http://127.0.0.1:8000")["--origin=".Length..];
+    NativeKeepAliveChecks.RunLive(origin, args.FirstOrDefault(a => !a.StartsWith("--")) ??
+        Path.Combine(Path.GetTempPath(), "mangaflow-keepalive-live"));
+    return 0;
+}
 if (args.Contains("--usage-page"))
 {
     NativeUsagePageChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-usage-page-checks"));
@@ -247,6 +263,8 @@ using (var editPage = JsonDocument.Parse("""{"id":"page-id","version":7}"""))
 await NativeBehaviorChecks.Run(Check);
 var output = args.FirstOrDefault(a => !a.StartsWith("--"))
     ?? Path.Combine(Path.GetTempPath(), "mangaflow-native-checks");
+// 连接生命周期回归（NUI-8 缺陷 #4 排查产物）：默认全套即执行，无需专用 flag。
+NativeKeepAliveChecks.RunOffline(output);
 var uiChecked = false;
 if (args.Contains("--render"))
 {
