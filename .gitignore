@@ -33,6 +33,10 @@ output/nui8-release/run-*/web-data/
 output/nui8-release/run-*/web-storage/
 output/nui8-release/run-*/web-uploads/
 output/nui8-release/run-*/downloads/*.zip
+# NUI-6/7 side-by-side orchestrator run-dir (session state + evidence; formal report only is tracked)
+output/nui67-acceptance/
+# Local render-check artifacts + seeded SQLite store — never commit local SQLite files
+testseed/
 .playwright-mcp/
 *.tsbuildinfo
 npm-debug.log*
