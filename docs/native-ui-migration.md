@@ -17,6 +17,11 @@ NUI-6 仍未完成：B01–B16 是尚待逐项确认或实现的网页功能/交
 执行的真实窗口、全链路、DPI/性能和发布验收。受控 HTTP、离屏渲染和编译通过只能证明
 其覆盖范围，不能把这些剩余项改写为已验收。
 
+2026-09-19 NUI-8 收口轮已把 C 类中的「安装/升级/卸载」「签名」「严格首帧」「长列表
+滚动」从 BLOCKED 推进为有实测（见下文该节），并把发布决策落到「留在 .NET 8 + 另开
+升级 PR」；但「逐页交互（弹窗/拖放/键盘可达性）枚举」仍有大半是 NOT RUN，
+NUI-6 不能据该轮勾选完成。
+
 2026-09-08 用户补充了原作、人物资产/角色包/参考图、剧本、分镜、生成、素材库与任务页
 的真实网页截图。现有“已重写”和 NUI-6C 的受控 HTTP 状态回归，不能当作所有业务操作
 及像素布局已与网页一致的证据。侧栏图标、编号位置已在原作页还原批次中修正；人物表单仍使用
@@ -28,6 +33,83 @@ NUI-6 仍未完成：B01–B16 是尚待逐项确认或实现的网页功能/交
 遗漏 ItemTemplateSelector，避免项目选择框输出整个 ProjectItem。新增 NativeButtonChecks
 验证矩形状态、分类切换/重复选择、模型互斥选择及 DisplayMemberPath；650/1060 DIP
 资产页预览使用模拟数据，仅作为本次样式检查。
+
+## 2026-09-19 NUI-8 发布收口轮（分支 `goal/nui8-release`）
+
+逐格台账：`output/nui8-release/matrix.md`（本轮起随验收工具入仓；离屏 `render-*/`
+与隔离 run 目录内的 SQLite/媒体库不入库）。基线 `origin/master` = `601a3e38`
+（#980 合并）。统一门禁实测：`npm run check` 全绿（Ruff 通过、Pytest 1663 passed
+47 skipped、Vitest 56 文件 615 passed、`next build` 成功）；原生全套
+`MangaFlow.Native.Tests.exe --render` exit 0、56 项通过。
+
+**已修复并有回归位置**：分镜旧版分页警告条 / ImageBox 无模板 / `Number()` 对 null
+（#980，已在 master）；D1 hero 第二行朱红下划线、D3 侧栏与卡片副标口径拆分、
+D6 TXT 导入标题串场、D7 导出失败提示本地化（`1bfa255c`，离屏 + 真机双侧取证）；
+D2「N 个项目」计数（`addfb23a`：`StringFormat` 里的 `{}` 是 XAML 转义前缀，从 C#
+赋给 `Binding.StringFormat` 时原样进 `string.Format` ⇒ 绑定静默变空串，真机 UIA
+里表现为一个空文本节点；回归同时断言文本与 `ActualWidth>20`，并有把 `{}` 改回去
+的负向红轮留档）；D8 库滚动容器 `AutomationProperties.Name`（`2e6a4fec`）；
+种子导出行 `export_type` 越枚举导致下载 500（`2a9b923a` + `tests/test_nui67_seed_export_download.py`）。
+
+**安装与发布从 BLOCKED 变实测**：新增 NSIS 安装器与静默装/覆盖升级/静默卸载验证
+（`4419acfe`，沿用旧 Tauri 壳 W-12 配方：用户数据 sha256 快照 → `/S /D=` 装 →
+比对 → 同目录再装 → 比对 → `unins000.exe /S` → 比对）。P4-2 八格全通过，包括
+「从安装目录直接启动即可起后端」（隔离用户数据里 shell 日志
+`ready_verified → healthy → stopped exit_code=0`）与「卸载后用户数据零改动」。
+四轮真实失败轮全部留档（`WaitForExit` 类型误用、`unins000.exe` 自复制跳板造成的
+卸载竞态、SQLite 句柄锁、`native-host.exe` 镜像句柄未释放）。附带一条正向结论：
+强杀 WPF 客户端后 `native-host.exe` 会经 stdin 关闭自检自行收尾，不留孤儿进程。
+签名只到「自签名可签、链不受信」这一步（数学必然，非缺陷），且签名会改变产物
+sha256，分发清单须按签名态/未签名态分别记；时间戳与 SmartScreen 记 NOT RUN。
+.NET 决策：本轮结论**留在 .NET 8** 并另开独立升级 PR（本机只有 SDK 8.0.425、
+两个 WPF 工程零 NuGet 依赖、安装器为框架依赖摆放，换大版本会作废 G1/G2/G4/G5
+基线与刚量到的安装器契约）；代价如实记下：8 LTS 支持到 2026-11-12。
+
+**性能仪器化**：G1 严格首帧不再是 BLOCKED —— `App.xaml.cs` 在
+`MANGAFLOW_FIRSTFRAME_OUT` 存在时挂 `CompositionTarget.Rendering` 记首个合成回调
+相对进程启动的毫秒数（口径是呈现层，不是句柄可见也不是 `WaitForInputIdle`），
+冷/热各 N=20 全样本有效（冷 P50 1035 ms、热 P50 1255 ms）。诚实记录两点：
+第 1 轮因读帧过早只有 3/20 热样本命中，失败轮保留；「热」比「冷」还慢说明该口径
+没隔离出 JIT/镜像缓存效应，首帧被 native-host + python sidecar 整棵子进程树的
+provisioning 主导，因此**不给达标结论**，先要求定义安静测量窗口。
+G3 滚动压力：修掉采样器自身的 UIA 用错（`$sp.ScrollVerticalPercent = 100` 打的是
+客户端对象上不存在的属性，两轮静默失败）后改为 `SetScrollPercent(-1, ±100)`，
+20/20 样本 `ScrollDriven=True`，对照跑 WS +2.9 MB / Private +2.9 MB / Gen2 回收 0。
+结论是**库页没有 UI 虚拟化**（`LibraryView.cs:214` 直加 `WrapPanel`， realized UIA
+节点恒 1423），内存不涨靠服务端游标分页；且本轮实测对象是首屏 150 张卡片，
+「600 候选一次滚完」仍是 NOT RUN。
+
+**实机验收口径修正（后续验收必须遵守）**：
+
+1. UIA `BoundingRectangle` 是**物理像素**，MCP 截图坐标是
+   `img = (phys / 1.25 − 窗口原点) × (截图宽 / 窗口宽)`（本机 125% 缩放）。
+   本仓一度把两者混用，导致一批「拖拽无反应」的观测全部作废。换算已固化为
+   `apps/desktop/scripts/uia_rect_to_screenshot.py`，配 `dump_uia_rects.ps1`
+   取 rect，不再靠肉眼估点。
+2. **任何 UIA Invoke 结果不得充当拖放证据**。旧台账把「G4-工作流」记为 PASS，
+   其实际口径是 `measure_workflow_layout.ps1` Invoke「自动布局」。
+3. 修正坐标后做了对照实验：注入式 `drag`（rust-sendinput）能真实驱动本应用的
+   capture 型拖拽（画布滚动条 thumb UIA 位置 624→794，内容同步滚动）。因此
+   「沙箱拦截导致分镜拖拽不可测」这一历史口径**已撤回**；分镜面板拖拽仍零反应
+   只剩「面板鼠标命中路径」一种解释，记 **失败待判**，需按台账第 2 项定性。
+
+**本轮新立、尚未修的缺陷**：NUI-8-A `MessageBox.Show` YesNo 确认框 Esc 不关闭且
+默认焦点在 `是(Y)`（付费/不可逆分支），而自研 `ConfirmDialog` 两条都做对
+（`Ui.cs:500/502`）——建议把付费与删除类确认迁到 `ConfirmDialog`；仪表盘项目卡在
+UIA 里 `Name` 是 `ProjectItem { … }` 记录转储且 `invoke=False select=False`，
+屏幕阅读器读出内部文本、UIA 无法点开；D5 全局设置双头部（改动方案已记，属
+壳↔视图动作所有权重构）；缺陷 #4 仍**未复现**——受控复现器在真实 sidecar 上打了
+400 个请求（串行 burst、跨 keep-alive 空闲窗口的不可重放 PATCH、320 并发 GET ‖
+8 保存）零失败，**否证了「池化连接被服务端回收」假设**，因此不加
+`PooledConnectionLifetime` 一类无对症依据的改动；该轮同时交付
+`ApiClient.ReportTransportFailure`（把方法/origin/异常链/socket 码落到
+`wpf-client.log`），因为上一轮该缺陷零日志正是它无法定因的直接原因。
+
+P2 逐页交互枚举**未完成**：模态清单已全量入台账（9 个窗口型 + 内嵌抽屉 + 44 处
+`MessageBox.Show` 确认点 + 11 处系统文件对话框），实机只跑到抽屉（含 backdrop
+支线）、M1 `ProjectPalette`、M4 `Lightbox`、MB1 重试确认的取消支线；M2/M3/M5~M9
+七格与其余 43 处取消支线、参考图拖放上传、工作流节点拖拽连线、逐页 Tab 序横扫
+均为 NOT RUN，原因与复入口写在台账 P2-1/P2-2 节内，不在此勾完成。
 
 ## 2026-09-19 NUI-6/7 实机并排验收第一轮（分支 `goal/nui67-acceptance`）
 
