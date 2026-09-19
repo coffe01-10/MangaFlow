@@ -23,6 +23,7 @@ output/rc-closure/
 output/v02-21b-screens/
 output/native-parity-review/
 output/native-local/
+output/desktop-installer/
 .playwright-mcp/
 *.tsbuildinfo
 npm-debug.log*
@@ -60,3 +61,8 @@ $null
 .venv-desktop/
 apps/desktop/src-tauri/web/
 apps/desktop/dist/web-standalone/
+
+# Repo-local portable build tools (NUI-8 P4: NSIS for the WPF client installer).
+# Third-party binaries + their download archives are not source.
+tools/nsis-*/
+tools/*.zip
