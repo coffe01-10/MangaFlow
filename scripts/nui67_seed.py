@@ -535,9 +535,12 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
                 bundle.write(storage_root / page_asset.storage_key,
                              f"chapter1/page-{page_number:03d}.png")
         bundle_bytes = bundle_path.read_bytes()
+        # export_type must stay inside the product enum (schemas.py ExportRequest
+        # "^(PNG|PDF|JSON)$"); the download route keys media_type on it, so a
+        # made-up value such as "PNG_ZIP" 500s the whole download path.
         session.add(
             ExportBundle(
-                project_id=main.id, chapter_id=chapter1.id, export_type="PNG_ZIP",
+                project_id=main.id, chapter_id=chapter1.id, export_type="PNG",
                 storage_key=bundle_key,
                 byte_size=len(bundle_bytes),
                 sha256=hashlib.sha256(bundle_bytes).hexdigest(),
