@@ -76,6 +76,15 @@ public sealed class ApiClient : IDisposable
         {
             throw new TimeoutException("请求超时，请检查本地服务后重试。");
         }
+        // 取消竞态（缺陷 #4 假设①，NUI-9 P3）：调用方取消在途请求时连接随取消
+        // 拆除，socket 层可能以 HttpRequestException（"An error occurred while
+        // sending the request"）冒泡而非 OperationCanceledException。必须按调用方
+        // 取消语义分流——重抛 OCE 让视图的「保存已取消」路径吞掉，不得冒充传输
+        // 失败弹错、也不得写传输诊断（真机缺陷 #4 的误报正是这条路径）。
+        catch (HttpRequestException error) when (cancellation.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("请求随调用方取消中止", error, cancellation);
+        }
         catch (HttpRequestException error)
         {
             ReportTransportFailure(method ?? HttpMethod.Get, path, error);
@@ -115,6 +124,11 @@ public sealed class ApiClient : IDisposable
         catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
         {
             throw new TimeoutException("请求超时，请检查本地服务后重试。");
+        }
+        // 取消竞态分流：与 SendOptionalAsync 同一契约（缺陷 #4 假设①）。
+        catch (HttpRequestException error) when (cancellation.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("上传随调用方取消中止", error, cancellation);
         }
         catch (HttpRequestException error)
         {
