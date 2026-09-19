@@ -356,7 +356,10 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
                     shot_type="medium_close_up",
                     background="天台" if order % 2 else "走廊",
                     characters=[linwan.primary_name] if order == 1 else [chenmo.primary_name],
-                    character_presence={linwan.primary_name: order == 1, chenmo.primary_name: order != 1},
+                    character_presence={
+                        linwan.primary_name: "VISIBLE" if order == 1 else "OFFSCREEN",
+                        chenmo.primary_name: "OFFSCREEN" if order == 1 else "VISIBLE",
+                    },
                     outfits={"林晚": "林晚·春季校服"} if order == 1 else {},
                     actions={"主": "执笔凝视"},
                     expressions={"主": "认真"},

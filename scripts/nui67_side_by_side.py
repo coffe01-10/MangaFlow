@@ -44,14 +44,10 @@ NATIVE_EXE = REPO / "apps" / "desktop" / "native" / "bin" / "Release" / "net8.0-
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 
-_JOB_ALL_ACCESS = 0x1F0019
-_PROCESS_ALL_ACCESS = 0x1F0FFF
 _SYNCHRONIZE = 0x00100000
 _CREATE_SUSPENDED = 0x00000004
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
-_INFINITE = 0xFFFFFFFF
 _WM_CLOSE = 0x0010
-_STILL_ACTIVE = 259
 
 
 class _STARTUPINFOW(ctypes.Structure):
@@ -95,8 +91,16 @@ class OwnedProcess:
         self.job = kernel32.CreateJobObjectW(None, job_name)
         if not self.job:
             raise OSError(f"CreateJobObjectW({job_name}) failed: {ctypes.get_last_error()}")
-        log_handle = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
-        nul_handle = os.open("NUL", os.O_RDONLY)
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        nul_fd = os.open("NUL", os.O_RDONLY)
+        # STARTUPINFO needs real OS HANDLE values, not CRT fd numbers.
+        import msvcrt
+
+        log_handle = msvcrt.get_osfhandle(log_fd)
+        nul_handle = msvcrt.get_osfhandle(nul_fd)
+        HANDLE_FLAG_INHERIT = 0x00000001
+        kernel32.SetHandleInformation(log_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
+        kernel32.SetHandleInformation(nul_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
 
         si = _STARTUPINFOW()
         si.cb = ctypes.sizeof(si)
@@ -111,8 +115,8 @@ class OwnedProcess:
             None, command_line, None, None, True, flags, ctypes.c_wchar_p(env_block), str(REPO),
             ctypes.byref(si), ctypes.byref(pi),
         )
-        os.close(log_handle)
-        os.close(nul_handle)
+        os.close(log_fd)
+        os.close(nul_fd)
         if not ok:
             kernel32.CloseHandle(self.job)
             raise OSError(f"CreateProcessW({command_line!r}) failed: {ctypes.get_last_error()}")
@@ -132,10 +136,6 @@ class OwnedProcess:
     def __del__(self) -> None:
         if getattr(self, "job", None):
             kernel32.CloseHandle(self.job)
-
-
-def open_named_job(job_name: str) -> wintypes.HANDLE:
-    return kernel32.OpenJobObjectW(_JOB_ALL_ACCESS, False, job_name)
 
 
 def port_free(port: int) -> bool:
@@ -303,8 +303,8 @@ def _wait_pid_exit(pid: int, timeout_ms: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
-def process_image_name(pid: int) -> str | None:
-    handle = kernel32.OpenProcess(0x00000400 | 0x00000010, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+def _process_image(pid: int) -> str | None:
+    handle = kernel32.OpenProcess(0x0400 | 0x0010, False, pid)  # QUERY_LIMITED|QUERY_NAME
     if not handle:
         return None
     try:
@@ -317,6 +317,69 @@ def process_image_name(pid: int) -> str | None:
         kernel32.CloseHandle(handle)
 
 
+def _descendants(root_pid: int) -> dict[int, str]:
+    """Whole descendant tree (recursive — the sidecar is a grandchild), deduped."""
+    seen: dict[int, str] = {}
+    frontier = [root_pid]
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    while frontier:
+        nxt = []
+        for parent in frontier:
+            snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                while True:
+                    if entry.th32ParentProcessID == parent and entry.th32ProcessID not in seen:
+                        seen[entry.th32ProcessID] = entry.szExeFile
+                        nxt.append(entry.th32ProcessID)
+                    if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                        break
+            kernel32.CloseHandle(snapshot)
+        frontier = nxt
+    return seen
+
+
+def _kill_tree(root_pid: int, expect_image: str, problems: list[str]) -> None:
+    """measure-native-startup.ps1 recipe: kill the ROOT handle-pinned after an
+    image identity check, then kill each descendant only while its live image
+    still matches the pre-kill snapshot (a mismatched image is a pid reuse)."""
+    live = _process_image(root_pid)
+    if live is None:
+        return
+    if live != expect_image:
+        problems.append(f"pid {root_pid} is {live!r}, expected {expect_image!r} — refused, owner must investigate")
+        return
+    kids = _descendants(root_pid)
+    handle = kernel32.OpenProcess(0x0001, False, root_pid)  # PROCESS_TERMINATE
+    if handle:
+        kernel32.TerminateProcess(handle, 1)
+        kernel32.CloseHandle(handle)
+    for pid, image in kids.items():
+        if _process_image(pid) == image and image in {
+            "node.exe", "npm.cmd", "cmd.exe", "python.exe", "next.exe", "uvicorn.exe",
+            "native-host.exe", "mangaflow_desktop_helper.exe",
+        }:
+            child = kernel32.OpenProcess(0x0001, False, pid)
+            if child:
+                kernel32.TerminateProcess(child, 1)
+                kernel32.CloseHandle(child)
+
+
 def cmd_stop(args: argparse.Namespace) -> int:
     if not STATE.exists():
         raise SystemExit("no session recorded")
@@ -324,30 +387,18 @@ def cmd_stop(args: argparse.Namespace) -> int:
     problems: list[str] = []
 
     wpf_pid = session["wpf_pid"]
-    if process_image_name(wpf_pid) == "MangaFlow.Native.exe":
+    if _process_image(wpf_pid) == "MangaFlow.Native.exe":
         for hwnd in _main_windows_of(wpf_pid):
             user32.PostMessageW(wintypes.HWND(hwnd), _WM_CLOSE, 0, 0)
         if not _wait_pid_exit(wpf_pid, 45000):
-            problems.append(f"WPF pid {wpf_pid} ignored graceful close — terminating its job")
-            job = open_named_job(session["wpf_job"])
-            if job:
-                kernel32.TerminateJobObject(job, 1)
-                kernel32.CloseHandle(job)
-            _wait_pid_exit(wpf_pid, 10000)
-    elif process_image_name(wpf_pid) is not None:
+            problems.append(f"WPF pid {wpf_pid} ignored graceful close — tree-killed")
+            _kill_tree(wpf_pid, "MangaFlow.Native.exe", problems)
+    elif _process_image(wpf_pid) is not None:
         problems.append(f"pid {wpf_pid} is no longer MangaFlow.Native.exe (image reuse) — not touched")
 
-    for key in ("dev_job", "wpf_job"):
-        job = open_named_job(session[key])
-        if job:
-            kernel32.TerminateJobObject(job, 1)
-            kernel32.CloseHandle(job)
-        else:
-            problems.append(f"job {session[key]} could not be reopened (already destroyed?)")
-
+    _kill_tree(session["dev_pid"], "cmd.exe", problems)
     time.sleep(2)
-    leftovers = verify_clean()
-    problems.extend(leftovers)
+    problems.extend(verify_clean())
     print(f"session stopped; issues: {problems or 'none'}")
     if args.clean:
         import shutil
