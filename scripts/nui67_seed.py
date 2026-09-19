@@ -353,7 +353,11 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
                 panel = Panel(
                     page_id=page.id,
                     reading_order=order,
-                    bounds={"x": 0.05 + 0.1 * order, "y": 0.05 * order, "w": 0.4, "h": 0.3},
+                    # bounds 键名必须用 width/height（产品契约 geometry.ts:54 与
+                    # native PanelNode.From 同源）：此前写 w/h，native 读不到
+                    # width/height 把面板加载成 0×0，画布点选/拖拽全部落空
+                    # （NUI-8 P2-2「面板鼠标命中无反应」与 G4 无法测的真因）。
+                    bounds={"x": 0.05 + 0.1 * order, "y": 0.05 * order, "width": 0.4, "height": 0.3},
                     shot_type="medium_close_up",
                     background="天台" if order % 2 else "走廊",
                     characters=[linwan.primary_name] if order == 1 else [chenmo.primary_name],
