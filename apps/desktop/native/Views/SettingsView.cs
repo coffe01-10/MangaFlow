@@ -48,6 +48,14 @@ public sealed partial class SettingsView : WorkspaceView
     /// (web: the settings cache update lands on the next query interval).
     /// </summary>
     internal event Action? RuntimeSaved;
+    /// <summary>
+    /// D5：runtimeSaving 置位/清位时各 raise 一次。保存动作归壳后（页面不再
+    /// 自绘头部与动作按钮），壳据此禁用/恢复「保存运行设置」——与 web 的
+    /// save.isPending 同语义。
+    /// </summary>
+    internal event Action? RuntimeSavingChanged;
+    /// <summary>壳按钮禁用数据源：保存请求在途即 true（web: save.isPending）。</summary>
+    internal bool RuntimeSaving => runtimeSaving;
     private string capability = "ALL", modelType = "ALL", sort = "RECOMMENDED";
     private bool verified, hidden;
     private JsonElement runtime;
@@ -700,6 +708,7 @@ public sealed partial class SettingsView : WorkspaceView
         if (runtimeSaving || runtime.ValueKind != JsonValueKind.Object) return;
         runtimeSaving = true;
         runtimeSave.IsEnabled = false;
+        RuntimeSavingChanged?.Invoke();
         runtimeError.Text = "";
         runtimeNotice.Visibility = Visibility.Collapsed;
         try
@@ -778,6 +787,7 @@ public sealed partial class SettingsView : WorkspaceView
         {
             runtimeSaving = false;
             runtimeSave.IsEnabled = true;
+            RuntimeSavingChanged?.Invoke();
         }
     }
 

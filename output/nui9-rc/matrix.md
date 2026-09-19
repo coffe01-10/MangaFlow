@@ -40,7 +40,7 @@
 
 | 格 | 状态 | 证据 |
 | --- | --- | --- |
-| P2-1 D5 全局设置双头部 | NOT RUN → 设计先行 | 待设计稿 |
+| P2-1 D5 全局设置双头部 | 修复后通过（离屏） | 设计稿先行并自审：`d5-design.md`。落地：①页面删除自绘头部（SettingsLayout.cs BuildSystemPage：kicker+标题+三动作全删）；②动作所有权归壳——壳 `SettingsActions` 三按钮为唯一入口，保存按钮 `SaveRuntimeButton` 改代码管理 `IsEnabled = Connected && !RuntimeSaving`（xaml 绑定移除防冲突）；③`SettingsView` 新增 `RuntimeSavingChanged` 事件 + `RuntimeSaving` 属性（SaveRuntime 置位/清位处 raise，沿用 RuntimeSaved 模式；订阅挂在 NavigateAsync 既有 SettingsView 分支，处理器以 ContentHost.Content 守卫防 cached view 陈旧订阅）；④标题统一：TopTitle/Breadcrumb settings-global → 「系统设置与运行诊断」（web 文案）。回归：离屏像素+交互（NativeSystemSettingsPageChecks）新增「页面无第二头部文本」「用量/返回按钮只存在壳」「RuntimeSavingChanged 序列 [true,false]」三断言，原 A05~A09 全保持 PASS，exit 0（`p2-d5/` 含 1440/1240/760/360 PNG 与日志）；恒真断言 `save.TranslatePoint().Y<150` 已删（按钮脱树后无意义）。真机壳级验证转 P4-6 格 |
 | P2-2 NUI-8-A MessageBox YesNo（Esc/默认焦点）+ 43 处普查迁移 | NOT RUN | 待普查表 |
 | P2-3 仪表盘项目卡 a11y（语义 Name + Invoke/Select + UIA 断言） | NOT RUN | 待跑 |
 
@@ -59,6 +59,7 @@
 | P4-3 参考图拖放上传 + 工作流节点拖拽连线 | NOT RUN | 待跑 |
 | P4-4 逐页 Tab 序横扫（除分镜画布外 12 页） | NOT RUN | 待跑 |
 | P4-5 焦点环逐控件族抽查 | NOT RUN | 上轮仅 1 页 |
+| P4-6 D5 真机验证（壳单头部 + 保存中壳按钮禁用截图） | NOT RUN | 依赖 P2-1 修复；随 sidecar 会话跑 |
 
 ## P5 性能补全
 
