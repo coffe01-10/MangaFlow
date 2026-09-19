@@ -42,6 +42,13 @@ def test_desktop_script_contract_pins_pass():
     #     apps/desktop/dist/web-standalone/server.js (plan-B web serve).
     # Both keep their dedicated invocations; the bridge pins the hermetic
     # contract remainder (bind policy, journal guards, relay, run-log…).
+    # errors="replace": the inner pytest writes its report through the
+    # runner's console encoding (cp1252 on the Windows CI runners — a
+    # quoted source line with an em-dash is byte 0x97 there), and a strict
+    # utf-8 read kills the capture's reader thread mid-run: stdout becomes
+    # None and the failure surfaces as an unrelated TypeError on this
+    # assert instead of the inner suite's real report (PR #971's CI red).
+    # The contract here is the exit code; the captured text is diagnostics.
     result = subprocess.run(
         [
             sys.executable,
@@ -57,5 +64,6 @@ def test_desktop_script_contract_pins_pass():
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
     )
     assert result.returncode == 0, result.stdout + result.stderr
