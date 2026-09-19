@@ -76,6 +76,11 @@ public sealed class ApiClient : IDisposable
         {
             throw new TimeoutException("请求超时，请检查本地服务后重试。");
         }
+        catch (HttpRequestException error)
+        {
+            ReportTransportFailure(method ?? HttpMethod.Get, path, error);
+            throw;
+        }
         if (!response.IsSuccessStatusCode)
         {
             ThrowResponseError(response, text);
@@ -110,6 +115,11 @@ public sealed class ApiClient : IDisposable
         catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
         {
             throw new TimeoutException("请求超时，请检查本地服务后重试。");
+        }
+        catch (HttpRequestException error)
+        {
+            ReportTransportFailure(HttpMethod.Post, path, error);
+            throw;
         }
         if (!response.IsSuccessStatusCode)
         {
@@ -248,6 +258,25 @@ public sealed class ApiClient : IDisposable
         var relative = path.StartsWith("/api/v1/", StringComparison.Ordinal) ? path[8..] : path.TrimStart('/');
         Validate(relative);
         return relative;
+    }
+
+    /// <summary>
+    /// NUI-8 缺陷 #4 定因缺口：传输层失败（区别于服务端明确答复的 4xx/5xx）在真机上
+    /// 只剩 "An error occurred while sending the request" 一句，异常链与目标 origin
+    /// 全部丢失，导致该缺陷在 400 次受控请求压测下仍无法复现也无法定因。宿主已把
+    /// stderr 收进 wpf-client.log，这里补一行含 socket 错误码与 origin 的诊断。
+    /// </summary>
+    private void ReportTransportFailure(HttpMethod method, string path, Exception error)
+    {
+        var chain = new System.Text.StringBuilder();
+        for (Exception? cursor = error; cursor != null; cursor = cursor.InnerException)
+        {
+            if (chain.Length > 0) chain.Append(" <- ");
+            chain.Append(cursor.GetType().Name);
+            if (cursor is System.Net.Sockets.SocketException socket)
+                chain.Append(':').Append(socket.SocketErrorCode);
+        }
+        Console.Error.WriteLine($"[mangaflow-api] {method.Method} {Origin}/{path} 传输失败: {chain}");
     }
 
     private static void Validate(string path)

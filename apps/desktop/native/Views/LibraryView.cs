@@ -65,7 +65,16 @@ public sealed partial class LibraryView : WorkspaceView
         panel.Children.Add(pager);
         exportDesk.Margin = new Thickness(0, 28, 0, 0);
         panel.Children.Add(exportDesk); panel.Children.Add(exportList);
-        Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        var scroller = new ScrollViewer
+        {
+            Content = panel,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        // NUI-8 D8：web 侧整页可滚动，原生此前无名称，UIA 无法定位滚动容器，
+        // G3 滚动压力采样因此无法驱动（AutomationProperties.Name 是采样器的寻址键）。
+        System.Windows.Automation.AutomationProperties.SetName(scroller, "素材库滚动区");
+        Content = scroller;
         UpdatePager();
     }
 
