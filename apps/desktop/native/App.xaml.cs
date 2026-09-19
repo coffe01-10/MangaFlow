@@ -76,6 +76,30 @@ public partial class App : Application
             window.Activate();
         }), null, Timeout.Infinite, false);
         window.Show();
+        StartFirstFrameProbe();
+    }
+
+    // G1 严格首帧仪器:只有验收侧设了 MANGAFLOW_FIRSTFRAME_OUT 才挂钩，产品路径零改动。
+    // 口径 = 合成器泵出的第一帧(CompositionTarget.Rendering 首次回调)相对进程启动时刻，
+    // 不是句柄可见、也不是 Dispatcher 空闲；窗口若从未呈现，文件就不会写出，
+    // 采样器必须把缺文件当失败样本保留，而不是当 0。
+    private static void StartFirstFrameProbe()
+    {
+        var path = Environment.GetEnvironmentVariable("MANGAFLOW_FIRSTFRAME_OUT");
+        if (string.IsNullOrWhiteSpace(path)) return;
+        var process = System.Diagnostics.Process.GetCurrentProcess();
+        var started = process.StartTime;
+        EventHandler? handler = null;
+        handler = (_, _) =>
+        {
+            System.Windows.Media.CompositionTarget.Rendering -= handler;
+            // 口径：UI 线程收到第一帧呈现回调的时刻减去进程启动时刻。取回调时刻而不是
+            // RenderingEventArgs 上的帧时间戳，因为 net8.0-windows 的这个类型不暴露该属性。
+            var ms = (DateTime.Now - started).TotalMilliseconds;
+            File.WriteAllText(path,
+                $"pid={process.Id}{Environment.NewLine}first_frame_ms={ms:F1}{Environment.NewLine}");
+        };
+        System.Windows.Media.CompositionTarget.Rendering += handler;
     }
 
     protected override void OnExit(ExitEventArgs e)
