@@ -32,7 +32,9 @@
 
 | 格 | 状态 | 证据 |
 | --- | --- | --- |
-| P1 面板鼠标命中定性（离线合成手势） | 失败待判 → 见 P1-DET | 待跑 |
+| P1 面板鼠标命中定性（离线合成手势） | 通过（定性完成：**注入通道差异，非产品缺陷**） | 新增 `NativeStoryboardEditChecks.PanelDragGestureChecks`（7.5 节，接入 `--storyedit` 与 RunIsolated 链）：`RaiseEvent(MouseLeftButtonDown→MouseMove→MouseLeftButtonUp)` 直接 raise 在面板 Border 上，位移由 `SetCursorPos` 驱动鼠标设备活位置（`GetCursorPos` 校验落点 1019,726）。实测：①down 后 `IsMouseCaptured=true`（CaptureMouse 生效的等价后验）；②`panelGesture` 武装、`SelectPanel` 选中；③moved 回调执行且读到真实位移 `offset=(0.254,0.135)`（归一化），几何随设备位移精确更新（1e-6 容差）；④up 提交进撤销栈、捕获释放；⑤零位移手势提交为 no-op（不入撤销栈、几何不变）。命中探针：`page.InputHitTest(面板中心)` 落在面板 Border 子树内——排除「产品侧遮罩吃掉命中」。整套 `--storyedit` PASS 且进程正常退出（exit 0），日志 `p1-drag/storyedit-run6.log`。**边界**：合成手势直接 raise 在元素上，未经 OS→HWND→WPF 命中测试全链；真机注入通道已被上轮证明可用（滚动条 thumb 实测被拖动）+ 键盘链路能选中改脏，结合本轮「产品逻辑无缺陷 + 面板中心 WPF 命中可达」，真机无反应的剩余候选收窄为**注入坐标与面板命中点的对位（125% DPI/工具换算）**——由 P5-1 的 measure_canvas_drag.ps1 UIA 坐标改造复跑闭环。对照证据 `p1-drag/storyedit-baseline.log`（不含新检查的基线同样 PASS 退出）。测试基建观察（待后续轮修，不阻塞）：`--storyedit` 独立入口在断言失败时进程不退出（teardown 挂起空转；本轮 stash 对照证明与新增检查无关），成功路径正常 |
+
+**P1 判别逻辑**（NUI-8 台账 P5 剩余第 2 项的两分支）：离线能动 ⇒ 注入通道差异（本轮实测结果）；离线同样不动 ⇒ 产品缺陷。实测落入前者，无需进入 BeginPanelDrag 修复分支。
 
 ## P2 待修缺陷
 
