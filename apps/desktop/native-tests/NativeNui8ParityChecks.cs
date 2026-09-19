@@ -41,6 +41,15 @@ internal static class NativeNui8ParityChecks
             Render(hero, width, 1000, Path.Combine(output, $"native-dashboard-hero-{width}.png"));
         }
 
+        // D2：仪表盘「最近创作」右侧的项目计数必须真的渲染出来（实机 UIA 树里没有
+        // 这条文本，离屏必须能断到，否则两侧证据不一致本身就是缺陷）。
+        Layout(hero, 1320, 1000);
+        var count = NativeParityChecks.Descendants(hero).OfType<TextBlock>().FirstOrDefault(t => t.Text.EndsWith("个项目"));
+        Require(count != null && count.Text == "1 个项目", $"NUI-8 D2: dashboard project count missing, found {count?.Text ?? "<none>"}");
+        Require(count!.ActualWidth > 20, $"NUI-8 D2: project count laid out empty, width {count.ActualWidth}");
+        Require(count.TranslatePoint(new Point(count.ActualWidth, 0), hero).X > 1320 * 0.6,
+            "NUI-8 D2: project count must sit on the right edge of the section header");
+
         // D3：侧栏副标与项目卡副标是两条口径，卡片仍按 web 的「N 页 · N 已采用」。
         Require(state.Projects[0].SidebarSummary == "3 章 · 11 页已规划", "sidebar summary must match web '章 / 页已规划'");
         Require(state.Projects[0].Summary == "3 章 · 11 页 · 1 已采用", "dashboard card subtitle keeps the adopted-page count");

@@ -165,7 +165,9 @@ public sealed class HomeView : WorkspaceView
         };
         var dock = new DockPanel();
         var count = new TextBlock { Style = (Style)Application.Current.FindResource("Caption"), VerticalAlignment = VerticalAlignment.Bottom };
-        count.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("ProjectCount") { StringFormat = "{}{0} 个项目" });
+        // "{}" is a XAML markup escape only; set from code it reaches
+        // string.Format verbatim, the binding throws and silently yields "".
+        count.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("ProjectCount") { StringFormat = "{0} 个项目" });
         DockPanel.SetDock(count, Dock.Right);
         dock.Children.Add(count);
         var heading = new StackPanel();
