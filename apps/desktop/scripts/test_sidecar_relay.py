@@ -1027,3 +1027,75 @@ def test_relay_survives_scan_probes_and_serves_the_next_client(monkeypatch):
             stop()
     finally:
         api.close()
+
+
+def test_relay_first_byte_deadline_clears_after_the_first_byte(monkeypatch):
+    """The deadline arms the FIRST byte only: once bytes flow, the timer is
+    cleared and the connection may idle longer than the deadline mid-
+    request (keep-alive/bidi shape). Deleting the clear cuts such a
+    transfer at the deadline — invisible to the slot-release pin, whose
+    client never sends."""
+
+    api = StubApi()
+    try:
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 1)
+        monkeypatch.setattr(helper, "RELAY_FIRST_BYTE_TIMEOUT_SECONDS", 0.3)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST[:1])  # first byte: arms, then clears
+                time.sleep(0.6)  # > 2x the deadline, mid-request idle
+                client.sendall(REQUEST[1:])
+                assert read_response(client, timeout_seconds=15).endswith(b"ok"), (
+                    "an established mid-request idle must survive the "
+                    "first-byte deadline (the timer is cleared after the "
+                    "first byte)"
+                )
+            finally:
+                client.close()
+        finally:
+            stop()
+    finally:
+        api.close()
+
+
+def test_relay_first_byte_deadline_default_is_the_documented_30s():
+    """The default deadline is a contract constant: the tests monkeypatch
+    it to 0.3 everywhere, so a regression to 3000.0 would reinstate the
+    #825 slot-pinning flood while every test stayed green. Pin the value
+    itself (30s: generous for a cold node import, finite for a flood)."""
+
+    import mangaflow_desktop_helper as helper_module
+
+    assert helper_module.RELAY_FIRST_BYTE_TIMEOUT_SECONDS == 30.0
+
+
+def test_relay_releases_the_slot_when_a_client_connects_then_closes(monkeypatch):
+    """A client that connects and closes WITHOUT sending must release its
+    slot (EOF is an exit, not a retry) — the `break`→`continue` mutant
+    spins on the closed socket and starves every later client of the
+    only slot."""
+
+    api = StubApi()
+    try:
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 1)
+        monkeypatch.setattr(helper, "RELAY_FIRST_BYTE_TIMEOUT_SECONDS", 0.3)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            ghost = socket.create_connection(("127.0.0.1", port), timeout=15)
+            ghost.close()  # connect-then-close: EOF, no bytes ever
+            time.sleep(0.5)  # > the deadline; let the pump observe the EOF
+
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST)
+                assert read_response(client, timeout_seconds=15).endswith(b"ok"), (
+                    "a connect-then-close ghost must not starve the only slot"
+                )
+            finally:
+                client.close()
+        finally:
+            stop()
+    finally:
+        api.close()
