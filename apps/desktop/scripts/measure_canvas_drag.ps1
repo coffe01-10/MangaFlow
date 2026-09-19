@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$Samples = 20,
     [string]$OutCsv = "D:\自媒体\漫画工作流\output\nui67-acceptance\run-p2\perf\g4-canvas-drag.csv"
 )
@@ -31,12 +31,13 @@ function Find-ByName([System.Windows.Automation.AutomationElement]$win, [string]
     return $null
 }
 function Status-Text([System.Windows.Automation.AutomationElement]$win) {
-    $el = Find-ByName $win '有未保存修改 · 当前 V2'
-    if ($el) { return 'DIRTY' }
-    $el2 = Find-ByName $win ('已保存 · 当前 V' + '2')
-    if ($el2) { return 'CLEAN' }
-    $el3 = Find-ByName $win '已保存 · 当前 V1'
-    if ($el3) { return 'CLEAN' }
+    # 状态条文案随服务端版本漂移（V1/V2/V3…），按前缀匹配而不是写死版本号
+    $all = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    foreach ($el in $all) {
+        $n = $el.Current.Name
+        if ($n -like '有未保存修改*') { return 'DIRTY' }
+        if ($n -like '已保存 · 当前 V*') { return 'CLEAN' }
+    }
     return 'UNKNOWN'
 }
 function Drag([int]$x1, [int]$y1, [int]$x2, [int]$y2) {
@@ -53,8 +54,20 @@ function Drag([int]$x1, [int]$y1, [int]$x2, [int]$y2) {
     [G4.Input]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)  # LEFTUP
 }
 
-# 面板 P.001 拖块在画布上的屏幕坐标(125% 缩放,25% zoom;与截图核对过)
-$panelX = 885; $panelY = 735
+# 面板拖拽起点改为 UIA 矩形换算（NUI-9 P5-1 第二版）：视口比例点会随页面
+# 平移/缩放/检查器开合漂移（本轮实测 885,735 已落在页面右缘外）。改用
+# 阅读序角标做锚——角标「格 01」绑定面板 P.001 的画布位置，打开阅读序后
+# 从 UIA 取角标矩形，向左下偏移进面板内部下手。缩放/平移无关。
+$orderBtn = Find-ByName $win '阅读序'
+if ($orderBtn) { $orderBtn.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle(); Start-Sleep -Milliseconds 400 }
+$badge = Find-ByName $win '格 01'
+if (-not $badge) { throw "order badge 格 01 not found via UIA（阅读序未开或画布无面板）" }
+$br = $badge.Current.BoundingRectangle
+$panelX = [int]($br.X - 12)
+$panelY = [int]($br.Y + $br.Height + 8)
+Write-Output ("badge 格 01 {0},{1} {2}x{3} -> drag start {4},{5}" -f [int]$br.X, [int]$br.Y, [int]$br.Width, [int]$br.Height, $panelX, $panelY)
+$orderBtn.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() | Out-Null   # 还原阅读序
+Start-Sleep -Milliseconds 300
 $direction = 1
 $rows = New-Object System.Collections.Generic.List[object]
 
@@ -65,8 +78,30 @@ $saveBtn = Find-ByName $win '保存本页'
 if ($saveBtn) { $saveBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
 Start-Sleep -Milliseconds 800
 
+# 每个样本前重新锚定：拖拽会移动面板，脚本开头的固定点会漂移（首轮 3/20 的
+# 教训）。锚定在计时窗口之外（toggle 阅读序→取格 01 角标→还原），不影响采样。
+function Get-PanelAnchor([System.Windows.Automation.AutomationElement]$win) {
+    $all = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    $order = $null
+    foreach ($el in $all) {
+        if ($el.Current.Name -eq '阅读序' -and $el.Current.ControlType.ProgrammaticName -match 'Button') { $order = $el; break }
+    }
+    if (-not $order) { throw "reading-order toggle not found" }
+    $order.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
+    Start-Sleep -Milliseconds 350
+    $badge = Find-ByName $win '格 01'
+    if (-not $badge) { $order.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() | Out-Null; throw "badge 格 01 not found" }
+    $r = $badge.Current.BoundingRectangle
+    $point = @{ X = [int]($r.X - 12); Y = [int]($r.Y + $r.Height + 8) }
+    $order.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() | Out-Null
+    Start-Sleep -Milliseconds 250
+    return $point
+}
+
 for ($i = 1; $i -le $Samples; $i++) {
-    $x1 = $panelX; $x2 = $panelX + 60 * $direction
+    $anchor = Get-PanelAnchor $win
+    $x1 = $anchor.X; $panelY = $anchor.Y
+    $x2 = $x1 + 60 * $direction
     $direction *= -1
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     Drag $x1 $panelY $x2 $panelY
