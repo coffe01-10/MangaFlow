@@ -29,6 +29,49 @@ NUI-6 仍未完成：B01–B16 是尚待逐项确认或实现的网页功能/交
 验证矩形状态、分类切换/重复选择、模型互斥选择及 DisplayMemberPath；650/1060 DIP
 资产页预览使用模拟数据，仅作为本次样式检查。
 
+## 2026-09-19 NUI-6/7 实机并排验收第一轮（分支 `goal/nui67-acceptance`）
+
+历史并排对照的 ERR_CONNECTION_REFUSED 阻塞已解除：新增
+`scripts/nui67_side_by_side.py`（隔离数据目录启动 web+API+原生三件套、健康检查、
+命名 Job/验证式树杀的干净关闭、会话台账）与 `scripts/nui67_seed.py`
+（NUI67-DS1 固定数据集：2 项目/3 章/3 页/2 角色/2 服装/场景/风格/3 批次候选/完成+
+失败任务/调用尝试/账单/工作流草稿/27 供应商预设，双侧数据库+存储一致）。web 与原生
+侧同种子并排截图对齐 1500×975 DIP。台账：`output/nui67-acceptance/matrix.md`（不跟踪）。
+
+逐页实机结果（截图证据见台账索引）：17 页主流程与像素对照全部走通——首页指标带
+与卡片、原作（章节选择/修订保存落库 rev2/分页门禁随章节切换）、资产五子页
+（人物编辑保存/服装绑定/场景/风格/参考分类语义双侧一致）、剧本（覆盖率 100%/场景
+变体绑定/空态）、分镜（页列/画布/导演台/门禁）、生成（候选/批次/生产门禁）、素材库、
+任务中心（失败分组/错误码/费用口径）、流程编排（草稿 V1/节点库/检查器/运行门禁）、
+项目与全局设置、用量（3 次调用/¥66 账单/未知与零值）、帮助。真实供应商生成/付费
+冒烟仍为待授权，未跑。
+
+实机抓出并修复三个离线回归未覆盖的真实缺陷（均有回归测试）：
+
+1. **分镜页缺 web 的「旧版分页数据」警告条**（a8666cde）：web
+   `getPageStructureIssue` 在页缺 scene/beat 来源或未覆盖原文时按数量警告并引导回
+   剧本页，原生缺失。已补 `structureBar` + 前往漫画剧本导航；回归在
+   `NativeStoryboardPageChecks`（legacy fixture 断言横幅出现/计数/随重载消失）。
+2. **ImageBox 无控件模板 → 真机上全 app 图像空白**（83440f87）：`ImageBox` 曾
+   `DefaultStyleKeyProperty.OverrideMetadata` 指向自身却无 Themes/Generic.xaml 样式，
+   Content 永不渲染——离线检查只断言 URL 不断言像素，从未暴露；素材库/生成/资产
+   缩略图全部空白。移除 override 后 ContentControl 默认模板正常呈现；回归在
+   `NativeVisualChecks`（断言视觉子树非空）。
+3. **`JsonFields.Number()` 对显式 null 数值字段抛异常**（c961dd1a）：真实后端把
+   从未验证连接的 `latency_ms` 序列化为 `null`；`TryGetInt32` 对错误类型抛
+   InvalidOperationException 而不是返回 false，导致设置页「供应商列表读取失败」。
+   `Number()` 增加 Number 类型守卫；fixture 增加 `latency_ms: null` 回归。
+
+NUI-7 部分推进：启动计时/退出清理复跑 3 样本全过（句柄 519/483/508ms、空闲
+577/558/540ms、干净关闭、递归子进程扫描零残留，优于历史热样本，无回归）；
+125% DPI 单屏实测文字 ClearType 锐利无发糊；960/1126/1267 DIP 三档宽度渲染干净
+（940 DIP 低于 `MinWidth=960` 按设计不可达）；.NET 8 LTS 核对通过（注意支持期至
+2026-11-12，升级 .NET 10 留 lead 决策）。仍为 NOT RUN：严格首帧（呈现层）、页面
+切换响应 N=20、长列表内存、双画布帧时间、多 DPI/跨屏（单屏环境 BLOCKED）；
+安装/升级/卸载 BLOCKED（仓库无 WPF 安装器产物）；签名 BLOCKED（无证书）；
+409/ConfirmLeave/逐页弹窗焦点的实机专项轮与文件对话框实机未跑（契约由离线回归
+覆盖，不据此勾选实机格）。本节结论由实机截图+数据库+API 证据支撑，台账逐格可溯。
+
 ## 2026-09-09 逐页还原：服装档案与卡片文字
 
 服装入口已切换到原生 OutfitWorkspace，依据网页 assets-section.tsx、use-assets-workspace.ts
