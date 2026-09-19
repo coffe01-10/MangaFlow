@@ -1,0 +1,32 @@
+
+> mangaflow-ai@0.2.0 dev
+> concurrently -n web,api -c cyan,magenta "npm run dev:web" "npm run dev:api"
+
+[web] 
+[web] > mangaflow-ai@0.2.0 dev:web
+[web] > npm run dev --workspace @mangaflow/web
+[web] 
+[api] 
+[api] > mangaflow-ai@0.2.0 dev:api
+[api] > .venv\Scripts\python.exe -m uvicorn app.main:app --reload --app-dir apps/api --host 127.0.0.1 --port 8000
+[api] 
+[api] INFO:     Will watch for changes in these directories: ['D:\\自媒体\\漫画工作流']
+[api] INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[api] INFO:     Started reloader process [36412] using WatchFiles
+[web] 
+[web] > @mangaflow/web@0.2.0 dev
+[web] > next dev --hostname 127.0.0.1
+[web] 
+[web] ▲ Next.js 16.3.3 (Turbopack)
+[web] - Local:         http://127.0.0.1:3000
+[web] - Network:       http://127.0.0.1:3000
+[web] ✓ Ready in 691ms
+[web] ✓ Running next.config.ts took 47ms
+[web] - Experiments (use with caution):
+[web]   · optimizePackageImports
+[web] 
+[api] INFO:     Started server process [40372]
+[api] INFO:     Waiting for application startup.
+[api] INFO:     Application startup complete.
+[api] INFO:     127.0.0.1:6285 - "GET /api/v1/health HTTP/1.1" 200 OK
+[web]  GET / 200 in 537ms (next.js: 118ms, proxy.ts: 161ms, application-code: 258ms)

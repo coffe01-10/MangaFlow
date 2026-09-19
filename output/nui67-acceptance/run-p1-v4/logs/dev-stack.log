@@ -1,0 +1,63 @@
+
+> mangaflow-ai@0.2.0 dev
+> concurrently -n web,api -c cyan,magenta "npm run dev:web" "npm run dev:api"
+
+[web] 
+[web] > mangaflow-ai@0.2.0 dev:web
+[web] > npm run dev --workspace @mangaflow/web
+[web] 
+[api] 
+[api] > mangaflow-ai@0.2.0 dev:api
+[api] > .venv\Scripts\python.exe -m uvicorn app.main:app --reload --app-dir apps/api --host 127.0.0.1 --port 8000
+[api] 
+[api] INFO:     Will watch for changes in these directories: ['D:\\自媒体\\漫画工作流']
+[api] INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[api] INFO:     Started reloader process [36492] using WatchFiles
+[web] 
+[web] > @mangaflow/web@0.2.0 dev
+[web] > next dev --hostname 127.0.0.1
+[web] 
+[web] ▲ Next.js 16.3.3 (Turbopack)
+[web] - Local:         http://127.0.0.1:3000
+[web] - Network:       http://127.0.0.1:3000
+[web] ✓ Ready in 716ms
+[web] ✓ Running next.config.ts took 55ms
+[web] - Experiments (use with caution):
+[web]   · optimizePackageImports
+[web] 
+[api] INFO:     Started server process [8928]
+[api] INFO:     Waiting for application startup.
+[api] INFO:     Application startup complete.
+[api] INFO:     127.0.0.1:9545 - "GET /api/v1/health HTTP/1.1" 200 OK
+[web]  GET / 200 in 514ms (next.js: 109ms, proxy.ts: 156ms, application-code: 249ms)
+[web]  GET /projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/library 200 in 823ms (next.js: 673ms, proxy.ts: 9ms, application-code: 140ms)
+[api] INFO:     127.0.0.1:10289 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042 HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10291 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/chapters HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10294 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/library?group_by=batch&limit=30 HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10293 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/jobs?archived=false HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10292 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/characters HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10291 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/exports HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10290 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:10290 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042 HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10291 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/chapters HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10291 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/library?group_by=batch&limit=30 HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10291 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/jobs?archived=false HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10290 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/characters HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10292 - "GET /api/v1/projects/de3769fa-ebed-4bc1-b956-fc1646a9b042/exports HTTP/1.1" 404 Not Found
+[api] INFO:     127.0.0.1:10771 - "GET /api/v1/projects HTTP/1.1" 200 OK
+[web]  GET /projects/$(.venv/Scripts/python.exe%20-c%20import 404 in 438ms (next.js: 380ms, proxy.ts: 7ms, application-code: 50ms)
+[web]  GET /projects/56e49128-e634-4bca-a5eb-b04a7e29504e/library 200 in 89ms (next.js: 20ms, proxy.ts: 5ms, application-code: 64ms)
+[api] INFO:     127.0.0.1:4031 - "GET /api/v1/projects/56e49128-e634-4bca-a5eb-b04a7e29504e HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4031 - "GET /api/v1/projects/56e49128-e634-4bca-a5eb-b04a7e29504e/characters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4032 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4036 - "GET /api/v1/projects/56e49128-e634-4bca-a5eb-b04a7e29504e/exports HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4033 - "GET /api/v1/projects/56e49128-e634-4bca-a5eb-b04a7e29504e/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4035 - "GET /api/v1/projects/56e49128-e634-4bca-a5eb-b04a7e29504e/library?group_by=batch&limit=30 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4034 - "GET /api/v1/projects/56e49128-e634-4bca-a5eb-b04a7e29504e/jobs?archived=false HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4034 - "GET /api/v1/assets/da0d1db9-388e-40b6-921d-d4bdacef63d1/thumbnail/640 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4034 - "GET /api/v1/chapters/dff2c53b-f292-4198-9915-f133f9dd04be/pages HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4035 - "GET /api/v1/chapters/dff2c53b-f292-4198-9915-f133f9dd04be/production-readiness HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4035 - "GET /api/v1/assets/0342dffc-1ae9-4d00-a948-da1790d7f356/thumbnail/640 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4034 - "GET /api/v1/assets/fffd29c4-f6db-4be3-8036-1a4b12dc4b9c/thumbnail/640 HTTP/1.1" 200 OK
+[api] WARNING:  WatchFiles detected changes in 'testseed\probe_native_media.py'. Reloading...
+[api]  

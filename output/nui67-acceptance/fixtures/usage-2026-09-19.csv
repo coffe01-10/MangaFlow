@@ -1,0 +1,7 @@
+﻿日期,供应商,模型ID,通道,调用次数,成功,失败,未决,输入Token,输出Token,缓存命中Token,输出图片张数,计量状态分布,估算币种,估算金额（原币种）
+2026-09-18,nui67-provider,nui67-image,HTTP_API,1,1,0,0,,,,1,UNKNOWN:0 PARTIAL:0 COMPLETE:1,CNY,0.13000000
+2026-09-19,nui67-cli,nui67-cli-image,CLI,1,0,1,0,,,,,UNKNOWN:1 PARTIAL:0 COMPLETE:0,USD,0.02000000
+2026-09-19,nui67-provider,nui67-image,HTTP_API,1,0,1,0,,,,,UNKNOWN:1 PARTIAL:0 COMPLETE:0,CNY,0.01000000
+
+类型,账期开始,账期结束,供应商,模型ID,通道,账单账户,账单币种,账单金额,录入人,备注
+账单对账,2026-08-21T06:36:45.273611Z,2026-09-18T06:36:45.273611Z,nui67-provider,nui67-image,HTTP_API,nui67-billing,CNY,66.00000000,nui67-operator,"NUI67 离线对账样例,非真实账单"

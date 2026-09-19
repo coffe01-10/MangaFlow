@@ -1,0 +1,5 @@
+{"event":"spawn","fields":{"token":"1eb73e17b5654b7cbc942b1b62a3e878"},"ts":1789797092}
+{"event":"ready_verified","fields":{"pid":37256,"port":5078},"ts":1789797093}
+{"event":"go_sent","fields":{},"ts":1789797093}
+{"event":"healthy","fields":{},"ts":1789797094}
+{"event":"stopped","fields":{"exit_code":0},"ts":1789798358}

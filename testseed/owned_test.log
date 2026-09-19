@@ -1,0 +1,3 @@
+hello-stdout 
+hello-stderr  
+错误: 不支持输入重新定向，立即退出此进程。

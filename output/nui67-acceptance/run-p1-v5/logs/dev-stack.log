@@ -1,0 +1,65 @@
+
+> mangaflow-ai@0.2.0 dev
+> concurrently -n web,api -c cyan,magenta "npm run dev:web" "npm run dev:api"
+
+[web] 
+[web] > mangaflow-ai@0.2.0 dev:web
+[web] > npm run dev --workspace @mangaflow/web
+[web] 
+[api] 
+[api] > mangaflow-ai@0.2.0 dev:api
+[api] > .venv\Scripts\python.exe -m uvicorn app.main:app --reload --app-dir apps/api --host 127.0.0.1 --port 8000
+[api] 
+[api] INFO:     Will watch for changes in these directories: ['D:\\自媒体\\漫画工作流']
+[api] INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[api] INFO:     Started reloader process [17776] using WatchFiles
+[web] 
+[web] > @mangaflow/web@0.2.0 dev
+[web] > next dev --hostname 127.0.0.1
+[web] 
+[web] ▲ Next.js 16.3.3 (Turbopack)
+[web] - Local:         http://127.0.0.1:3000
+[web] - Network:       http://127.0.0.1:3000
+[web] ✓ Ready in 715ms
+[web] ✓ Running next.config.ts took 66ms
+[web] - Experiments (use with caution):
+[web]   · optimizePackageImports
+[web] 
+[api] INFO:     Started server process [38884]
+[api] INFO:     Waiting for application startup.
+[api] INFO:     Application startup complete.
+[api] INFO:     127.0.0.1:5075 - "GET /api/v1/health HTTP/1.1" 200 OK
+[web]  GET / 200 in 544ms (next.js: 127ms, proxy.ts: 174ms, application-code: 243ms)
+[api] INFO:     127.0.0.1:10138 - "GET /api/v1/projects HTTP/1.1" 200 OK
+[web]  GET /projects/5cd8c6d0-160b-4de5-be54-bd42619f0676/jobs 200 in 875ms (next.js: 712ms, proxy.ts: 8ms, application-code: 154ms)
+[api] INFO:     127.0.0.1:5250 - "GET /api/v1/projects/5cd8c6d0-160b-4de5-be54-bd42619f0676 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5251 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5252 - "GET /api/v1/projects/5cd8c6d0-160b-4de5-be54-bd42619f0676/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5253 - "GET /api/v1/projects/5cd8c6d0-160b-4de5-be54-bd42619f0676/jobs?archived=false HTTP/1.1" 200 OK
+[web]  GET /projects/5cd8c6d0-160b-4de5-be54-bd42619f0676/workflow 200 in 1873ms (next.js: 1701ms, proxy.ts: 6ms, application-code: 166ms)
+[api] INFO:     127.0.0.1:4477 - "GET /api/v1/projects/5cd8c6d0-160b-4de5-be54-bd42619f0676 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4479 - "GET /api/v1/workflow-node-types HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4478 - "GET /api/v1/projects/5cd8c6d0-160b-4de5-be54-bd42619f0676/workflows HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4481 - "GET /api/v1/projects/5cd8c6d0-160b-4de5-be54-bd42619f0676/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4480 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4480 - "GET /api/v1/workflows/c47f3b43-2f26-43b7-9782-d0a59b4a90c3/versions HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4481 - "GET /api/v1/workflows/c47f3b43-2f26-43b7-9782-d0a59b4a90c3/runs HTTP/1.1" 200 OK
+[web]  GET /projects/5cd8c6d0-160b-4de5-be54-bd42619f0676/settings 200 in 1253ms (next.js: 1144ms, proxy.ts: 6ms, application-code: 103ms)
+[api] INFO:     127.0.0.1:4410 - "GET /api/v1/projects/5cd8c6d0-160b-4de5-be54-bd42619f0676 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4411 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] WARNING:  WatchFiles detected changes in 'testseed\probe_providers.py'. Reloading...
+[api]  INFO:     127.0.0.1:4129 - "GET /api/v1/settings/runtime HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4131 - "GET /api/v1/settings/diagnostics HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4130 - "GET /api/v1/providers HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4130 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:6376 - "GET /api/v1/providers HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:6376 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:7803 - "GET /api/v1/providers HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:7803 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:6091 - "GET /api/v1/projects HTTP/1.1" 200 OK
+[web]  GET /settings/usage 200 in 461ms (next.js: 335ms, proxy.ts: 8ms, application-code: 119ms)
+[api] INFO:     127.0.0.1:12980 - "GET /api/v1/projects HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:12983 - "GET /api/v1/usage/attempts?since=2026-08-20T14%3A23%3A05%2B08%3A00&limit=50 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:12981 - "GET /api/v1/usage/summary HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:12982 - "GET /api/v1/usage/summary?from=2026-08-20T14%3A23%3A05%2B08%3A00 HTTP/1.1" 200 OK
+[web]  GET /help 200 in 368ms (next.js: 256ms, proxy.ts: 7ms, application-code: 105ms)

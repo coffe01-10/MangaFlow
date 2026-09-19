@@ -1,0 +1,116 @@
+
+> mangaflow-ai@0.2.0 dev
+> concurrently -n web,api -c cyan,magenta "npm run dev:web" "npm run dev:api"
+
+[web] 
+[web] > mangaflow-ai@0.2.0 dev:web
+[web] > npm run dev --workspace @mangaflow/web
+[web] 
+[api] 
+[api] > mangaflow-ai@0.2.0 dev:api
+[api] > .venv\Scripts\python.exe -m uvicorn app.main:app --reload --app-dir apps/api --host 127.0.0.1 --port 8000
+[api] 
+[api] INFO:     Will watch for changes in these directories: ['D:\\自媒体\\漫画工作流']
+[api] INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[api] INFO:     Started reloader process [3708] using WatchFiles
+[web] 
+[web] > @mangaflow/web@0.2.0 dev
+[web] > next dev --hostname 127.0.0.1
+[web] 
+[web] ▲ Next.js 16.3.3 (Turbopack)
+[web] - Local:         http://127.0.0.1:3000
+[web] - Network:       http://127.0.0.1:3000
+[web] ✓ Ready in 655ms
+[web] ✓ Running next.config.ts took 45ms
+[web] - Experiments (use with caution):
+[web]   · optimizePackageImports
+[web] 
+[api] INFO:     Started server process [37260]
+[api] INFO:     Waiting for application startup.
+[api] INFO:     Application startup complete.
+[api] INFO:     127.0.0.1:9203 - "GET /api/v1/health HTTP/1.1" 200 OK
+[web]  GET / 200 in 512ms (next.js: 120ms, proxy.ts: 155ms, application-code: 237ms)
+[api] WARNING:  WatchFiles detected changes in 'testseed\get_projects.py'. Reloading...
+[api]  INFO:     127.0.0.1:6406 - "GET /api/v1/projects HTTP/1.1" 200 OK
+[web]  GET / 200 in 85ms (next.js: 7ms, proxy.ts: 9ms, application-code: 70ms)
+[api] INFO:     127.0.0.1:1265 - "GET /api/v1/projects/dashboard HTTP/1.1" 200 OK
+[web]  GET /projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/source 200 in 1811ms (next.js: 1637ms, proxy.ts: 8ms, application-code: 166ms)
+[api] INFO:     127.0.0.1:9192 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9195 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/jobs?archived=false HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9194 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9193 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9193 - "GET /api/v1/chapters/68cf438f-dd6c-4fb1-b700-b814f15cf270/script HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:10546 - "GET /api/v1/projects HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:10547 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:10548 - "GET /api/v1/chapters/e36370a3-e327-42a9-bf26-b775a0333725/revisions HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:10565 - "GET /api/v1/projects HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:10566 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:10567 - "GET /api/v1/chapters/e36370a3-e327-42a9-bf26-b775a0333725/revisions HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:6250 - "GET /api/v1/projects HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:6251 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:6252 - "GET /api/v1/chapters/e36370a3-e327-42a9-bf26-b775a0333725/revisions HTTP/1.1" 200 OK
+[web]  GET /projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/assets/characters 200 in 1395ms (next.js: 1317ms, proxy.ts: 8ms, application-code: 70ms)
+[api] INFO:     127.0.0.1:2976 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:2978 - "GET /api/v1/assets?project_id=c2edcf29-2f1c-40d9-9dab-0b553a565b20&limit=200&offset=0 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:2980 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/characters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:2979 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:2981 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/jobs?archived=false HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:2977 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:2977 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/character-packages?limit=200&offset=0 HTTP/1.1" 200 OK
+[web]  GET /projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/assets/outfits 200 in 95ms (next.js: 21ms, proxy.ts: 6ms, application-code: 67ms)
+[api] INFO:     127.0.0.1:9601 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9601 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/characters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9603 - "GET /api/v1/assets?project_id=c2edcf29-2f1c-40d9-9dab-0b553a565b20&limit=200&offset=0 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9605 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/outfits HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9604 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9606 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/jobs?archived=false HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:9602 - "GET /api/v1/models HTTP/1.1" 200 OK
+[web]  GET /projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/assets/scenes 200 in 91ms (next.js: 17ms, proxy.ts: 8ms, application-code: 66ms)
+[api] INFO:     127.0.0.1:4610 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4612 - "GET /api/v1/assets?project_id=c2edcf29-2f1c-40d9-9dab-0b553a565b20&limit=200&offset=0 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4613 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4611 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4610 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/jobs?archived=false HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4610 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/scene-assets?limit=200&offset=0 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:4610 - "GET /api/v1/assets/c9d69925-350d-4e35-98a4-e8c78459c010/thumbnail/640 HTTP/1.1" 200 OK
+[web] [browser] Image with src "http://127.0.0.1:3000/api/v1/assets/c9d69925-350d-4e35-98a4-e8c78459c010/thumbnail/640" has either width or height modified, but not the other. If you use CSS to change the size of your image, also include the styles 'width: "auto"' or 'height: "auto"' to maintain the aspect ratio.
+[web] [browser] Image with src "/api/v1/assets/c9d69925-350d-4e35-98a4-e8c78459c010/thumbnail/640" was detected as the Largest Contentful Paint (LCP). Please add the `loading="eager"` property if this image is above the fold.
+[web] Read more: https://nextjs.org/docs/app/api-reference/components/image#loading
+[web]  GET /projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/assets/style 200 in 90ms (next.js: 17ms, proxy.ts: 6ms, application-code: 67ms)
+[api] INFO:     127.0.0.1:5653 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5658 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/styles HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5655 - "GET /api/v1/assets?project_id=c2edcf29-2f1c-40d9-9dab-0b553a565b20&limit=200&offset=0 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5657 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/jobs?archived=false HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5656 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5654 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5654 - "GET /api/v1/asset-generation-batches?target_type=STYLE&target_id=2927066b-023e-4fac-95fe-743bc63e141f&limit=10 HTTP/1.1" 200 OK
+[web]  GET /projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/assets/references 200 in 92ms (next.js: 16ms, proxy.ts: 7ms, application-code: 70ms)
+[api] INFO:     127.0.0.1:3971 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:3971 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:3975 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/outfits HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:3973 - "GET /api/v1/assets?project_id=c2edcf29-2f1c-40d9-9dab-0b553a565b20&limit=200&offset=0 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:3974 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/characters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:3971 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/styles HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:3976 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/jobs?archived=false HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:3972 - "GET /api/v1/models HTTP/1.1" 200 OK
+[web]  GET /projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/script 200 in 97ms (next.js: 19ms, proxy.ts: 7ms, application-code: 71ms)
+[api] INFO:     127.0.0.1:5970 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5974 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/outfits HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5973 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/characters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5972 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5971 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5975 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/scene-assets?include_deleted=true&limit=200&offset=0 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5970 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/jobs?archived=false HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:5970 - "GET /api/v1/chapters/68cf438f-dd6c-4fb1-b700-b814f15cf270/script HTTP/1.1" 200 OK
+[web]  GET /projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/storyboard 200 in 98ms (next.js: 19ms, proxy.ts: 7ms, application-code: 73ms)
+[api] INFO:     127.0.0.1:1405 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20 HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:1405 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/characters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:1408 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/outfits HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:1407 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:1406 - "GET /api/v1/models HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:1409 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/jobs?archived=false HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:1409 - "GET /api/v1/chapters/68cf438f-dd6c-4fb1-b700-b814f15cf270/pages HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:1409 - "GET /api/v1/pages/af1b66e4-3985-4b81-b134-363c490fc19c/storyboard HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:8863 - "GET /api/v1/projects HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:8864 - "GET /api/v1/projects/c2edcf29-2f1c-40d9-9dab-0b553a565b20/chapters HTTP/1.1" 200 OK
+[api] INFO:     127.0.0.1:8865 - "GET /api/v1/chapters/68cf438f-dd6c-4fb1-b700-b814f15cf270/pages HTTP/1.1" 200 OK
