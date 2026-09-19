@@ -59,6 +59,29 @@ internal static class NativeKeepAliveChecks
             report.Extra["server_saw_half_close"] = server.SawCleanClose;
         }
 
+        // 传输层诊断回归（NUI-8 缺陷 #4 定因缺口）：打到必然拒绝的端口，必须留下含
+        // origin 与 socket 错误码的一行 stderr；否则真机再次发生时依旧无从定因。
+        var captured = new StringWriter();
+        var previousError = Console.Error;
+        Console.SetError(captured);
+        int refusedPort;
+        using (var probe = new TcpListener(System.Net.IPAddress.Loopback, 0))
+        {
+            probe.Start();
+            refusedPort = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+        }
+        try
+        {
+            using var dead = new ApiClient($"http://127.0.0.1:{refusedPort}");
+            dead.SendAsync("projects", HttpMethod.Patch, new { slug = "x" }).Wait();
+            throw new Exception("对已关闭端口的请求本应失败");
+        }
+        catch (AggregateException) { }
+        finally { Console.SetError(previousError); }
+        var diagnostic = captured.ToString();
+        report.Extra["transport_diagnostic"] = diagnostic.Trim();
+
         report.Write(evidenceDir, "keepalive-offline");
         Console.WriteLine($"[keepalive/offline] burst={report.Fmt("burst")} " +
                           $"idle-gap-save={report.Fmt("idle-gap-save")} " +
@@ -68,6 +91,9 @@ internal static class NativeKeepAliveChecks
             Console.WriteLine($"[keepalive/offline] FAILED first chain:\n{report.FirstFailure}");
             throw new Exception("缺陷 #4 复现：空闲回收后的不可重放请求失败");
         }
+        if (!diagnostic.Contains("传输失败") || !diagnostic.Contains(refusedPort.ToString()))
+            throw new Exception("传输层诊断未落 stderr：缺陷 #4 复发时依旧无从定因");
+        Console.WriteLine($"[keepalive/offline] 连接生命周期与传输诊断通过 | {diagnostic.Trim()}");
     }
 
     public static void RunLive(string origin, string evidenceDir)
