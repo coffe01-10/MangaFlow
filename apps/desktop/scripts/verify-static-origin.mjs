@@ -245,6 +245,34 @@ const static_hits = [];
 // block — same class as the static_hits hoist above.
 let server;
 if (!PLAN_B) {
+  // ---- 1b. provenance reader (#734 residue): the export's build-info
+  // stamp must name the commit under verification — a stamp from an older
+  // build means the export predates current source (the web-standalone
+  // freshness gate's semantics, mirrored here). A MISSING stamp is
+  // tolerated (older exports predate the stamp); a MISMATCHED one fails
+  // before the browser phase so a stale artifact cannot pass D5.
+  try {
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf-8" });
+    const stamp = JSON.parse(await readFile(join(DESKTOP_ROOT, "dist/frontend/build-info.json"), "utf-8"));
+    if (head.status === 0 && stamp.commit && stamp.commit !== head.stdout.trim()) {
+      console.error(
+        `D5 FAIL: dist/frontend was built from ${stamp.commit} but the ` +
+        `verification HEAD is ${head.stdout.trim()} — rerun ` +
+        `build-frontend-static.sh for the current source.`,
+      );
+      process.exit(1);
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      // No stamp: exports older than #741 are verified on their merits.
+    } else if (error instanceof SyntaxError) {
+      console.error(`D5 FAIL: dist/frontend/build-info.json is not valid JSON: ${error.message}`);
+      process.exit(1);
+    }
+    // A missing/unreadable stamp otherwise falls through to the normal
+    // verification (the fences and marker still gate the behavior).
+  }
+
   // ---- 2. static export server (no /api routes exist here) -----------------
   server = createServer(async (req, res) => {
     static_hits.push(req.url);
