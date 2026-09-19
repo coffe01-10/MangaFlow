@@ -89,12 +89,27 @@ internal static class NativeStoryboardPageChecks
             view.LeaveConfirmOverride = () => Task.FromResult(true); selector.SelectedIndex = 1;
             await Until(() => fixture.Reads > reads && Field<TextBlock>(view, "pageLoadText").Text.StartsWith("第 2 页"));
             Require(selector.SelectedIndex == 1, "confirmed page selection loads the selected API page");
-            Console.WriteLine("PASS: storyboard page strip, API summary/readout, first fit, focus, director collapse, 1320/940/650 layouts, selected-page stability and dirty-page navigation.");
+            // 结构问题横幅（web getPageStructureIssue 对齐）：健康页隐藏、旧版分页
+            // （无 scene/beat 来源 + 未覆盖原文）按数量显示，修复后随重载消失。
+            Require(Field<Border>(view, "structureBar").Visibility == Visibility.Collapsed, "healthy pages keep the structure warning hidden");
+            int navigations = 0;
+            fixture.LegacyPages = true;
+            view.Activate(NewContext(api, () => navigations++));
+            await Until(() => Field<Border>(view, "structureBar").Visibility == Visibility.Visible);
+            Require(Field<TextBlock>(view, "structureCountText").Text == "11 页缺少剧本与分镜来源", "structure banner counts legacy pages");
+            Require(NativeParityChecks.Descendants(Field<Border>(view, "structureBar")).OfType<Button>().Any(b => Equals(b.Content, "前往漫画剧本")), "structure banner links back to the script page");
+            fixture.LegacyPages = false;
+            view.Activate(NewContext(api, () => navigations++));
+            await Until(() => Field<Border>(view, "structureBar").Visibility == Visibility.Collapsed);
+            _ = navigations;
+            Console.WriteLine("PASS: storyboard page strip, API summary/readout, first fit, focus, director collapse, 1320/940/650 layouts, selected-page stability, dirty-page navigation and legacy-page structure banner.");
             Console.WriteLine("Offscreen WPF + HTTP fixtures; real-window DPI, frame timing and live backend/provider acceptance NOT RUN.");
         }
         finally { view.Deactivate(); }
     }
     private static void Click(ButtonBase b) => b.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+    private static WorkspaceContext NewContext(ApiClient api, Action navigate) =>
+        new() { Api = api, State = new(), Window = null!, Project = new ProjectItem("layout", "我最讨厌妹妹了", "", 0, 0), NavigateSection = (_, _) => { navigate(); return Task.CompletedTask; }, OpenDashboard = () => Task.CompletedTask };
     private static T Field<T>(object o, string name) => (T)o.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(o)!;
     private static void Require(bool ok, string message) { if (!ok) throw new Exception(message); }
     private static async Task Until(Func<bool> predicate) { using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8)); while (!predicate()) await Task.Delay(10, timeout.Token); }
@@ -104,8 +119,11 @@ internal static class NativeStoryboardPageChecks
     {
         internal int Reads, Patches;
         internal JsonElement PanelBody;
+        internal bool LegacyPages;
         private string actionText = "“我”跪在爸爸的灵牌前，肩膀颤抖，失声痛哭。窗外下着淅淅沥沥的小雨。";
-        private static object Page(int n) => new { id = $"pg-{n}", chapter_id = "ch", page_number = n, panel_count = 3, storyboard_version = 7, estimated_text_chars = 130, estimated_bubbles = 3, scene_ids = new[] { "s1" }, beat_ids = new[] { "b1", "b2", "b3" }, continuity_status = "NEEDS_REVIEW", canvas = new { width_mm = 182, height_mm = 257, bleed_mm = 3, safe_mm = 5 } };
+        private object Page(int n) => LegacyPages
+            ? new { id = $"pg-{n}", chapter_id = "ch", page_number = n, panel_count = 3, storyboard_version = 7, estimated_text_chars = 130, estimated_bubbles = 3, scene_ids = Array.Empty<string>(), beat_ids = Array.Empty<string>(), source_coverage = new { complete = false }, continuity_status = "NEEDS_REVIEW", canvas = new { width_mm = 182, height_mm = 257, bleed_mm = 3, safe_mm = 5 } }
+            : new { id = $"pg-{n}", chapter_id = "ch", page_number = n, panel_count = 3, storyboard_version = 7, estimated_text_chars = 130, estimated_bubbles = 3, scene_ids = new[] { "s1" }, beat_ids = new[] { "b1", "b2", "b3" }, source_coverage = new { complete = true }, continuity_status = "NEEDS_REVIEW", canvas = new { width_mm = 182, height_mm = 257, bleed_mm = 3, safe_mm = 5 } };
         private object Panel(int n) => new
         {
             id = $"panel-{n}", reading_order = n, version = 2,

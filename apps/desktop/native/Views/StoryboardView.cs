@@ -170,6 +170,7 @@ public sealed partial class StoryboardView : WorkspaceView
                 geometryRequest = null;
                 dirty = false;
                 bubblesDeleted = false;
+                UpdateStructureBar();
                 RenderPageBar();
                 page.Children.Clear();
                 inspector.Children.Clear();
@@ -286,6 +287,7 @@ public sealed partial class StoryboardView : WorkspaceView
             var rows = await Api.SendAsync($"chapters/{chapterId}/pages", cancellation: lifetime.Token);
             if (requestVersion != pagesLoadVersion || lifetime.Token.IsCancellationRequested) return;
             pages = rows.EnumerateArray().Select(PageItem.From).ToList();
+            UpdateStructureBar();
             RenderPageBar();
             var requested = KeyValueStore.Get("storyboard:page:" + ProjectId);
             var target = pages.FirstOrDefault(p => p.Id == requested) ?? pages.FirstOrDefault();
