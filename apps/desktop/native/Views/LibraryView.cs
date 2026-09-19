@@ -375,7 +375,7 @@ public sealed partial class LibraryView : WorkspaceView
             await LoadExportsAsync();
         }
         catch (OperationCanceledException) { }
-        catch (Exception error) { if (epoch == activation && !token.IsCancellationRequested) notice.Text = "导出失败，请刷新核对：" + error.Message; }
+        catch (Exception error) { if (epoch == activation && !token.IsCancellationRequested) notice.Text = "导出失败，请刷新核对：" + MediaErrors.Localize(error, "导出请求未能送达本地服务，请确认本地服务在线后重试。"); }
         finally
         {
             if (epoch == activation) { exporting = false; exportDesk.IsEnabled = true; foreach (var item in Descendants(exportDesk).OfType<WrapPanel>()) item.IsEnabled = readyChapter != null; }
@@ -395,7 +395,7 @@ public sealed partial class LibraryView : WorkspaceView
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (OperationCanceledException) { if (epoch == activation) notice.Text = "下载超时，请重试；原有文件未被替换。"; }
-        catch (Exception error) { if (epoch == activation && !token.IsCancellationRequested) notice.Text = "下载失败，可重试：" + error.Message; }
+        catch (Exception error) { if (epoch == activation && !token.IsCancellationRequested) notice.Text = "下载失败，可重试：" + MediaErrors.Localize(error, "导出文件下载未能送达本地服务，请确认本地服务在线后重试。"); }
         finally { button.IsEnabled = true; }
     }
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
