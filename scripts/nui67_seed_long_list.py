@@ -46,19 +46,24 @@ def _png(path: Path, size: tuple[int, int], rgb: tuple[int, int, int]) -> bytes:
     return path.read_bytes()
 
 
-def seed_long_list(db_url: str, storage_root: Path) -> dict[str, str]:
+def seed_long_list(db_url: str, storage_root: Path, candidates: int = 600) -> dict[str, str]:
+    """candidates: 目标候选总数（NUI-9 G2 三档 100/300/500）。按每页 5 张向上取整分页。"""
     storage_root.mkdir(parents=True, exist_ok=True)
     engine = create_engine(db_url)
     now = datetime.now(UTC)
     with Session(engine) as session:
+        pages_total = (candidates + CANDIDATES_PER_PAGE - 1) // CANDIDATES_PER_PAGE
         project = Project(name="NUI67 长列表内存项目")
         session.add(project)
         session.flush()
-        chapter = Chapter(project_id=project.id, title=f"长列表 {PAGES} 页", ordinal=1)
+        chapter = Chapter(project_id=project.id, title=f"长列表 {pages_total} 页", ordinal=1)
         session.add(chapter)
         session.flush()
 
-        for number in range(1, PAGES + 1):
+        remaining = candidates
+        for number in range(1, pages_total + 1):
+            page_ordinals = range(1, min(CANDIDATES_PER_PAGE, remaining) + 1)
+            remaining -= len(page_ordinals)
             page = MangaPage(
                 chapter_id=chapter.id,
                 page_number=number,
@@ -76,7 +81,7 @@ def seed_long_list(db_url: str, storage_root: Path) -> dict[str, str]:
                 Panel(
                     page_id=page.id,
                     reading_order=1,
-                    bounds={"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8},
+                    bounds={"x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8},
                 )
             )
             batch = GenerationBatch(
@@ -88,11 +93,11 @@ def seed_long_list(db_url: str, storage_root: Path) -> dict[str, str]:
             job = GenerationJob(
                 project_id=project.id, target_type="PAGE", target_id=page.id,
                 job_type="PAGE_GENERATION", status="COMPLETED",
-                idempotency_key=f"nui67-long-{number}",
-                finished_at=now - timedelta(minutes=PAGES - number),
+                idempotency_key=f"nui67-long-{candidates}-{number}",
+                finished_at=now - timedelta(minutes=pages_total - number),
             )
             session.add(job)
-            for ordinal in range(1, CANDIDATES_PER_PAGE + 1):
+            for ordinal in page_ordinals:
                 rgb = ((number * 37 + ordinal * 53) % 256, (number * 91) % 256, (ordinal * 137) % 256)
                 file_key = f"nui67-long-p{number:03d}-c{ordinal}.png"
                 target = storage_root / file_key
@@ -130,16 +135,21 @@ def seed_long_list(db_url: str, storage_root: Path) -> dict[str, str]:
             if number % 20 == 0:
                 session.commit()
         session.commit()
-        result = {"project": project.id, "pages": PAGES, "candidates": PAGES * CANDIDATES_PER_PAGE}
+        result = {"project": project.id, "pages": pages_total, "candidates": candidates}
     engine.dispose()
     return result
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: nui67_seed_long_list.py <database_url> <storage_root>")
-        return 2
-    print(seed_long_list(sys.argv[1], Path(sys.argv[2])))
+    import argparse
+
+    parser = argparse.ArgumentParser(description="G2/G3 long-list memory fixture seeder")
+    parser.add_argument("database_url")
+    parser.add_argument("storage_root")
+    parser.add_argument("--candidates", type=int, default=600,
+                        help="目标候选总数（NUI-9 G2 三档 100/300/500；默认 600）")
+    args = parser.parse_args()
+    print(seed_long_list(args.database_url, Path(args.storage_root), args.candidates))
     return 0
 
 
