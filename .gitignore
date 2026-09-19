@@ -23,6 +23,16 @@ output/rc-closure/
 output/v02-21b-screens/
 output/native-parity-review/
 output/native-local/
+output/desktop-installer/
+# NUI-8 acceptance ledger tracks text/CSV/screenshot evidence only: offscreen render
+# output is regenerable with `MangaFlow.Native.Tests.exe --render`, and the isolated
+# run directories hold a real SQLite + media store that must not be committed.
+output/nui8-release/render-*/
+output/nui8-release/run-*/native-data/
+output/nui8-release/run-*/web-data/
+output/nui8-release/run-*/web-storage/
+output/nui8-release/run-*/web-uploads/
+output/nui8-release/run-*/downloads/*.zip
 .playwright-mcp/
 *.tsbuildinfo
 npm-debug.log*
