@@ -67,6 +67,7 @@ public static class JsonFields
 public record ProjectItem(string Id, string Name, string Summary, int Pending, int Failed)
 {
     public int PageCount { get; init; }
+    public int ChapterCount { get; init; }
     public int SelectedPages { get; init; }
     public string ModeLabel { get; init; } = "";
     public string Resolution { get; init; } = "";
@@ -74,12 +75,23 @@ public record ProjectItem(string Id, string Name, string Summary, int Pending, i
     public string NextSection { get; init; } = "source";
     public string NextLabel { get; init; } = "";
     public string ModeAndResolution => $"{ModeLabel} · {Resolution}";
+    /// <summary>NUI-8 D3：侧栏副标与项目卡副标在 web 上是两条不同口径
+    /// （卡片 app/page.tsx:67「N 章 · N 页 · N 已采用」，侧栏
+    /// project-workspace.tsx:129-134「N 章 · N 页已规划」，无章节时回退
+    /// 「漫画生产工作区」）。WPF 原先把卡片串直接绑给侧栏，多出一条「已采用」、
+    /// 少了「已规划」。page_count 在服务端就是该项目章节下 MangaPage 的行数
+    /// （projects.py:229），与 web 按章节求和同值，且不依赖当前停在哪个
+    /// section——正是 web 那条注释要避开的坑。</summary>
+    public string SidebarSummary => ChapterCount == 0
+        ? "漫画生产工作区"
+        : $"{ChapterCount} 章 · {PageCount} 页已规划";
     /// <summary>#486-2：仪表盘封面绑定 ModeAndResolution（HomeView 模式·分辨率）、
     /// 点击按 NextSection 导航，这些字段在 record 主构造参数之外。实测 record 合成
     /// 等值已覆盖 body 属性（缺陷按原始描述不可复现）；此显式比较把「显示字段必须
     /// 参与重绘判定」固化为契约，防止 record→class 等重构静默丢失它们。</summary>
     public bool SameDisplay(ProjectItem? other) => other != null
         && Id == other.Id && Name == other.Name && Summary == other.Summary
+        && SidebarSummary == other.SidebarSummary
         && Pending == other.Pending && Failed == other.Failed
         && ModeLabel == other.ModeLabel && Resolution == other.Resolution
         && NextSection == other.NextSection && NextLabel == other.NextLabel;
@@ -103,6 +115,7 @@ public record ProjectItem(string Id, string Name, string Summary, int Pending, i
                 row.Number("pending_job_count"), row.Number("failed_job_count"))
             {
                 PageCount = row.Number("page_count"),
+                ChapterCount = row.Number("chapter_count"),
                 SelectedPages = row.Number("selected_page_count"),
                 Resolution = p.Text("default_resolution"),
                 Concurrency = p.Number("default_concurrency"),
