@@ -171,3 +171,1244 @@ tests\test_source_parse_retry_mutex.py ..                                [ 83%]
 tests\test_stabilization.py ...........                                  [ 83%]
 tests\test_start_dev_ps1_contracts.py .....                              [ 83%]
 tests\test_start_native_guard.py ..                                      [ 84%]
+tests\test_storage_sweeps.py ..............                              [ 84%]
+tests\test_story_parse_character_merge.py .                              [ 84%]
+tests\test_story_parse_checkpoint.py ..                                  [ 85%]
+tests\test_storyboard_fence_atomicity.py ..                              [ 85%]
+tests\test_storyboard_layout_contract.py ..........................      [ 86%]
+tests\test_style_analyze_idempotency.py ..                               [ 86%]
+tests\test_style_job_guards.py ........                                  [ 87%]
+tests\test_style_palette.py ..                                           [ 87%]
+tests\test_thinking_budget_propagation.py ....                           [ 87%]
+tests\test_upload_limits.py .......                                      [ 88%]
+tests\test_upload_name_safety.py ....                                    [ 88%]
+tests\test_usage_ledger.py ..........                                    [ 88%]
+tests\test_usage_magnitude_bounds.py ....                                [ 89%]
+tests\test_vertex_adapter.py ....                                        [ 89%]
+tests\test_vertex_health_and_settings.py ................                [ 90%]
+tests\test_windows_worker_recovery.py ......                             [ 90%]
+tests\test_worker_error_sanitized.py .                                   [ 90%]
+tests\test_worker_handlers_sweep.py .........................            [ 92%]
+tests\test_worker_lost_sweep.py ....                                     [ 92%]
+tests\test_worker_preflight_terminal_errors.py .....                     [ 92%]
+tests\test_workflow_definitions.py ...................                   [ 93%]
+tests\test_workflow_engine_facade.py ............                        [ 94%]
+tests\test_workflow_issue798.py ....                                     [ 94%]
+tests\test_workflow_node_preconditions.py ...                            [ 94%]
+tests\test_workflow_race_guards.py .....                                 [ 95%]
+tests\test_workflow_reconcile_guards.py ..                               [ 95%]
+tests\test_workflow_retry_pinning.py ..........                          [ 95%]
+tests\test_workflow_route_manifest.py ....                               [ 96%]
+tests\test_workflow_validation_sweep.py ................................ [ 98%]
+..................................                                       [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\鑷獟浣揬婕敾宸ヤ綔娴乗.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\鑷獟浣揬婕敾宸ヤ綔娴乗.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/test_cli_migration.py: 7 warnings
+tests/test_hot_path_indexes.py: 3 warnings
+tests/test_migration_parity.py: 3 warnings
+tests/test_migrations.py: 79 warnings
+tests/test_scene_assets.py: 10 warnings
+tests/test_usage_ledger.py: 3 warnings
+  D:\鑷獟浣揬婕敾宸ヤ綔娴乗.venv\Lib\site-packages\alembic\config.py:612: DeprecationWarning: No path_separator found in configuration; falling back to legacy splitting on spaces, commas, and colons for prepend_sys_path.  Consider adding path_separator=os to Alembic config.
+    util.warn_deprecated(
+
+tests/test_cli_migration.py: 50 warnings
+tests/test_migrations.py: 425 warnings
+tests/test_scene_assets.py: 50 warnings
+tests/test_usage_ledger.py: 25 warnings
+  D:\鑷獟浣揬婕敾宸ヤ綔娴乗apps\api\migrations\versions\20260904_29_drop_legacy_page_version_constraint.py:208: SADeprecationWarning: The Column.copy() method is deprecated and will be removed in a future release. (deprecated since: 1.4)
+    column.copy() if hasattr(column, "copy") else column
+
+tests/test_migrations.py: 90 warnings
+  D:\鑷獟浣揬婕敾宸ヤ綔娴乗.venv\Lib\site-packages\sqlalchemy\engine\default.py:949: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.executemany(statement, parameters)
+
+tests/test_migrations.py: 18 warnings
+  D:\鑷獟浣揬婕敾宸ヤ綔娴乗.venv\Lib\site-packages\sqlalchemy\engine\default.py:952: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========= 1663 passed, 47 skipped, 765 warnings in 462.66s (0:07:42) ==========
+
+> mangaflow-ai@0.2.0 test:web
+> npm run test --workspace @mangaflow/web
+
+
+> @mangaflow/web@0.2.0 test
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90mD:/鑷獟浣?婕敾宸ヤ綔娴?apps/web[39m
+
+node.exe : Not implemented: navigation to another Document
+所在位置 C:\node\npm.ps1:29 字符: 3
++   & $NODE_EXE $NPM_CLI_JS $args
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Not implemented...nother Document:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ [32m鉁?[39m components/script-editor.test.tsx [2m([22m[2m9 tests[22m[2m)[22m[33m 1760[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鍦烘櫙鑽夌宸蹭慨鏀规椂锛屽彇娑堟寜閽厛寮硅剰纭锛涙嫆缁濆垯淇濈暀鑽夌 [33m 435[2mms[22m[39m
+Not implemented: navigation to another Document
+ [32m鉁?[39m app/projects/[id]/settings/page.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 1943[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 闅愯棌鏅€氬€欓€夛紝浣嗕繚鐣欏綋鍓嶉」鐩粯璁ゆā鍨嬪苟鏍囨敞宸查殣钘?[33m 453[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 409 鍚庡け鏁堥」鐩紦瀛橀噸鎷夛紝閲嶈瘯淇濆瓨鎼哄甫鏈嶅姟鍣ㄦ柊鐗堟湰鎴愬姛 [33m 379[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鑽夌鑴忔椂閿氱偣绂诲紑鍏堢‘璁ゃ€佸埛鏂拌 beforeunload 鎷︽埅锛屼繚瀛樺悗瑙ｉ櫎 [33m 411[2mms[22m[39m
+ [32m鉁?[39m app/settings/page.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 2328[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 淇濆瓨鏃舵妸 job_lease_seconds 闅忚浇鑽锋彁浜ゅ洖鍚庣 [33m 577[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 409 鐗堟湰鍐茬獊鍚庡け鏁堢紦瀛橀噸鎷夛紝閲嶈瘯淇濆瓨甯︿笂鏈嶅姟鍣ㄦ柊鐗堟湰鎴愬姛 [33m 458[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 淇濆瓨鍦ㄩ€旂户缁慨鏀规椂锛屽搷搴旇惤鍦颁繚鐣欐湰鍦颁慨鏀硅€屼笉鏄彁浜ゅ揩鐓у洖寮癸紙#650锛?[33m 311[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[33m 2547[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 椤圭洰鏌ヨ rejected 鏃跺睍绀洪敊璇笌閲嶈瘯锛岃€屼笉鏄案涔呭姞杞?[33m 481[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鍥為€€鎻愮ず鍙叧闂紝涓斿悓涓€娣遍摼涓嶅啀閲嶅鎵撴壈 [33m 310[2mms[22m[39m
+     [33m[2m鉁?[22m[39m ?page= 鍛戒腑褰撳墠绔犺妭椤甸潰鏃朵笉娓叉煋鍥為€€鎻愮ず [33m 302[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鎸囧畾鍦烘櫙鏈嶈鎴愬姛鍚庡け鏁?script/pages/generation-workbench/candidates [33m 462[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/jobs-section.test.tsx [2m([22m[2m15 tests[22m[2m)[22m[33m 3280[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 閲嶈瘯鎴愬姛鐨勪换鍔＄珛鍗崇Щ鍑烘壒閲忓綊妗ｉ€夋嫨 [33m 492[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 杩愯涓殑浠诲姟鎻愪緵鍙栨秷锛屽け璐ヤ换鍔℃彁渚涢噸璇曪紝涓旇皟鐢ㄥ搴旀帴鍙?[33m 353[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/local-edit-workspace.test.tsx [2m([22m[2m16 tests[22m[2m)[22m[33m 4563[2mms[22m[39m
+     [33m[2m鉁?[22m[39m L2 绌?mask 绂佹鐢熸垚锛屾寜閽鐢ㄥ苟瑙ｉ噴 [33m 324[2mms[22m[39m
+     [33m[2m鉁?[22m[39m L3 鐭╁舰+鐢荤瑪+鎿﹂櫎+鎾ら攢锛涙竻绌洪渶瑕佺‘璁わ紱鍖哄煙鏁版湁涓婇檺鎻愮ず [33m 729[2mms[22m[39m
+     [33m[2m鉁?[22m[39m L4 缂╂斁鏀瑰彉鏄犲皠涓斿浣嶅悗鏃犳紓绉伙細mask 涓嶉殢瑙嗗浘鍙樺寲 [33m 344[2mms[22m[39m
+     [33m[2m鉁?[22m[39m L5 骞舵帓姣旇緝锛氭簮涓庢柊妲戒綅鍚屾椂鍙锛屽窘绔犱笌绌烘€佷笉鍚?[33m 308[2mms[22m[39m
+     [33m[2m鉁?[22m[39m L7 鐢熸垚涓攣鐢荤瑪骞跺彲鍙栨秷浠诲姟锛涘彇娑堝悗 mask 淇濈暀鍙噸鏉?[33m 592[2mms[22m[39m
+     [33m[2m鉁?[22m[39m L17/L18 鎴愬姛锛氭瘮杈冩Ы鏄剧ず鏂板眬閮ㄥ€欓€夛紙鏈嚜鍔ㄦ殏閫夛級锛宎lt 甯︽簮/鏂拌韩浠?[33m 447[2mms[22m[39m
+ [32m鉁?[39m components/usage/usage-dashboard.test.tsx [2m([22m[2m18 tests[22m[2m)[22m[33m 4302[2mms[22m[39m
+     [33m[2m鉁?[22m[39m renders KPI per currency and never adds estimated with billed amounts [33m 416[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鑷畾涔夎寖鍥寸己寮€濮嬫棩鏈熸椂鍙鎷掔粷鏌ヨ锛岃€屼笉鏄€€鍖栦负鍏ㄩ噺缁熻 [33m 431[2mms[22m[39m
+     [33m[2m鉁?[22m[39m opens the attempt drawer from a row and closes on Escape with focus moved to the close button [33m 711[2mms[22m[39m
+     [33m[2m鉁?[22m[39m loads more attempts with the keyset cursor [33m 314[2mms[22m[39m
+     [33m[2m鉁?[22m[39m warns when estimated spend exceeds the configured budget [33m 568[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 鍏抽敭琛屼负[2m > [
+22m[2m妫€鏌ヤ换鍔℃湭缁堟€佹椂鎸佺画鎷夊彇 workbench锛屽畬鎴愬悗鍋滄
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 鍏抽敭琛屼负[2m > [
+22m[2m妫€鏌ヤ换鍔℃湭缁堟€佹椂鎸佺画鎷夊彇 workbench锛屽畬鎴愬悗鍋滄
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 鍏抽敭琛屼负[2m > [
+22m[2m妫€鏌ヤ换鍔℃湭缁堟€佹椂鎸佺画鎷夊彇 workbench锛屽畬鎴愬悗鍋滄
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+ [32m鉁?[39m components/storyboard-editor/storyboard-editor.v02-32.test.tsx [2m([22m[2m19 tests[22m[2m)[22m[33m 4291[2mms[22m[39m
+     [33m[2m鉁?[22m[39m B5 绔栫増 182脳257锛氱敾甯冩寜 mm 姣斾緥娓叉煋 [33m 308[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鍚屼竴 1px 鏂瑰悜閿閲忛殢鐢诲竷楂樺害鎹㈢畻涓轰笉鍚屽綊涓€鍖栨闀?[33m 584[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 3 鏍奸〉锛氱偣閫?+ 鎷栧姩鍚庝繚瀛樹粛璧颁竴娆℃暣鍖?PUT锛宲ayload 瑕嗙洊鍏ㄩ儴鏍煎瓙 [33m 335[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 5 鏍奸〉锛氱偣閫?+ 鎷栧姩鍚庝繚瀛樹粛璧颁竴娆℃暣鍖?PUT锛宲ayload 瑕嗙洊鍏ㄩ儴鏍煎瓙 [33m 308[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 瓒婄晫鎷栨嫿锛氭湰鍦拌崏绋夸笌鍗冲皢 PUT 鐨?payload 涓嶅垎鍙夛紙鐢诲竷涓€涓嚑浣曘€佷繚瀛樺悓涓€涓級 [33m 354[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 闃呰搴忓紑鍏冲彧鍒囨崲鏄剧ず锛屼笉鏀?reading_order锛氭暣鍖?PUT 浠嶅甫鏈嶅姟绔簭鍙?[33m 301[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 缃戠粶閿欒锛氳崏绋夸繚鐣欏湪鐢诲竷涓婏紝涓嶆樉绀哄凡淇濆瓨锛涘彲鏀惧純鑽夌骞堕噸鏂板姞杞?[33m 353[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 鍏抽敭琛屼负[2m > [
+22m[2m妫€鏌ヤ换鍔℃湭缁堟€佹椂鎸佺画鎷夊彇 workbench锛屽畬鎴愬悗鍋滄
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+An update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+An update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 鍏抽敭琛屼负[2m > [
+22m[2m淇浠诲姟闈炵粓鎬佹椂鎸佺画鎷夊彇 workbench 涓庡€欓€夛紝FAILED 鍚庡仠姝?[22m[39mAn update to GenerateHarness inside a test was not wra
+pped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 鍏抽敭琛屼负[2m > [
+22m[2m淇浠诲姟闈炵粓鎬佹椂鎸佺画鎷夊彇 workbench 涓庡€欓€夛紝FAILED 鍚庡仠姝?[22m[39mAn update to GenerateHarness inside a test was not wra
+pped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 鍏抽敭琛屼负[2m > [
+22m[2m淇浠诲姟闈炵粓鎬佹椂鎸佺画鎷夊彇 workbench 涓庡€欓€夛紝FAILED 鍚庡仠姝?[22m[39mAn update to GenerateHarness inside a test was not wra
+pped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 鍏抽敭琛屼负[2m > [
+22m[2m淇浠诲姟闈炵粓鎬佹椂鎸佺画鎷夊彇 workbench 涓庡€欓€夛紝FAILED 鍚庡仠姝?[22m[39mAn update to GenerateHarness inside a test was not wra
+pped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+ [32m鉁?[39m components/project-workspace/director-workspace.test.tsx [2m([22m[2m24 tests[22m[2m)[22m[33m 4937[2mms[22m[39m
+     [33m[2m鉁?[22m[39m D10 鍛戒护鍘嗗彶鎸夐〉浠庢湇鍔＄璇诲彇锛屽師鏂囦笌鐘舵€佸彲瑙?[33m 403[2mms[22m[39m
+     [33m[2m鉁?[22m[39m D7 鎵ц鏈熼棿鐢诲竷 busy锛氱姸鎬佽鍑虹幇涓斿洖璋冧负 true锛岀粨鏉熷悗鎭㈠ [33m 321[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 宸叉墽琛屽懡浠ゅ彲鎾ら攢锛涙挙閿€鍛戒护鏄剧ず涓洪噸鍋?[33m 343[2mms[22m[39m
+     [33m[2m鉁?[22m[39m D17 浜旇矾 journal 鎿嶄綔浠讳竴鍦ㄩ€旀椂锛岄瑙堜笌鍘嗗彶鐨勬墽琛屾寜閽叏閮ㄧ鐢紙#165锛?[33m 308[2mms[22m[39m
+     [33m[2m鉁?[22m[39m D18c propose 鍦ㄩ€旀椂 journal 鎸夐挳鍏ㄩ儴绂佺敤锛氫涪寮冩竻涓嶆帀鍦ㄩ€旇В鏋愭枃妗堬紝钀藉湴娓叉煋鑷繁鐨勯珮椋庨櫓琛岋紙#165 淇琛ヤ竵锛?[33m 385[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/scene-workspace.test.tsx [2m([22m[2m16 tests[22m[2m)[22m[33m 5191[2mms[22m[39m
+     [33m[2m鉁?[22m[39m TEST-SCENE-01 棣栨杩涘叆灞曠ず绌虹姸鎬侊紝鎴愬姛杩斿洖鍚庢覆鏌撳崱鐗?[33m 597[2mms[22m[39m
+     [33m[2m鉁?[22m[39m TEST-SCENE-01b 鍒楄〃瓒呰繃鍗曢〉 200 鏉℃椂寰幆鍙栧叏锛屼笉鍐嶉潤榛樻埅鏂紙#369锛?[33m 1818[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 瑙勮寖鍙傝€冩崲缁戝け璐ワ細瑙ｉ櫎宸叉彁浜ゅ悗绔嬪嵆鍒锋柊鍒楄〃骞舵槑纭彁绀哄弬鑰冨凡琚В闄わ紙#162锛?[33m 352[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 褰掓。寮曠敤璁℃暟鎱㈣繑鍥炰笉瑕嗙洊鍚庢墦寮€璧勪骇鐨勭‘璁ゆ鍐呭 [33m 381[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 鍏抽敭琛屼负[2m > [
+22m[2m蹇€熷弻鍑荤敓鎴愬彧鍏ラ槦涓€娆′粯璐逛换鍔★紙鍚屾鍦ㄩ€斿畧鍗紝R1锛?[22m[39mAn update to GenerateHarness inside a test was not wrapped in 
+act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+An update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+An update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/storyboard-editor/storyboard-editor.test.tsx[2m > [22m[2mStoryboardEditor canvas (V02-3
+1B)[2m > [22m[2mS23 瀹瑰櫒灏哄鍙樺寲鑷姩閲嶉€傞厤锛涙墜鍔ㄧ缉鏀惧悗鍋滄璺熼殢锛岄€傞厤绐楀彛鎭㈠璺熼殢
+[22m[39mAn update to StoryboardEditor inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+ [32m鉁?[39m components/project-workspace/character-package-workspace.test.tsx [2m([22m[2m21 tests[22m[2m)[22m[33m 7396[2mms[22m[39m
+     [33m[2m鉁?[22m[39m view 鎷掔粷涓嶆敮鎸佹牸寮忓苟鍏佽閲嶆柊閫夋嫨 [33m 392[2mms[22m[39m
+     [33m[2m鉁?[22m[39m TEST-PKG-01 瑙掕壊鍖呭垪琛ㄥ垎椤垫媺鍙栧叏閮ㄩ〉锛岀煭椤电粨鏉熶笖绗簩椤靛彲閫?[33m 2275[2mms[22m[39m
+     [33m[2m鉁?[22m[39m TEST-PKG-02 瀹屾暣搴︾櫨鍒嗘瘮鏉ヨ嚜 API 涓旂己澶遍」鍙锛涙棤鍙傝€冨浘鏃堕樆姝㈠彂甯?[33m 428[2mms[22m[39m
+     [33m[2m鉁?[22m[39m TEST-PKG-03 绌烘Ы鍙笂浼犳垨缁戝畾宸叉湁绱犳潗锛屽凡缁戞Ы浣嶅彲瑙ｇ粦 [33m 350[2mms[22m[39m
+     [33m[2m鉁?[22m[39m TEST-PKG-04 鍙戝竷鍚庣増鏈喕缁擄紝娲剧敓鏂拌崏绋胯В闄ら攣瀹?[33m 445[2mms[22m[39m
+     [33m[2m鉁?[22m[39m TEST-PKG-05 宸紓瀵规瘮妯℃€佹灞曠ず瑙勬牸涓庣煩闃靛樊寮傦紝Esc 鍏抽棴 [33m 359[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 瑙勬牸淇濆瓨 409 涔愯閿佸啿绐佹椂閫忓嚭鍚庣璇箟鎻愮ず锛?156锛?[33m 312[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 淇濆瓨鑽夌瑙勬牸鎴愬姛鍚庡悓姝?base锛氬閮ㄨ鏍煎彉鍖栦粛琚噰绾?[33m 418[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鏈嶈闆嗘敮鎸佸叧鑱斻€佽榛樿锛涘巻鍙茬増鏈彲褰掓。涓庢仮澶?[33m 466[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/library-section.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 1150[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 绔犺妭鏈敓浜ч€氳繃鏃跺鍑烘寜閽鐢ㄤ笖涓嶈皟鐢?createExport [33m 486[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/generate-section.test.tsx [2m([22m[2m30 tests[22m[2m)[22m[33m 8629[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鐢熶骇闂ㄧ鏈€氳繃鏃跺睍绀洪樆濉炴枃妗堬紝涓斾笉鍙戣捣鐢熸垚璇锋眰 [33m 687[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鐢熸垚涓嬩竴椤靛悗鏃ч〉妫€鏌ラ潰鏉夸笉甯﹀埌绗?2 椤碉細reviewCandidateId 琚竻鐞?[33m 752[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 灞€閮ㄤ慨鏀瑰叆鍙ｏ細鍊欓€夊崱鐗囨寜閽墦寮€灞€閮ㄧ紪杈戝櫒锛屽叧闂繑鍥炵綉鏍?[33m 716[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鍚庣画鎴愬姛鍔ㄤ綔浼氭竻鎺夊厛鍓嶅姩浣滅殑閿欒鏉?[33m 482[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 瑙嗚妫€鏌ュけ璐ユ椂灞曠ず鐢ㄦ埛鍙閿欒锛屾垚鍔熷悗鍙彂璧蜂慨澶?[33m 627[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鎱㈡鏌ヨ姹傛湡闂存鏌ユ寜閽繚鎸?pending锛屽苟鍙戠偣鍑讳笉浼氫涪澶?invalidation [33m 405[2mms[22m[39m
+     [33m[2m鉁?[22m[39m F24 妫€鏌ュ凡閫氳繃浣嗛棬绂佽姹傚鏌ユ椂锛屾枃妗堣В閲婅緭鍏ュ凡鏇存柊鑰屼笉鏄鏌ュけ璐?[33m 321[2mms[22m[39m
+[90mstderr[2m | components/asset-production-panel.test.tsx[2m > [22m[2mCharacterConceptPanel[2m > [22m[2m涓嶉濉汉
+鐗╂垨鏈嶈鎻愮ず璇嶏紝鍙樉绀虹畝鐭殑鍗犱綅鎻愮ず
+[22m[39mAn update to CharacterConceptPanel inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+ [32m鉁?[39m components/project-workspace/assets-section.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 972[2mms[22m[39m
+     [33m[2m鉁?[22m[39m TEST-ASSET-ERR 鏈嶈绌跨潃鍥惧€欓€夎鍙栧け璐ユ樉绀洪敊璇崱涓庨噸璇曪紙#545-4锛?[33m 321[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m娌℃湁宸查€夋鏌ュ€欓€夋椂淇鎷掔粷鎻愪氦锛岃€屼笉鏄潤榛樺洖閫€ 1K
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m娌℃湁宸查€夋鏌ュ€欓€夋椂淇鎷掔粷鎻愪氦锛岃€屼笉鏄潤榛樺洖閫€ 1K
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m娌℃湁宸查€夋鏌ュ€欓€夋椂淇鎷掔粷鎻愪氦锛岃€屼笉鏄潤榛樺洖閫€ 1K
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m璺ㄦ壒娆℃鏌ョ殑鍊欓€変粠宸ヤ綔鍙伴€変腑鍊欓€夊洖閫€瑙ｆ瀽鍒嗚鲸鐜囷紝鑰屼笉鏄鎶ユ湭鐭?[22m[39mAn update to Probe inside a test was not wrapped
+ in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m璺ㄦ壒娆℃鏌ョ殑鍊欓€変粠宸ヤ綔鍙伴€変腑鍊欓€夊洖閫€瑙ｆ瀽鍒嗚鲸鐜囷紝鑰屼笉鏄鎶ユ湭鐭?[22m[39mAn update to Probe inside a test was not wrapped
+ in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m璺ㄦ壒娆℃鏌ョ殑鍊欓€変粠宸ヤ綔鍙伴€変腑鍊欓€夊洖閫€瑙ｆ瀽鍒嗚鲸鐜囷紝鑰屼笉鏄鎶ユ湭鐭?[22m[39mAn update to Probe inside a test was not wrapped
+ in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m璺ㄦ壒娆℃鏌ョ殑鍊欓€変粠宸ヤ綔鍙伴€変腑鍊欓€夊洖閫€瑙ｆ瀽鍒嗚鲸鐜囷紝鑰屼笉鏄鎶ユ湭鐭?[22m[39mAn update to Probe inside a test was not wrapped
+ in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m璺ㄦ壒娆℃鏌ョ殑鍊欓€変粠宸ヤ綔鍙伴€変腑鍊欓€夊洖閫€瑙ｆ瀽鍒嗚鲸鐜囷紝鑰屼笉鏄鎶ユ湭鐭?[22m[39mAn update to Probe inside a test was not wrapped
+ in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+ [32m鉁?[39m components/provider-settings/provider-group.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 898[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 纭鏀惰捣鍒嗙粍娓呯┖渚涘簲鍟嗚剰闆嗗悎锛歰nDirtyChange 鍥炶惤 false锛岄噸鏂板睍寮€鍚庢敹璧蜂笉鍐嶇‘璁?[33m 661[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m璺ㄦ壒娆℃鏌ョ殑鍊欓€変粠宸ヤ綔鍙伴€変腑鍊欓€夊洖閫€瑙ｆ瀽鍒嗚鲸鐜囷紝鑰屼笉鏄鎶ユ湭鐭?[22m[39mAn update to Probe inside a test was not wrapped
+ in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m璺ㄦ壒娆℃鏌ョ殑鍊欓€変粠宸ヤ綔鍙伴€変腑鍊欓€夊洖閫€瑙ｆ瀽鍒嗚鲸鐜囷紝鑰屼笉鏄鎶ユ湭鐭?[22m[39mAn update to Probe inside a test was not wrapped
+ in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m鍒囬〉锛堝惈绱犳潗搴撻樆鏂鐨勮烦杞矾寰勶級娓呯┖寮曠敤鏀瑰啓銆佹鏌ラ潰鏉夸笌鎵规瑙嗗浘
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m鍒囬〉锛堝惈绱犳潗搴撻樆鏂鐨勮烦杞矾寰勶級娓呯┖寮曠敤鏀瑰啓銆佹鏌ラ潰鏉夸笌鎵规瑙嗗浘
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m鍒囬〉锛堝惈绱犳潗搴撻樆鏂鐨勮烦杞矾寰勶級娓呯┖寮曠敤鏀瑰啓銆佹鏌ラ潰鏉夸笌鎵规瑙嗗浘
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m鍒囬〉锛堝惈绱犳潗搴撻樆鏂鐨勮烦杞矾寰勶級娓呯┖寮曠敤鏀瑰啓銆佹鏌ラ潰鏉夸笌鎵规瑙嗗浘
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+An update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+An update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[22m[39mAn update to Probe inside a test was not wrappe
+d in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m鍗囨竻澶辫触鎶婇敊璇啓杩?actionError锛岃€屼笉鏄彧钀藉湪鏈墦寮€鐨勬鏌ラ潰鏉块噷
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m鍗囨竻澶辫触鎶婇敊璇啓杩?actionError锛岃€屼笉鏄彧钀藉湪鏈墦寮€鐨勬鏌ラ潰鏉块噷
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m鍗囨竻澶辫触鎶婇敊璇啓杩?actionError锛岃€屼笉鏄彧钀藉湪鏈墦寮€鐨勬鏌ラ潰鏉块噷
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鐢熸垚宸ヤ綔鍙颁慨澶?鍗囨竻鍥炲綊[2m
+ > [22m[2m鍗囨竻澶辫触鎶婇敊璇啓杩?actionError锛岃€屼笉鏄彧钀藉湪鏈墦寮€鐨勬鏌ラ潰鏉块噷
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+ [32m鉁?[39m components/asset-production-panel.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 947[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鐩存帴灞曠ず澶辫触浠诲姟鍘熷洜锛屽苟鍏佽娌℃湁鎴愬浘鐨勫け璐ヨ褰曢噸璇?[33m 320[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m璧勪骇涓婁紶鐢ㄩ€斿畧鍗?[2m > [
+22m[2m涓婁紶杩斿洖鍏朵粬鐢ㄩ€旂礌鏉愭椂鍛堢幇閿欒锛屼笖涓嶇粦瀹氥€佷笉杩涘叆閫変腑闆嗗悎
+[22m[39mAn update to AssetsProbe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m璧勪骇涓婁紶鐢ㄩ€斿畧鍗?[2m > [
+22m[2m涓婁紶杩斿洖鍏朵粬鐢ㄩ€旂礌鏉愭椂鍛堢幇閿欒锛屼笖涓嶇粦瀹氥€佷笉杩涘叆閫変腑闆嗗悎
+[22m[39mAn update to AssetsProbe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鏈嶈瑙嗗浘鎵€灞炶鑹?select 鐨
+勬敼缁戝畧鍗笌閲嶆挱绉嶏紙#647锛?[2m > [22m[2m鑴忕姸鎬佷笅 select 鏀圭粦鍏堢‘璁わ紝鎷掔粷淇濇寔鍘熺粦瀹氬苟鍥為€€鏄剧ず锛涚‘璁ゅ悗鏀圭粦骞堕噸鎾
+[22m[39mAn update to ForwardRef(LinkComponent) inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鏈嶈瑙嗗浘鎵€灞炶鑹?select 鐨
+勬敼缁戝畧鍗笌閲嶆挱绉嶏紙#647锛?[2m > [22m[2m鑴忕姸鎬佷笅 select 鏀圭粦鍏堢‘璁わ紝鎷掔粷淇濇寔鍘熺粦瀹氬苟鍥為€€鏄剧ず锛涚‘璁ゅ悗鏀圭粦骞堕噸鎾
+[22m[39mAn update to ForwardRef(LinkComponent) inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鏈嶈瑙嗗浘鎵€灞炶鑹?select 鐨
+勬敼缁戝畧鍗笌閲嶆挱绉嶏紙#647锛?[2m > [22m[2m鑴忕姸鎬佷笅 select 鏀圭粦鍏堢‘璁わ紝鎷掔粷淇濇寔鍘熺粦瀹氬苟鍥為€€鏄剧ず锛涚‘璁ゅ悗鏀圭粦骞堕噸鎾
+[22m[39mAn update to ForwardRef(LinkComponent) inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鏈嶈瑙嗗浘鎵€灞炶鑹?select 鐨
+勬敼缁戝畧鍗笌閲嶆挱绉嶏紙#647锛?[2m > [22m[2m鑴忕姸鎬佷笅 select 鏀圭粦鍏堢‘璁わ紝鎷掔粷淇濇寔鍘熺粦瀹氬苟鍥為€€鏄剧ず锛涚‘璁ゅ悗鏀圭粦骞堕噸鎾
+[22m[39mAn update to ForwardRef(LinkComponent) inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鏈嶈瑙嗗浘鎵€灞炶鑹?select 鐨
+勬敼缁戝畧鍗笌閲嶆挱绉嶏紙#647锛?[2m > [22m[2m鑴忕姸鎬佷笅 select 鏀圭粦鍏堢‘璁わ紝鎷掔粷淇濇寔鍘熺粦瀹氬苟鍥為€€鏄剧ず锛涚‘璁ゅ悗鏀圭粦骞堕噸鎾
+[22m[39mAn update to ForwardRef(LinkComponent) inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鏈嶈瑙嗗浘鎵€灞炶鑹?select 鐨
+勬敼缁戝畧鍗笌閲嶆挱绉嶏紙#647锛?[2m > [22m[2m鑴忕姸鎬佷笅 select 鏀圭粦鍏堢‘璁わ紝鎷掔粷淇濇寔鍘熺粦瀹氬苟鍥為€€鏄剧ず锛涚‘璁ゅ悗鏀圭粦骞堕噸鎾
+[22m[39mAn update to AssetsOutfitsProbe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m鏈嶈瑙嗗浘鎵€灞炶鑹?select 鐨
+勬敼缁戝畧鍗笌閲嶆挱绉嶏紙#647锛?[2m > [22m[2m鑴忕姸鎬佷笅 select 鏀圭粦鍏堢‘璁わ紝鎷掔粷淇濇寔鍘熺粦瀹氬苟鍥為€€鏄剧ず锛涚‘璁ゅ悗鏀圭粦骞堕噸鎾
+[22m[39mAn update to AssetsOutfitsProbe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+An update to AssetsOutfitsProbe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+An update to AssetsOutfitsProbe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+An update to AssetsOutfitsProbe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+ [32m鉁?[39m components/workflow-studio.test.tsx [2m([22m[2m34 tests[22m[2m)[22m[33m 9972[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 瓒呮椂锛堢锛?杈撳叆瀹屾暣鍚庢墠鎻愪氦 4,45 [33m 1244[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 瓒呮椂锛堢锛?杈撳叆瀹屾暣鍚庢墠鎻愪氦 6,60,600 [33m 476[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 瓒呮椂锛堢锛?杈撳叆瀹屾暣鍚庢墠鎻愪氦 9004,90045 [33m 443[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 娓╁害 杈撳叆瀹屾暣鍚庢墠鎻愪氦 0,0.4,0.45 [33m 497[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 閲嶈瘯娆℃暟 杈撳叆瀹屾暣鍚庢墠鎻愪氦 1,10 [33m 423[2mms[22m[39m
+     [33m[2m鉁?[22m[39m TEST-WF-Restore1 鎭㈠鎴愬姛绔嬪嵆鐢ㄦ仮澶嶅浘閲嶇疆鐢诲竷锛屼笉渚濊禆鍒楄〃閲嶅彇钀藉湴锛圧1锛?[33m 517[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 閿洏鍒犻櫎杩涘叆鎾ら攢鏍堬細鎾ら攢涓€姝ユ仮澶嶈鍒犺妭鐐癸紝鑰屼笉鏄洖鍒扮┖鐢诲竷 [33m 471[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鏉′欢姣旇緝鍊兼寜绫诲瀷瀛楅潰閲忔彁浜わ紝exists 淇濇寔瀛楃涓?[33m 726[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 淇濆瓨涓户缁敼鍥句細琛ヤ氦鏈€鏂拌崏绋匡紝宸蹭繚瀛樹笌鎸佷箙鍖栧唴瀹逛竴鑷?[33m 418[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鍙戝竷浼氱瓑寰呮渶鏂拌崏绋夸繚瀛樻垚鍔燂紱淇濆瓨澶辫触鍒欎笉鍙戝竷 [33m 518[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鍒囨崲宸ヤ綔娴佸墠浼氬厛淇濆瓨褰撳墠鑽夌锛涗繚瀛樺け璐ュ垯淇濇寔鍘熷伐浣滄祦 [33m 392[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鏇鹃€夋ā鍨嬪悗鐩綍娓呯┖锛氭寚寮曞彲瑙佷笖纭缁х画绂佺敤锛屼笉鍐嶆彁浜ゅけ鏁堝埆鍚?[33m 323[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鏇鹃€夋ā鍨嬭鍒犱絾鐩綍浠嶆湁鍏朵粬妯″瀷锛氱‘璁ょ户缁鐢ㄧ洿鍒伴噸鏂伴€夋嫨 [33m 312[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/workspace-hook-regressions.test.tsx [2m([22m[2m10 tests[22m[2m)[22m[33m 1097[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 淇涓庡崌娓呮垚鍔熷悗娓呯悊 reviewCandidateId锛堟壒娆″凡琚湇鍔＄鍏抽棴锛?[33m 349[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m鏅氬埌鐨勮鑹蹭繚瀛樺嵆浣块潰鏉垮凡鍒囦汉锛屼篃浠嶇劧澶辨晥 characters 缂撳瓨
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m鏅氬埌鐨勬湇瑁呬繚瀛樺嵆浣块潰鏉垮凡鎹㈡湇瑁咃紝涔熶粛鐒跺け鏁?outfits 缂撳瓨
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m#544 涓婁紶骞惰嚜鍔ㄧ粦瀹氫汉鐗╁弬鑰冨悗澶辨晥 generation-workbench锛氬氨缁樆濉為」绔嬪嵆瑙ｉ櫎
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m#544 涓婁紶骞惰嚜鍔ㄧ粦瀹氫汉鐗╁弬鑰冨悗澶辨晥 generation-workbench锛氬氨缁樆濉為」绔嬪嵆瑙ｉ櫎
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m#544 缁戝畾鏃㈡湁绱犳潗涓轰汉鐗╁弬鑰冨悗澶辨晥 generation-workbench
+[22m[39mThe current testing environment is not configured to support act(...)
+
+Not implemented: Window's scrollTo() method
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m#544 瑙ｇ粦浜虹墿鍙傝€冨悗澶辨晥 generation-workbench锛氳В鎺夋渶鍚庝竴涓弬鑰冧細閲嶅缓 MISSING_CHARACTER_REFERENCE 闃诲
+[22m[39mThe current testing environment is not configured to support act(...)
+
+Not implemented: Window's scrollTo() method
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m#544 鍒囨崲椋庢牸鑹插僵妯″紡鍚庡け鏁?generation-workbench锛歋TYLE_NOT_COLOR 闃诲鍗虫椂鍙嶆槧
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m鍒犻櫎鏈嶈妗ｆ浼氬け鏁?generation-workbench锛屼笌 deleteAsset 琛屼负涓€鑷?[22m[39mThe current testing environm
+ent is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m鍒犻櫎鏈嶈妗ｆ浼氬け鏁?generation-workbench锛屼笌 deleteAsset 琛屼负涓€鑷?[22m[39mThe current testing environm
+ent is not configured to support act(...)
+
+ [32m鉁?[39m components/project-workspace/use-source-workspace.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 569[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缂撳瓨澶辨晥涓庢
+櫄鍒颁繚瀛橀槻鎶?[2m > [22m[2m閲嶅垎绫荤礌鏉愪細澶辨晥 generation-workbench锛欳haracterReference 瑙ｇ粦鏀瑰彉鐢熸垚灏辩华
+[22m[39mThe current testing environment is not configured to support act(...)
+
+ [32m鉁?[39m components/usage/usage-budget-banner.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 518[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 闈炴硶甯佺淇濆瓨琚嫆缁濆苟缁欏嚭鍘熷洜锛岃€屼笉鏄潤榛樻棤鏁堟灉 [33m 337[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 鏀圭粦閲嶆挱绉嶄
+笌鑴忕‘璁わ紙#647锛?[2m > [22m[2m鏀圭粦鍚庣紪杈戣〃鍗曟寜鏂拌鑹查噸鎾锛屼繚瀛樺啓鍏ョ殑鏄柊瑙掕壊锛?647锛?[22m[39mThe current testing environment is not
+ configured to support act(...)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 鏀圭粦閲嶆挱绉嶄
+笌鑴忕‘璁わ紙#647锛?[2m > [22m[2m鏀圭粦鍚庣紪杈戣〃鍗曟寜鏂拌鑹查噸鎾锛屼繚瀛樺啓鍏ョ殑鏄柊瑙掕壊锛?647锛?[22m[39mThe current testing environment is not
+ configured to support act(...)
+
+ [32m鉁?[39m components/project-workspace/use-assets-workspace.test.tsx [2m([22m[2m14 tests[22m[2m)[22m[33m 1060[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/workspace-chrome.test.tsx[2m > [22m[2m宸﹀鑸浘鏍囪建锛堟ā鏉?B锛?[2m > [22m[2
+m鎶樺彔鐘舵€佹妸 rail 绫讳紶缁欎晶杈规爮涓斿綋鍓嶆楠や粛鍙鲸璇?[22m[39mReceived `false` for a non-boolean attribute `scroll`.
+
+If you want to write it to the DOM, pass a string instead: scroll="false" or scroll={value.toString()}.
+
+If you used to conditionally omit it with scroll={condition && value}, pass scroll={condition ? value : undefined} inst
+ead.
+
+ [32m鉁?[39m components/project-workspace/workspace-chrome.test.tsx [2m([22m[2m13 tests[22m[2m)[22m[33m 700[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鎵撳紑鍚庣劍鐐硅繘鍏ュ璇濇锛岋紜/锛?閿皟鏁寸缉鏀撅紝Esc 鍏抽棴 [33m 395[2mms[22m[39m
+ [32m鉁?[39m app/page.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 630[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 浠〃鐩樿鍙栧け璐ユ樉绀洪敊璇潰鏉垮苟鎻愪緵閲嶈瘯锛?545-6锛?[33m 385[2mms[22m[39m
+ [32m鉁?[39m components/storyboard-editor/storyboard-editor.test.tsx [2m([22m[2m46 tests[22m[2m)[22m[33m 12594[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 琛ㄥ崟閽夊湪琚紪杈戝垎鏍间笂锛氶€変腑鍏朵粬姘旀场鍚庝繚瀛樹笉鍐欓敊闈㈡澘 [33m 1125[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 琛ㄥ崟鏈夋湭淇濆瓨淇敼鏃讹紝鍒囧埌鍏朵粬鍒嗘牸鍏堢‘璁わ紱鎷掔粷鍒欎繚鐣欒〃鍗?[33m 380[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S2 鎷栧姩鐭╁舰鏍煎苟淇濆瓨锛氫竴娆℃暣鍖?PUT锛涘け璐ラ噸璇曞鐢?request_id锛涘埛鏂板悗浣嶇疆浠嶅湪 [33m 396[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S4b 澶氳竟褰㈡牸澶氶€夋嫋鍔ㄥ彧璇伙細澶氳竟褰?bounds 涓嶅彉涓斾笉閲嶅啓涓虹煩褰?[33m 319[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S5 婊氳疆鍖虹缉鏀?閫傞厤/澶嶄綅涓虹函鍓嶇锛屼笉鍙?PATCH [33m 423[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S7 鏂瑰悜閿?1px / Shift+10px 瑙嗗彛澧為噺鍐欏叆褰掍竴鍖?bounds [33m 303[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S12 淇濆瓨 409锛氫腑鏂囧啿绐併€佽崏绋夸繚鐣欍€佸彲鏀惧純骞堕噸鏂板姞杞?[33m 347[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S12b 鍙欎簨淇濆瓨 409锛氬悓鏍锋樉绀哄啿绐佹í骞呬笌銆屾斁寮冨苟閲嶆柊鍔犺浇銆嶏紝缂栬緫鍣ㄤ繚鎸佹墦寮€ [33m 396[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S12c 姘旀场鍙拌瘝淇濆瓨 409锛氬啿绐佹í骞咃紱鏀惧純骞堕噸鏂板姞杞戒涪寮冩湭淇濆瓨鑽夌 [33m 477[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S14 閲嶅缓 3鈫? 鏍硷細纭鍚庢墠璋冪敤 layout锛屽彇娑堜笉璋冪敤 [33m 347[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S20 姘旀场鍑犱綍锛氭嫋鍔?缂╂斁/灏惧反杩涘叆鏁村寘 PUT锛涙棫 region 鍙鍏滃簳锛涙嫋鍑烘牸澶栧洖寮?[33m 313[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S22 淇濆瓨杩涜涓垏鎹㈤〉闈細鍝嶅簲鍐欏叆鍘熼〉闈㈢紦瀛橀敭锛屼笉瑕嗙洊鏂伴〉闈?[33m 370[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S24 鏂板姘旀场鍦ㄩ€旓細鏂版皵娉″崱涓庢湰鏍间繚瀛樻寜閽鐢紝涓嶅啀閲嶅鎻愪氦鍚岀増鏈?POST [33m 421[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S24b 鏂板姘旀场鍦ㄩ€旓細宸ュ叿鏍忋€屼繚瀛樻湰椤点€嶇鐢ㄣ€佺敾甯冩皵娉″垹闄や笉鍙氦浜掞紝涓嶅苟鍙戠増鏈寲鍐欏叆 [33m 533[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S24c 鍑犱綍鏁村寘 PUT 鍦ㄩ€旓細妫€鏌ュ櫒淇濆瓨鎸夐挳琚粍鍚?busy 绂佺敤锛岃緭鍏ヤ粛鍙紪杈?[33m 695[2mms[22m[39m
+     [33m[2m鉁?[22m[39m S26 鍑犱綍淇濆瓨鍦ㄩ€旓細鏂瑰悜閿井璋冧笌鎾ら攢/閲嶅仛琚棬绂佸喕缁擄紙#637锛?[33m 367[2mms[22m[39m
+     [33m[2m鉁?[22m[39m #546 鏂板姘旀场鍙栨秷锛氬凡杈撳叆鏂囧瓧鍏堢‘璁わ紝鎷掔粷鍒欎繚鐣欏崱鐗囷紱绌烘枃鏈洿鎺ユ敹璧?[33m 410[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/character-package-picker.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 445[2mms[22m[39m
+ [32m鉁?[39m components/provider-management.test.tsx [2m([22m[2m82 tests[22m[2m)[22m[33m 13546[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 杩炴帴鍋ュ悍閿欒瀵圭敤鎴峰彲瑙侊紝涓斾笉鍥炴樉瀵嗛挜鏄庢枃 [33m 338[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鍒涘缓渚涘簲鍟嗗け璐ユ椂灞曠ず form-error锛屾垚鍔熷悗鍒锋柊 providers [33m 800[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鍑嵁娴嬭瘯澶辫触灞曠ず鐢ㄦ埛鍙閿欒锛屼笉鍑虹幇杈撳叆瀵嗛挜 [33m 325[2mms[22m[39m
+     [33m[2m鉁?[22m[39m V02-14A 鏈氨缁?Codex CLI 浠嶅彲鍙鎺㈡祴锛屽浘鐗囧啋鐑熶粎鍦ㄤ换鍔′腑楠岃瘉 [33m 381[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鐩綍妯″瀷閫氳繃缁熶竴 MODEL_SMOKE 楠岃瘉锛屽浘鐗囨祴璇曟樉寮忕‘璁よ垂鐢?[33m 458[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鎵归噺鏄鹃殣浣跨敤閫愰」鐗堟湰锛岄儴鍒嗗け璐ュ悗鍙繚鐣欏け璐ラ」閫夋嫨 [33m 369[2mms[22m[39m
+     [33m[2m鉁?[22m[39m P5 鍋滅敤鍐呯疆渚涘簲鍟嗕細甯?version 鍙戦€?PATCH 骞惰繘鍏ュ凡鍋滅敤 [33m 322[2mms[22m[39m
+     [33m[2m鉁?[22m[39m F1 鍚嶇О鍛戒腑鍙暀鍖归厤渚涘簲鍟嗗苟灞曞紑鍒嗙粍 [33m 356[2mms[22m[39m
+     [33m[2m鉁?[22m[39m F4 绫诲瀷=鍥剧墖鏃堕殣钘忔枃瀛楄 [33m 347[2mms[22m[39m
+     [33m[2m鉁?[22m[39m F7 绫诲瀷銆佸凡楠岃瘉鍜屾悳绱㈠悓鏃剁敓鏁?[33m 378[2mms[22m[39m
+ [32m鉁?[39m components/provider-settings/provider-card.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 350[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/scene-picker.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[32m 298[2mms[22m[39m
+ [32m鉁?[39m components/shell.test.tsx [2m([22m[2m1 test[22m[2m)[22m[32m 288[2mms[22m[39m
+ [32m鉁?[39m components/usage/usage-attempt-drawer.test.tsx [2m([22m[2m1 test[22m[2m)[22m[33m 400[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 鎶藉眽鎵撳紑鏈熼棿鐖剁骇閲嶆覆鏌擄紙鏂?onClose 闂寘锛変笉鎶㈢劍鐐癸細Esc 鍏抽棴鍚庣劍鐐瑰洖鍒拌Е鍙戝厓绱?[33m 395[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/inspection-panel.test.tsx [2m([22m[2m1 test[22m[2m)[22m[32m 240[2mms[22m[39m
+ [32m鉁?[39m components/clamped-number-input.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 358[2mms[22m[39m
+     [33m[2m鉁?[22m[39m 杈撳叆鏈熼棿涓嶉挸鍒?澶辩劍鏃舵墠澶瑰洖鍖洪棿 [33m 312[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/storyboard-section.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 459[2mms[22m[39m
+ [32m鉁?[39m lib/director-rules.test.ts [2m([22m[2m27 tests[22m[2m)[22m[32m 158[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/use-director-workspace.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[32m 209[2mms[22m[39m
+ [32m鉁?[39m app/desktop-visual-system.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 130[2mms[22m[39m
+ [32m鉁?[39m lib/workflow-draft-save.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[32m 160[2mms[22m[39m
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m浠诲姟杞琛屼负[2m > [22m[2m浠诲姟鍋滅暀鍦ㄦ鏌?淇闃舵鏃舵寔缁疆璇紝杩涘
+叆缁堟€佸悗鍋滄
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m浠诲姟杞琛屼负[2m > [22m[2m浠诲姟鍋滅暀鍦ㄦ鏌?淇闃舵鏃舵寔缁疆璇紝杩涘
+叆缁堟€佸悗鍋滄
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m浠诲姟杞琛屼负[2m > [22m[2m浠诲姟鍋滅暀鍦ㄦ鏌?淇闃舵鏃舵寔缁疆璇紝杩涘
+叆缁堟€佸悗鍋滄
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m浠诲姟杞琛屼负[2m > [22m[2m浠诲姟鍋滅暀鍦ㄦ鏌?淇闃舵鏃舵寔缁疆璇紝杩涘
+叆缁堟€佸悗鍋滄
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m浠诲姟杞琛屼负[2m > [22m[2m浠诲姟鍋滅暀鍦ㄦ鏌?淇闃舵鏃舵寔缁疆璇紝杩涘
+叆缁堟€佸悗鍋滄
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m浠诲姟杞琛屼负[2m > [22m[2m浠诲姟鍋滅暀鍦ㄦ鏌?淇闃舵鏃舵寔缁疆璇紝杩涘
+叆缁堟€佸悗鍋滄
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m浠诲姟杞琛屼负[2m > [22m[2m浠诲姟鍋滅暀鍦ㄦ鏌?淇闃舵鏃舵寔缁疆璇紝杩涘
+叆缁堟€佸悗鍋滄
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m浠诲姟杞琛屼负[2m > [22m[2m浠诲姟鍋滅暀鍦ㄦ鏌?淇闃舵鏃舵寔缁疆璇紝杩涘
+叆缁堟€佸悗鍋滄
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/w
+rap-tests-with-act
+
+ [32m鉁?[39m lib/task-status.polling.test.tsx [2m([22m[2m1 test[22m[2m)[22m[32m 72[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/use-library-workspace.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[32m 63[2mms[22m[39m
+ [32m鉁?[39m components/usage/usage-format.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 52[2mms[22m[39m
+ [32m鉁?[39m lib/local-edit-rules.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 42[2mms[22m[39m
+ [32m鉁?[39m components/storyboard-editor/stress-fixture.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/display.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m鉁?[39m lib/api-422-localization.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m鉁?[39m lib/api-scene-assets.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m鉁?[39m lib/task-status.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m鉁?[39m lib/api-abort-passthrough.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/scene-status.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/reference-selection.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m鉁?[39m lib/api-workflow-keepalive.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m鉁?[39m lib/api-assets-pagination.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m鉁?[39m next-config-csp.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m鉁?[39m app/globals-style.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m鉁?[39m lib/model-visibility.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m鉁?[39m components/project-workspace/generation-desk-source-contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m鉁?[39m lib/generation-rules.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m56 passed[39m[22m[90m (56)[39m
+[2m      Tests [22m [1m[32m615 passed[39m[22m[90m (615)[39m
+[2m   Start at [22m 03:11:55
+[2m   Duration [22m 29.94s[2m (transform 14.65s, setup 43.69s, import 29.11s, tests 99.72s, environment 229.49s)[22m
+
+
+> mangaflow-ai@0.2.0 build
+> npm run build --workspace @mangaflow/web
+
+
+> @mangaflow/web@0.2.0 build
+> next build
+
+鈻?Next.js 16.3.3 (Turbopack)
+鉁?Running next.config.ts took 32ms
+- Experiments (use with caution):
+  路 optimizePackageImports
+
+  Creating an optimized production build ...
+鉁?Compiled successfully in 1462ms
+  Running TypeScript ...
+  Finished TypeScript in 2.4s ...
+  Collecting page data using 14 workers ...
+  Generating static pages using 14 workers (0/7) ...
+  Generating static pages using 14 workers (1/7) 
+  Generating static pages using 14 workers (3/7) 
+  Generating static pages using 14 workers (5/7) 
+鉁?Generating static pages using 14 workers (7/7) in 781ms
+  Finalizing page optimization ...
+
+Route (app)
+鈹?茠 /
+鈹?茠 /_not-found
+鈹?茠 /help
+鈹?茠 /projects/[id]
+鈹?茠 /projects/[id]/[section]
+鈹?茠 /projects/[id]/assets
+鈹?茠 /projects/[id]/assets/[view]
+鈹?茠 /projects/[id]/settings
+鈹?茠 /projects/[id]/workflow
+鈹?茠 /settings
+鈹?茠 /settings/usage
+鈹?茠 /workflow
+
+
+茠 Proxy (Middleware)
+
+茠  (Dynamic)  server-rendered on demand
+

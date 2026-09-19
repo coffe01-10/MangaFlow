@@ -87,5 +87,25 @@ public static class Mouse {
         [System.Windows.Forms.SendKeys]::SendWait($Name)
         Write-Output "sent keys [$Name]"
     }
+    "wheel" {
+        # wheel <x> <y> <ticks>：在指定点滚轮，负值向下翻页
+        $x = [int]$Name; $y = [int]($Value -split ' ')[0]; $ticks = [int](($Value -split ' ')[1])
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class Wheel {
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint data, UIntPtr extra);
+}
+"@
+        [Wheel]::SetCursorPos($x, $y) | Out-Null
+        Start-Sleep -Milliseconds 120
+        for ($i = 0; $i -lt [Math]::Abs($ticks); $i++) {
+            $delta = if ($ticks -lt 0) { [uint32]4287100000 } else { [uint32]120 }   # -120 as unsigned
+            [Wheel]::mouse_event(0x0800, 0, 0, $delta, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 90
+        }
+        Write-Output "wheeled at ($x,$y) ticks=$ticks"
+    }
     default { throw "unknown action $Action" }
 }
