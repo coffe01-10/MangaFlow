@@ -123,16 +123,26 @@ def test_windows_branch_tree_kills_via_taskkill():
 
 def test_taskkill_is_spawned_only_inside_the_kill_helper():
     """The taskkill invocation (an external process) may not leak into other
-    code paths (the import line is exempt — pinned by its own test)."""
+    code paths, and spawnSync outside killHelperTree may only be the
+    provenance stamp reader's ``git rev-parse`` call (#971's D5 FAIL-before-
+    browser gate) — any other external spawn needs its own reviewed pin
+    (the import line is exempt — pinned by its own test)."""
     source = _source()
     code = "\n".join(
         line
-        for line in _code_text(source).splitlines()
+        for line in _code_text(_source()).splitlines()
         if not line.lstrip().startswith("import ")
     )
-    body_code = _code_text(_kill_helper_body(source))
+    body_code = _code_text(_kill_helper_body(_source()))
     assert code.count("taskkill") == body_code.count("taskkill")
-    assert code.count("spawnSync") == body_code.count("spawnSync")
+    sanctioned_reader = 'spawnSync("git", ["rev-parse", "HEAD"]'
+    assert code.count("spawnSync") == (
+        body_code.count("spawnSync") + code.count(sanctioned_reader)
+    ), (
+        "spawnSync outside killHelperTree must be exactly the provenance "
+        "reader's git rev-parse call — a new external spawn needs a "
+        "reviewed pin update"
+    )
 
 
 def test_spawn_sync_is_imported_from_node_child_process():
