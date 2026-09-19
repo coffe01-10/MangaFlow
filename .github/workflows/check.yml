@@ -33,3 +33,32 @@ jobs:
       # pytest, vitest, production web build.
       - name: npm run check
         run: npm run check
+
+  # Linux pytest layer: the default `tests/` collection contains POSIX-run
+  # contract pins (desktop-script bridges, junction/POSIX re-anchor arms,
+  # streaming-export pins via the cargo bridge) that skip or never compile
+  # on the Windows-only job — this week's clean-master reds (#930, #879's
+  # fixture, the #936 E0061) were all invisible to it. The Windows job
+  # above stays the full gate; this one adds the POSIX half.
+  linux-pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/api/requirements.txt -r apps/api/requirements-dev.txt
+
+      - name: pytest tests/
+        run: python -m pytest tests/ -q
