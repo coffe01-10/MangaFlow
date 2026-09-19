@@ -1,0 +1,21 @@
+{
+  "name": "keepalive-live",
+  "at": "2026-09-19 17:40:35",
+  "note": null,
+  "buckets": {
+    "idle-gap-read": {
+      "ok": 6,
+      "failed": 0
+    },
+    "burst": {
+      "ok": 60,
+      "failed": 0
+    },
+    "idle-gap-save": {
+      "ok": 6,
+      "failed": 0
+    }
+  },
+  "failures": [],
+  "extra": {}
+}

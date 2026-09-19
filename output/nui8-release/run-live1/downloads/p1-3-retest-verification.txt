@@ -1,0 +1,10 @@
+P1-3 real-machine retest 2026-09-19 20:05 (+08)
+client action: LibraryView 导出文件 row [PNG - 3 页 - 1 KB] -> 下载 -> SaveFileDialog 保存导出文件 -> typed full path + Return
+downloaded file: output\nui8-release\run-live1\downloads\mangaflow-nui67-chapter1-retest.zip
+bytes on disk: 903 | DB byte_size: 903 | match: True
+sha256(disk) == DB sha256: True
+DB export_type=PNG storage_key=exports/nui67-chapter1.zip page_count=3
+zip testzip(): None (no corrupt member)
+zip members: ['chapter1/page-001.png', 'chapter1/page-002.png', 'chapter1/page-003.png']
+all members carry PNG magic: True
+prior failed attempt (HTTP 500) root cause: seed wrote export_type=PNG_ZIP; downloads/probe-500-body.txt + pytest-seed-export-02-negative-control.log keep the KeyError repro

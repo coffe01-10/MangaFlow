@@ -1,0 +1,8 @@
+only 0/6 samples actually drove the scroller; this run is not a G3 scroll-pressure sample set
+所在位置 D:\自媒体\漫画工作流\apps\desktop\scripts\measure_library_memory.ps1:105 字符: 29
++ ... $Samples) { throw "only $driven/$Samples samples actually drove the s ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (only 0/6 sample...sure sample set:String) [], RuntimeException
+    + FullyQualifiedErrorId : only 0/6 samples actually drove the scroller; this run is not a G3 scroll-pressure sampl 
+   e set
+ 
