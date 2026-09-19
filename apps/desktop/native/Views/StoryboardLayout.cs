@@ -15,6 +15,8 @@ public sealed partial class StoryboardView
     private readonly ScrollViewer deskScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private readonly ScrollViewer directorScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private readonly Border saveState = new(), pageSummary = new();
+    private readonly Border structureBar = new();
+    private readonly TextBlock structureCountText = new() { FontWeight = FontWeights.Bold, FontSize = 13.5 };
     private readonly TextBlock pageCountText = Kit.Caption("0 页"), pageLoadText = new() { FontWeight = FontWeights.Bold, FontSize = 13 }, pageSourceText = Kit.Caption("");
     private readonly ComboBox compactPageSelector = new() { MinHeight = 40, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 0, 10) };
     private readonly GridSplitter directorSplitter = new() { Width = 6, HorizontalAlignment = HorizontalAlignment.Stretch, Background = AssetPageUi.Brush("Line"), ResizeDirection = GridResizeDirection.Columns, ResizeBehavior = GridResizeBehavior.PreviousAndNext };
@@ -40,7 +42,7 @@ public sealed partial class StoryboardView
         desk.ColumnDefinitions.Add(stripColumn); desk.ColumnDefinitions.Add(new ColumnDefinition());
         pageStripScroll.Content = pageBar; pageStripScroll.Margin = new Thickness(0, 0, 12, 0); desk.Children.Add(pageStripScroll);
         var main = new Grid();
-        for (int i = 0; i < 5; i++) main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        for (int i = 0; i < 6; i++) main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         main.RowDefinitions.Add(new RowDefinition());
         System.Windows.Automation.AutomationProperties.SetName(compactPageSelector, "选择分镜页面");
         compactPageSelector.SelectionChanged += async (_, _) =>
@@ -57,8 +59,9 @@ public sealed partial class StoryboardView
         replanButton.Click += async (_, _) => await ReplanFromPageAsync(); replanButton.MinHeight = 40;
         var summary = new StackPanel(); summary.Children.Add(pageLoadText); pageSourceText.Margin = new Thickness(0, 5, 0, 0); pageSourceText.TextWrapping = TextWrapping.Wrap; summary.Children.Add(pageSourceText);
         pageSummary.Child = new PageHeading(summary, replanButton); pageSummary.Margin = new Thickness(0, 0, 0, 12); Grid.SetRow(pageSummary, 2); main.Children.Add(pageSummary);
-        BuildConflictBar(); Grid.SetRow(conflictBar, 3); main.Children.Add(conflictBar);
-        var toolbar = BuildToolbar(); Grid.SetRow(toolbar, 4); main.Children.Add(toolbar);
+        BuildStructureBar(); Grid.SetRow(structureBar, 3); main.Children.Add(structureBar);
+        BuildConflictBar(); Grid.SetRow(conflictBar, 4); main.Children.Add(conflictBar);
+        var toolbar = BuildToolbar(); Grid.SetRow(toolbar, 5); main.Children.Add(toolbar);
         worktable.ColumnDefinitions.Add(new ColumnDefinition()); worktable.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) }); worktable.ColumnDefinitions.Add(directorColumn);
         worktable.RowDefinitions.Add(new RowDefinition()); worktable.RowDefinitions.Add(new RowDefinition { Height = new GridLength(0) });
         pageHost.Background = Brushes.White; pageHost.Child = page; pageHost.BorderBrush = AssetPageUi.Brush("Ink"); pageHost.BorderThickness = new Thickness(1);
@@ -67,10 +70,43 @@ public sealed partial class StoryboardView
         viewport.SizeChanged += (_, _) => { if ((fitPending || fitToViewport) && currentPage != null && viewport.ActualWidth > 100 && viewport.ActualHeight > 100) { fitPending = false; FitViewport(); } };
         worktable.Children.Add(viewport); Grid.SetColumn(directorSplitter, 1); worktable.Children.Add(directorSplitter);
         inspector.Background = AssetPageUi.Brush("Surface"); directorScroll.Content = inspector; directorScroll.Background = AssetPageUi.Brush("Surface"); directorScroll.BorderBrush = AssetPageUi.Brush("Ink"); directorScroll.BorderThickness = new Thickness(1); Grid.SetColumn(directorScroll, 2); worktable.Children.Add(directorScroll);
-        Grid.SetRow(worktable, 5); main.Children.Add(worktable);
+        Grid.SetRow(worktable, 6); main.Children.Add(worktable);
         deskScroll.Content = main; Grid.SetColumn(deskScroll, 1); desk.Children.Add(deskScroll); Grid.SetRow(desk, 1); root.Children.Add(desk);
         root.SizeChanged += (_, _) => ConfigureDesk(root.ActualWidth);
         ConfigureDesk(1100); Content = root;
+    }
+
+    private void BuildStructureBar()
+    {
+        // 对齐 web storyboard-section 的 workflow-warning：存在旧版分页（未覆盖
+        // 原文或缺 scene/beat 来源）时按数量提示并引导回漫画剧本页。
+        structureBar.BorderBrush = (Brush)Application.Current.FindResource("Danger");
+        structureBar.BorderThickness = new Thickness(1);
+        structureBar.Background = (Brush)Application.Current.FindResource("DangerBg");
+        structureBar.Padding = new Thickness(14, 9, 14, 9);
+        structureBar.Margin = new Thickness(0, 0, 0, 12);
+        structureBar.Visibility = Visibility.Collapsed;
+        var textStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        textStack.Children.Add(structureCountText);
+        textStack.Children.Add(new TextBlock
+        {
+            Text = "这是旧版分页数据，不能直接生图。请先到漫画剧本页删除分页，再重新生成剧本并计算分页。",
+            FontSize = 12, Foreground = (Brush)Application.Current.FindResource("Muted"),
+            TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0),
+        });
+        var gotoScript = new Button { Content = "前往漫画剧本", Style = (Style)Application.Current.FindResource("Outline"), Margin = new Thickness(14, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, MinHeight = 40 };
+        gotoScript.Click += async (_, _) => await (Context?.NavigateSection("script", "") ?? Task.CompletedTask);
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(textStack);
+        row.Children.Add(gotoScript);
+        structureBar.Child = row;
+    }
+
+    private void UpdateStructureBar()
+    {
+        var invalid = pages.Count(page => page.HasStructureIssue);
+        structureCountText.Text = $"{invalid} 页缺少剧本与分镜来源";
+        structureBar.Visibility = invalid > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private FrameworkElement BuildToolbar()

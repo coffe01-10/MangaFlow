@@ -356,9 +356,16 @@ public record PageItem(string Id, int PageNumber)
     public string Status { get; init; } = "";
     public int CharacterCount { get; init; }
     public int BubbleCount { get; init; }
+    public bool SourceCoverageComplete { get; init; } = true;
+    public int SceneIdCount { get; init; }
+    public int BeatIdCount { get; init; }
     public bool NeedsReview => Status == "NEEDS_REVIEW";
     public bool Adopted => SelectedCandidateId.Length > 0;
     public string StateLabel => NeedsReview ? "待复查" : Adopted ? "已采用" : "已规划";
+    /// <summary>web lib/generation-rules getPageStructureIssue 的原生对应：
+    /// 未覆盖原文或缺少剧本来源（scene/beat）的旧版分页不能直接生图，分镜页
+    /// 需要按数量提示并引导回漫画剧本页。</summary>
+    public bool HasStructureIssue => !SourceCoverageComplete || SceneIdCount == 0 || BeatIdCount == 0;
     public static PageItem From(JsonElement p) => new(p.Text("id"), p.Number("page_number"))
     {
         PanelCount = p.Number("panel_count"),
@@ -368,6 +375,10 @@ public record PageItem(string Id, int PageNumber)
         Status = p.Text("status"),
         CharacterCount = p.Number("character_count"),
         BubbleCount = p.Number("bubble_count"),
+        SourceCoverageComplete = p.Element("source_coverage").ValueKind != JsonValueKind.Object
+            || p.Element("source_coverage").Flag("complete"),
+        SceneIdCount = p.Array("scene_ids").Count,
+        BeatIdCount = p.Array("beat_ids").Count,
     };
 }
 
