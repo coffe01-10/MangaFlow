@@ -312,7 +312,11 @@ internal static class NativeSystemSettingsPageChecks
             connections = new[] { new { id = id + "-connection", name = "默认连接", protocol = "OPENAI", base_url = "https://api.example.invalid/v1",
                 credential_source = credentialSource, configured = ready, enabled = true, health_state = ready ? "HEALTHY" : "UNCONFIGURED",
                 credential_writable = credentialSource == "KEY",
-                supports_model_discovery = true, supports_balance = false, model_count = ready ? 2 : 0, key_count = 0, keys = Array.Empty<object>() } } };
+                supports_model_discovery = true, supports_balance = false, model_count = ready ? 2 : 0, key_count = 0, keys = Array.Empty<object>(),
+                // 真实后端把从未验证过的连接的 latency_ms 序列化为显式 null：
+                // Number() 曾经在 null 上抛 InvalidOperationException（TryGetInt32
+                // 对错误类型抛异常而不是返回 false），整个设置页供应商列表因此读取失败。
+                latency_ms = (int?)null } } };
         private static HttpResponseMessage Response(string json, HttpStatusCode status = HttpStatusCode.OK) => new(status) { Content = new StringContent(json) };
     }
 }
