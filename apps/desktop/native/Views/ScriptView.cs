@@ -417,8 +417,7 @@ public sealed class ScriptView : WorkspaceView
 
     private async Task DeleteScript()
     {
-        if (MessageBox.Show(Host, "删除本章漫画剧本？分页、分镜和页面候选会同时从工作区移除；原文、素材文件与任务记录保留，之后可重新生成。",
-            "删除剧本", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (new ConfirmDialog(Host, "删除剧本", "删除本章漫画剧本？分页、分镜和页面候选会同时从工作区移除；原文、素材文件与任务记录保留，之后可重新生成。", "删除", danger: true).ShowDialog() != true) return;
         try
         {
             await Api.SendOptionalAsync($"chapters/{chapterId}/script", HttpMethod.Delete, cancellation: lifetime.Token);
@@ -501,9 +500,8 @@ public sealed class ScriptView : WorkspaceView
         var beatEditing = body.Children.OfType<SceneSection>().SelectMany(s => s.BeatRows).Any(b => b.IsEditing);
         if (sceneEditing || beatEditing)
         {
-            var result = MessageBox.Show(Host, "当前场景 / 情节拍的修改尚未保存，切换章节会丢弃这些修改。仍要切换吗？",
-                "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
-            return result == MessageBoxResult.Yes;
+            var result = new ConfirmDialog(Host, "离开确认", "当前场景 / 情节拍的修改尚未保存，切换章节会丢弃这些修改。仍要切换吗？", "切换").ShowDialog();
+            return result == true;
         }
         return await Task.FromResult(true);
     }
