@@ -1,5 +1,11 @@
 param(
-    [int]$Samples = 3
+    [int]$Samples = 3,
+    # G1 cold/hot: cold (default) provisions a fresh user-data dir per sample,
+    # hot reuses one dir so the backend is already migrated on every launch.
+    # Neither is a disk-cold run (that needs the system file cache dropped),
+    # so label the column, do not call either one "cold start" in a report.
+    [switch]$HotReuse,
+    [string]$OutCsv = ''
 )
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
@@ -86,9 +92,15 @@ try {
         $psi.WorkingDirectory = $repo
         $psi.UseShellExecute = $false
         $psi.EnvironmentVariables['MANGAFLOW_NATIVE_REPO'] = $repo
-        # Fresh data dir per sample so each run includes full backend provisioning.
-        $runData = Join-Path $dataRoot "run-$i"
+        # Cold: fresh data dir per sample so each run includes full backend
+        # provisioning. Hot (-HotReuse): one shared dir, already migrated.
+        $runData = if ($HotReuse) { Join-Path $dataRoot 'shared' } else { Join-Path $dataRoot "run-$i" }
         $psi.EnvironmentVariables['MANGAFLOW_DESKTOP_USER_DATA'] = $runData
+        # G1 strict first frame: the client writes this only when the env var is
+        # set, and only once the compositor has actually pumped a frame. A sample
+        # with no file stays -1 in the CSV instead of being dropped.
+        $frameFile = Join-Path $dataRoot "first-frame-$i.txt"
+        $psi.EnvironmentVariables['MANGAFLOW_FIRSTFRAME_OUT'] = $frameFile
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $proc = [System.Diagnostics.Process]::Start($psi)
         $windowMs = -1
@@ -104,7 +116,22 @@ try {
                 if ($proc.WaitForInputIdle(50)) { $idleMs = $sw.ElapsedMilliseconds; break }
             } else { Start-Sleep -Milliseconds 20 }
         }
-        $results += [pscustomobject]@{ Sample = $i; WindowHandleMs = $windowMs; InputIdleMs = $idleMs }
+        # The first-frame file is written by the render callback itself, which can
+        # land a beat after WaitForInputIdle returns. Reading once at that instant
+        # silently lost frames (the first hot run only got 3/20), so wait it out.
+        $frameWait = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path $frameFile) -and $frameWait.ElapsedMilliseconds -lt 20000 -and -not $proc.HasExited) {
+            Start-Sleep -Milliseconds 50
+        }
+        $frameMs = -1
+        if (Test-Path $frameFile) {
+            $line = @(Get-Content $frameFile | Where-Object { $_ -like 'first_frame_ms=*' }) | Select-Object -First 1
+            if ($line) { $frameMs = [double]($line.Split('=')[1]) }
+        }
+        $results += [pscustomobject]@{
+            Sample = $i; Mode = $(if ($HotReuse) { 'hot' } else { 'cold' })
+            FirstFrameMs = $frameMs; WindowHandleMs = $windowMs; InputIdleMs = $idleMs
+        }
         # Give the window a moment to settle its first dashboard load, then close it.
         Start-Sleep -Seconds 3
         # Descendant snapshot BEFORE the close (#444): recursive, so a
@@ -144,5 +171,10 @@ finally {
     # already-exited case).
     if ($proc) { Stop-SampleTree $proc }
     $results | Format-Table -AutoSize | Out-String | Write-Output
+    if ($OutCsv) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $OutCsv) | Out-Null
+        $results | Export-Csv -Path $OutCsv -NoTypeInformation -Encoding UTF8
+        Write-Output ("csv=" + $OutCsv)
+    }
     try { Remove-Item -Recurse -Force $dataRoot -ErrorAction SilentlyContinue } catch {}
 }
