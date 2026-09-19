@@ -116,6 +116,13 @@ try {
                 if ($proc.WaitForInputIdle(50)) { $idleMs = $sw.ElapsedMilliseconds; break }
             } else { Start-Sleep -Milliseconds 20 }
         }
+        # The first-frame file is written by the render callback itself, which can
+        # land a beat after WaitForInputIdle returns. Reading once at that instant
+        # silently lost frames (the first hot run only got 3/20), so wait it out.
+        $frameWait = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path $frameFile) -and $frameWait.ElapsedMilliseconds -lt 20000 -and -not $proc.HasExited) {
+            Start-Sleep -Milliseconds 50
+        }
         $frameMs = -1
         if (Test-Path $frameFile) {
             $line = @(Get-Content $frameFile | Where-Object { $_ -like 'first_frame_ms=*' }) | Select-Object -First 1
