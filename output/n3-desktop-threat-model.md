@@ -788,3 +788,5 @@ reset 至 origin/master 1386570（含 ledger-39 谱系）；flock 时代 CI 红�
 **§42 补充五（20260919 夜 04:08 段）**：基线 **da2cac4** 全量认证——runner **214 passed, 2 skipped**（86s；自 208 增长系 stub-limit/fync-order/空间边界新钉）；shell-core **205/205**。c68423e→da2cac4 的 desktop 生产 delta 全部在合并点审阅完毕（#926-#960 批次），无未读存量。工作树干净于 da2cac4。
 
 **§43 补充（07:25 段）**：#954/#959 消歧：两分支**各自包含**同一 relay 扫描探针钉（同意图同断言），#959 另含 D5 HEAD→501 处理 + 结构钉——二者在 test_sidecar_relay.py 上冲突。已留 merge 决策建议（#959 为超集，合 #959 弃 #954 无内容损失）。
+
+**§41 补充三（08:30 段）**：**#959 已合**（9efa28d）——按 §44 建议合超集、#954 关闭（test_sidecar_relay.py -58 去重）；扫描探针钉在 master 存活（RUN 1 passed 复验）。#889/#890 台账 PR 流程中。open 队列空。
