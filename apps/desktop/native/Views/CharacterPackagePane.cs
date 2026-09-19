@@ -173,7 +173,7 @@ internal sealed partial class CharacterPackagePane : Border
                     : "归档角色模型包后，该角色将退出生成默认继承，既有分镜与候选不受影响。确认归档？";
                 var confirmed = DestructiveConfirmOverride is { } prompt
                     ? await prompt()
-                    : MessageBox.Show(view.WindowHost(), message, "角色模型包", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+                    : new ConfirmDialog(view.WindowHost(), "角色模型包", message, package.Text("status") == "ARCHIVED" ? "恢复" : "归档").ShowDialog() == true;
                 if (!confirmed || !Showing) return;
                 var action = package.Text("status") == "ARCHIVED" ? "restore" : "archive";
                 await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/{action}", HttpMethod.Post);
@@ -425,8 +425,7 @@ internal sealed partial class CharacterPackagePane : Border
         if (!specDirty) return true;
         var leave = SpecLeaveConfirmOverride is { } prompt
             ? await prompt()
-            : MessageBox.Show(view.WindowHost(), "草稿规格有未保存修改，离开将丢弃这些编辑。确定离开？",
-                "未保存的规格", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+            : new ConfirmDialog(view.WindowHost(), "未保存的规格", "草稿规格有未保存修改，离开将丢弃这些编辑。确定离开？", "离开").ShowDialog() == true;
         if (leave) specDirty = false;
         return leave;
     }
@@ -442,9 +441,10 @@ internal sealed partial class CharacterPackagePane : Border
         {
             var confirmed = PublishConfirmOverride is { } prompt
                 ? await prompt()
-                : MessageBox.Show(view.WindowHost(),
+                : new ConfirmDialog(view.WindowHost(),
+                    "发布版本",
                     $"发布版本 V{draft.Number("version_number")}？发布后该版本将固化为不可变版本，用于后续分镜与生图；历史候选与已发布版本不受影响。确认发布？",
-                    "发布版本", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+                    "发布").ShowDialog() == true;
             if (!confirmed) return;
             await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/versions/{draft.Text("id")}/publish", HttpMethod.Post);
             if (!Showing) return;
@@ -463,8 +463,7 @@ internal sealed partial class CharacterPackagePane : Border
         {
             var confirmed = DestructiveConfirmOverride is { } prompt
                 ? await prompt()
-                : MessageBox.Show(view.WindowHost(), $"删除草稿 V{draft.Number("version_number")} 及其矩阵绑定？该操作不可撤销。",
-                    "删除草稿", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+                : new ConfirmDialog(view.WindowHost(), "删除草稿", $"删除草稿 V{draft.Number("version_number")} 及其矩阵绑定？该操作不可撤销。", "删除", danger: true).ShowDialog() == true;
             if (!confirmed || !Showing) return;
             await view.ApiSendOptional($"{string.Format(Base, view.ProjectIdValue, character.Id)}/versions/{draft.Text("id")}", HttpMethod.Delete);
             if (!Showing) return;

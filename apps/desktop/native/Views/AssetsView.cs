@@ -1118,9 +1118,10 @@ internal sealed class OutfitsPane : StackPanel
 
     private async Task DeleteOutfit(OutfitItem outfit)
     {
-        if (MessageBox.Show(view.WindowHost(),
+        if (new ConfirmDialog(view.WindowHost(),
+                "删除服装档案",
                 $"删除服装档案“{outfit.Name}”？\n\n将同时删除绑定的 {outfit.ReferenceCount} 张参考图、已生成的穿着图，并清除剧本与分镜中的服装绑定。被其他档案共用的图片会保留。",
-                "删除服装档案", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+                "删除", danger: true).ShowDialog() != true) return;
         try
         {
             await view.ApiSendOptional($"outfits/{outfit.Id}", HttpMethod.Delete);

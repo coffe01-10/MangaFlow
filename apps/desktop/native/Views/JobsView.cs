@@ -217,8 +217,7 @@ public sealed partial class JobsView : WorkspaceView
         {
             var retry = Act("重试", async (_, _) =>
             {
-                if (MessageBox.Show(Host, "重试可能再次调用模型并产生费用。确认重试这个任务？", "重试任务",
-                    MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+                if (new ConfirmDialog(Host, "重试任务", "重试可能再次调用模型并产生费用。确认重试这个任务？", "重试", danger: true).ShowDialog() == true)
                     await JobAction(job, "retry", "重试任务");
             }, "Compact");
             retry.Margin = new Thickness(6, 0, 0, 0);
@@ -239,8 +238,7 @@ public sealed partial class JobsView : WorkspaceView
             {
                 var purge = Act("彻底删除", async (_, _) =>
                 {
-                    if (MessageBox.Show(Host, "仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？",
-                        "彻底删除", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+                    if (new ConfirmDialog(Host, "彻底删除", "仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？", "彻底删除", danger: true).ShowDialog() == true)
                         await JobAction(job, "", "删除", useDelete: true);
                 }, "CompactDanger");
                 purge.Margin = new Thickness(6, 0, 0, 0);
@@ -305,8 +303,7 @@ public sealed partial class JobsView : WorkspaceView
     private async void ArchiveAllCompleted(object sender, RoutedEventArgs e)
     {
         if (bulkPending || pending.Count > 0) return;
-        if (MessageBox.Show(Host, "将所有已完成、失败和已取消任务移入历史记录？生成候选与溯源信息不会删除。",
-            "归档全部终态", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        if (new ConfirmDialog(Host, "归档全部终态", "将所有已完成、失败和已取消任务移入历史记录？生成候选与溯源信息不会删除。", "归档").ShowDialog() != true) return;
         await BulkAction("archive-completed", null, result => result.Number("archived_count") > 0
                 ? $"已归档 {result.Number("archived_count")} 条已结束任务"
                 : "没有可归档的已结束任务");

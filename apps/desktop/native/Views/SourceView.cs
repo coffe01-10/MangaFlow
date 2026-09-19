@@ -246,8 +246,7 @@ public sealed class SourceView : WorkspaceView
     {
         if (importing || revisionLoading || workflowBusy) return;
         if (bodyInput.Text.Trim().Length > 0 &&
-            MessageBox.Show(Host, $"当前输入框已有未导入的原文（{bodyInput.Text.Trim().Length} 字），载入章节修订会覆盖它。继续吗？",
-                "修改原文", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            new ConfirmDialog(Host, "修改原文", $"当前输入框已有未导入的原文（{bodyInput.Text.Trim().Length} 字），载入章节修订会覆盖它。继续吗？", "覆盖").ShowDialog() != true) return;
         var epoch = activation; var cancellation = lifetime.Token;
         var token = ++revisionToken;
         activeChapterId = chapter.Id; RenderChapters();
@@ -281,8 +280,7 @@ public sealed class SourceView : WorkspaceView
 
     private void CancelEdit(object sender, RoutedEventArgs e)
     {
-        if (bodyInput.Text.Trim().Length > 0 && MessageBox.Show(Host, "取消修改会丢弃输入框中的全部文本。继续吗？", "取消修改",
-            MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        if (bodyInput.Text.Trim().Length > 0 && new ConfirmDialog(Host, "取消修改", "取消修改会丢弃输入框中的全部文本。继续吗？", "丢弃", danger: true).ShowDialog() != true) return;
         ResetCompose();
     }
 
@@ -393,8 +391,7 @@ public sealed class SourceView : WorkspaceView
 
     private async Task DeleteChapter(ChapterItem chapter)
     {
-        if (MessageBox.Show(Host, "删除后会暂时隐藏该章节，可立即撤回。继续吗？", "删除章节",
-            MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        if (new ConfirmDialog(Host, "删除章节", "删除后会暂时隐藏该章节，可立即撤回。继续吗？", "删除", danger: true).ShowDialog() != true) return;
         var epoch = activation;
         try
         {
@@ -480,8 +477,8 @@ public sealed class SourceView : WorkspaceView
         var message = editingChapterId != null
             ? "当前章节的修改尚未保存，离开会丢弃这些内容。确定离开吗？"
             : "输入框中还有未导入的原文，离开会丢失这些内容。确定离开吗？";
-        var result = MessageBox.Show(Host, message, "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        return Task.FromResult(result == MessageBoxResult.Yes);
+        var result = new ConfirmDialog(Host, "离开确认", message, "离开").ShowDialog();
+        return Task.FromResult(result == true);
     }
 
     public override Task RefreshAsync() => LoadChaptersAsync();

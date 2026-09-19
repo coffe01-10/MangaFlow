@@ -320,8 +320,7 @@ public sealed class LocalEditWindow : Window
     }
     private async Task SelectResult(CandidateItem candidate)
     {
-        if (busy || MessageBox.Show(this, "请确认修改区域与页面文字已人工校对。暂选此结果后仍需完成视觉检查。是否继续？",
-            "采用局部修改结果", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        if (busy || new ConfirmDialog(this, "采用局部修改结果", "请确认修改区域与页面文字已人工校对。暂选此结果后仍需完成视觉检查。是否继续？", "继续").ShowDialog() != true) return;
         busy = true;
         try
         {
@@ -352,9 +351,10 @@ public sealed class LocalEditWindow : Window
         // R2D-05：Discard 失败（如本地服务不可用）时不能把模态窗口锁死——主窗口
         // 还被 ShowDialog 挂着，用户只能杀进程。给出强制关闭出口：PREVIEWED
         // 命令组留在服务端，稍后可在导演命令历史中丢弃或重发。
-        if (MessageBox.Show(this,
+        if (new ConfirmDialog(this,
+                "关闭局部修改",
                 "丢弃命令组失败（本地服务可能不可用）。仍要关闭窗口吗？已创建的预览命令组会保留，稍后可在导演命令历史中处理。",
-                "关闭局部修改", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+                "关闭", danger: true).ShowDialog() == true)
         {
             closed = true;
             Close();
@@ -372,7 +372,6 @@ public sealed class LocalEditWindow : Window
     private bool ConfirmCloseDraft()
     {
         if (CloseConfirmOverride is { } prompt) return prompt();
-        return MessageBox.Show(this, "已画的选区与修改指令尚未提交，关闭会丢弃这些内容。仍要关闭吗？",
-            "关闭确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+        return new ConfirmDialog(this, "关闭确认", "已画的选区与修改指令尚未提交，关闭会丢弃这些内容。仍要关闭吗？", "关闭").ShowDialog() == true;
     }
 }

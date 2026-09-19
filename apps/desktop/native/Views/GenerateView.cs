@@ -784,8 +784,7 @@ public sealed partial class GenerateView : WorkspaceView
                         new { is_favorite = !candidate.Favorite });
                     break;
                 case "delete":
-                    if (MessageBox.Show(Host, "删除这个候选？收藏状态也会一并移除。", "删除候选",
-                            MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+                    if (new ConfirmDialog(Host, "删除候选", "删除这个候选？收藏状态也会一并移除。", "删除", danger: true).ShowDialog() != true) return;
                     await Api.SendOptionalAsync($"candidates/{candidate.Id}", HttpMethod.Delete);
                     break;
                 case "inspect":
@@ -802,8 +801,7 @@ public sealed partial class GenerateView : WorkspaceView
                     State.Status = "视觉检查任务已创建";
                     break;
                 case "select":
-                    if (MessageBox.Show(Host, "请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？",
-                            "人工校对并暂选", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+                    if (new ConfirmDialog(Host, "人工校对并暂选", "请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？", "继续").ShowDialog() != true) return;
                     await Api.SendAsync($"pages/{targetPage}/select-candidate", HttpMethod.Post, new
                     {
                         candidate_id = candidate.Id,
@@ -819,8 +817,7 @@ public sealed partial class GenerateView : WorkspaceView
                         notice.Text = "请先选择图片模型，再执行升清。";
                         return;
                     }
-                    if (MessageBox.Show(Host, $"升至 {resolution} 会调用一次所选图片模型（可能计费），并基于该候选生成一个新批次。是否继续？",
-                            "保持结构升清", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+                    if (new ConfirmDialog(Host, "保持结构升清", $"升至 {resolution} 会调用一次所选图片模型（可能计费），并基于该候选生成一个新批次。是否继续？", "继续", danger: true).ShowDialog() != true) return;
                     await Api.SendAsync($"candidates/{candidate.Id}/upscale", HttpMethod.Post, new
                     {
                         model_alias = modelAlias,
@@ -882,8 +879,7 @@ public sealed partial class GenerateView : WorkspaceView
         try
         {
             // keep 与暂选一样要确认人工文字校对（manual_text_confirmed=true）；确认文案沿用 web 的暂选确认。
-            if (MessageBox.Show(Host, "请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？",
-                    "沿用并重新检查", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            if (new ConfirmDialog(Host, "沿用并重新检查", "请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？", "继续").ShowDialog() != true) return;
             await Api.SendAsync($"pages/{targetPage.Id}/selected-candidate/keep", HttpMethod.Post, new
             {
                 candidate_id = candidate.Text("id"),
@@ -1513,9 +1509,8 @@ public sealed partial class GenerateView : WorkspaceView
         // 测试缝优先：headless 检查无模态驱动拒绝/同意分支，否则卡死在 MessageBox。
         if (LeaveConfirmOverride is { } prompt) return prompt();
         if (!DirectorDraftActive) return Task.FromResult(true);
-        var result = MessageBox.Show(Host, "导演指令尚未提交，离开会丢弃已输入的指令与预览选择。仍要离开吗？",
-            "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        return Task.FromResult(result == MessageBoxResult.Yes);
+        var result = new ConfirmDialog(Host, "离开确认", "导演指令尚未提交，离开会丢弃已输入的指令与预览选择。仍要离开吗？", "离开").ShowDialog();
+        return Task.FromResult(result == true);
     }
 
     /// <summary>

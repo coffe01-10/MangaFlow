@@ -433,7 +433,7 @@ public sealed partial class ProjectSettingsView : WorkspaceView
             MessageBox.Show(Host, "请输入完整项目名称", "删除项目", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        if (MessageBox.Show(Host, $"确认从工作台删除项目“{expected}”？", "删除项目", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+        if (new ConfirmDialog(Host, "删除项目", $"确认从工作台删除项目“{expected}”？", "删除", danger: true).ShowDialog() != true)
             return;
         ((Button)sender).IsEnabled = false;
         try
@@ -466,8 +466,7 @@ public sealed partial class ProjectSettingsView : WorkspaceView
         if (!dirty) return true;
         var leave = LeaveConfirmOverride is { } prompt
             ? await prompt()
-            : MessageBox.Show(Host, "项目设置有未保存的修改（包括已输入的删除确认名称），离开会丢弃这些内容。确定离开吗？",
-                "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+            : new ConfirmDialog(Host, "离开确认", "项目设置有未保存的修改（包括已输入的删除确认名称），离开会丢弃这些内容。确定离开吗？", "离开").ShowDialog() == true;
         if (!leave) return false;
         // 同意离开即弃稿：dirty 原样保留会让同一次弃稿在再次激活/重载前重复弹窗
         // （StoryboardView.ConfirmLeaveAsync 同款处理）。
