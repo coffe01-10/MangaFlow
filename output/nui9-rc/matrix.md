@@ -41,14 +41,14 @@
 | 格 | 状态 | 证据 |
 | --- | --- | --- |
 | P2-1 D5 全局设置双头部 | 修复后通过（离屏） | 设计稿先行并自审：`d5-design.md`。落地：①页面删除自绘头部（SettingsLayout.cs BuildSystemPage：kicker+标题+三动作全删）；②动作所有权归壳——壳 `SettingsActions` 三按钮为唯一入口，保存按钮 `SaveRuntimeButton` 改代码管理 `IsEnabled = Connected && !RuntimeSaving`（xaml 绑定移除防冲突）；③`SettingsView` 新增 `RuntimeSavingChanged` 事件 + `RuntimeSaving` 属性（SaveRuntime 置位/清位处 raise，沿用 RuntimeSaved 模式；订阅挂在 NavigateAsync 既有 SettingsView 分支，处理器以 ContentHost.Content 守卫防 cached view 陈旧订阅）；④标题统一：TopTitle/Breadcrumb settings-global → 「系统设置与运行诊断」（web 文案）。回归：离屏像素+交互（NativeSystemSettingsPageChecks）新增「页面无第二头部文本」「用量/返回按钮只存在壳」「RuntimeSavingChanged 序列 [true,false]」三断言，原 A05~A09 全保持 PASS，exit 0（`p2-d5/` 含 1440/1240/760/360 PNG 与日志）；恒真断言 `save.TranslatePoint().Y<150` 已删（按钮脱树后无意义）。真机壳级验证转 P4-6 格 |
-| P2-2 NUI-8-A MessageBox YesNo（Esc/默认焦点）+ 43 处普查迁移 | NOT RUN | 待普查表 |
-| P2-3 仪表盘项目卡 a11y（语义 Name + Invoke/Select + UIA 断言） | NOT RUN | 待跑 |
+| P2-2 NUI-8-A MessageBox YesNo（Esc/默认焦点）+ 43 处普查迁移 | 修复后通过 | ConfirmDialog 现状已有 Esc+取消焦点+主题 FocusRing；补齐键盘契约回归（`NativeButtonChecks.ConfirmDialogKeyboardChecks`：初始焦点=安全钮、Esc 处理并 DialogResult=false、Tab 可达确认、danger=红钮、无 IsDefault 回车不触发）。普查表：`messagebox-survey.md`（生产代码 79 处 MessageBox.Show；**43 处 YesNo 全部迁移 ConfirmDialog**、36 处 OK/info 保留；迁移后生产代码 MessageBoxButton.YesNo=0）。全部 headless 测试缝原样保留。原生全套 56 项全绿 + --render 全套 PASS |
+| P2-3 仪表盘项目卡 a11y（语义 Name + Invoke/Select + UIA 断言） | 修复后通过 | `HomeView.CreateCardTemplate` 卡按钮显式绑定 `AutomationProperties.Name=项目名`（此前 fallback 到 ProjectItem 记录转储）；InvokePattern 为 Button peer 原生能力，Select 不适用（按钮语义非列表项，与 web 一致）。回归：`NativeNui8ParityChecks` 新增 Name/InvokePattern/peerGetName 三断言（并补 `state.ChangeDashboardPage(0)` 让测试态真的渲染卡片——此前 DashboardProjects 为空，卡片从未被该检查覆盖）。--render 全套 PASS；真机 UIA dump 复核随 P4 会话 |
 
 ## P3 缺陷 #4 有界时间盒
 
 | 格 | 状态 | 证据 |
 | --- | --- | --- |
-| P3 合成假设①（autosave 去抖 × 3s 轮询 × 切画布取消） | NOT RUN | 待跑 |
+| P3 合成假设①（autosave 去抖 × 3s 轮询 × 切画布取消） | 修复后通过（机制证实+分流修复） | 机制证实：取消在途请求时连接随取消拆除，socket 层可以 HttpRequestException（"An error occurred while sending the request"）冒泡而非 OCE——ApiClient 原 `catch (HttpRequestException)` 无条件按传输失败上报+视图显示「保存失败：英文原文」，即缺陷 #4 误报路径。修复（分流）：ApiClient Send/Upload 在 `cancellation.IsCancellationRequested` 下的 HRE 重抛为 OCE（不写传输诊断），视图既有「保存已取消」路径吞掉；真实传输失败（token 未取消）仍照常弹错+落诊断。回归：`NativeKeepAliveChecks` 新增 CancelRaceHandler 合成用例（--keepalive 与默认全套都跑）：取消后必须 OCE、不得出现「传输失败」诊断——PASS。**边界**：合成用例证实的是异常形态→误报的因果链与修复有效性；真机是否真的产生该形态仍靠 ReportTransportFailure 被动取证（真机取证依赖 PR #983 落地后的 wpf-client.log） |
 
 ## P4 逐页交互格子
 
