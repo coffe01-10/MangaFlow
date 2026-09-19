@@ -1256,3 +1256,91 @@ def test_failing_alembic_upgrade_journals_the_typed_failure(tmp_path):
     assert "MANGAFLOW_READY" not in result.stdout, (
         "a failed migration must never publish readiness"
     )
+
+
+def test_alembic_failure_publishes_failed_when_sigterm_lands_during_the_write(
+    tmp_path, monkeypatch
+):
+    """#935 follow-up: race a SIGTERM through _run_app's alembic failure leg
+    — not just the source-split inspection at the alembic arm. The
+    deferral wrapper must keep the terminal ``failed`` publish alive while
+    the cooperative-stop signal lands mid-write; the annotated
+    ``alembic:<Type>`` error must land, the original failure must re-raise
+    (the leg stays a failure, never the cooperative exit-0), and the
+    previous SIGTERM handler must be restored after the write."""
+    import argparse as argparse_module
+    import signal as signal_module
+    import types as types_module
+
+    api_root = tmp_path / "api"
+    (api_root / "app").mkdir(parents=True)
+    (api_root / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
+    (api_root / "app" / "main.py").write_text("", encoding="utf-8")
+
+    token = "0123456789abcdef0123456789abcdef"
+    user_data = tmp_path / "user"
+    journal = user_data / "runtime" / f"mangaflow-desktop-{token}" / "owner.json"
+    journal.parent.mkdir(parents=True)
+
+    def upgrade(*_args, **_kwargs):
+        raise RuntimeError("migration boom")
+
+    fake_alembic = types_module.ModuleType("alembic")
+    fake_alembic.command = types_module.SimpleNamespace(upgrade=upgrade)
+    fake_alembic_config = types_module.ModuleType("alembic.config")
+    fake_alembic_config.Config = lambda *_a, **_k: types_module.SimpleNamespace(
+        set_main_option=lambda *_a, **_k: None
+    )
+    monkeypatch.setitem(sys.modules, "alembic", fake_alembic)
+    monkeypatch.setitem(sys.modules, "alembic.config", fake_alembic_config)
+    monkeypatch.setattr(helper, "_spawn_web_server", lambda *_a, **_k: None)
+
+    real_write = helper._write_journal
+
+    def write_and_term(path, record_):
+        signal_module.raise_signal(signal_module.SIGTERM)
+        return real_write(path, record_)
+
+    monkeypatch.setattr(helper, "_write_journal", write_and_term)
+
+    cooperative = lambda *_: sys.exit(0)
+    signal_module.signal(signal_module.SIGTERM, cooperative)
+    sys_path_snapshot = list(sys.path)
+    env_snapshot = {
+        name: os.environ.get(name) for name in ("DATABASE_URL", "WEB_ORIGIN")
+    }
+    try:
+        args = argparse_module.Namespace(
+            api_root=str(api_root),
+            user_data=str(user_data),
+            web_origin="http://127.0.0.1:4173",
+            fake_channel=False,
+            fake_channel_cleanup=False,
+        )
+        with pytest.raises(RuntimeError, match="migration boom"):
+            helper._run_app(
+                args,
+                journal,
+                {
+                    "version": 1,
+                    "token": token,
+                    "role": "app",
+                    "state": "created",
+                    "started_at": 0,
+                },
+            )
+        assert signal_module.getsignal(signal_module.SIGTERM) is cooperative, (
+            "the deferral must restore the previous SIGTERM handler (#935)"
+        )
+    finally:
+        sys.path[:] = sys_path_snapshot
+        for name, value in env_snapshot.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)
+
+    published = json.loads(journal.read_text(encoding="utf-8"))
+    assert published["state"] == "failed", published
+    assert published["error"] == "alembic:RuntimeError", published
