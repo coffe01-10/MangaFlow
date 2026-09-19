@@ -121,7 +121,12 @@ def test_assemble_refuses_a_source_without_server_js_and_touches_nothing(tmp_pat
     # refusal (not a degraded assemble) is the contract (#382 posture).
     src, res, node = _buildable_source(tmp_path)
     (src / "server.js").unlink()
-    res_before = sorted(str(p.relative_to(res)) for p in res.rglob("*"))
+    # Stage/retire debris are SIBLINGS of res (web.tmp-<pid>/web.old-<pid>),
+    # so the side-effect check must diff the PARENT directory, not res
+    # alone — an in-res snapshot cannot see partial staging next door
+    # (round-10 review note).
+    dist = res.parent
+    before = sorted(str(p.relative_to(dist)) for p in dist.rglob("*"))
 
     try:
         assemble.assemble(src=src, res=res, node=node)
@@ -130,10 +135,10 @@ def test_assemble_refuses_a_source_without_server_js_and_touches_nothing(tmp_pat
     else:
         raise AssertionError("a server.js-less source must be refused")
 
-    res_after = sorted(str(p.relative_to(res)) for p in res.rglob("*"))
-    assert res_after == res_before, (
-        "the refusal must precede any staging or sweep: the result tree "
-        f"changed {res_before!r} -> {res_after!r}"
+    after = sorted(str(p.relative_to(dist)) for p in dist.rglob("*"))
+    assert after == before, (
+        "the refusal must precede any staging, sweep, or swap: the dist "
+        f"tree changed {before!r} -> {after!r}"
     )
 
 
