@@ -320,11 +320,12 @@ internal static class MediaErrors
     }
 
     /// <summary>已映射的 InvalidOperationException/TimeoutException 携带服务端
-    /// detail 或状态码回退；其余（HttpRequestException 等）是原始英文，给本地化回退。</summary>
-    public static string Localize(Exception error) => error switch
+    /// detail 或状态码回退；其余（HttpRequestException 等）是原始英文，给本地化回退。
+    /// NUI-8 D7：非图片路径（素材库导出下载）也要走这里，回退文案得按场景给。</summary>
+    public static string Localize(Exception error, string fallback = "图片加载失败，请检查本地服务后重试。") => error switch
     {
         InvalidOperationException or TimeoutException => error.Message,
-        _ => "图片加载失败，请检查本地服务后重试。",
+        _ => fallback,
     };
 
     private static string DescribeDetail(JsonElement value, string fallback)

@@ -75,6 +75,26 @@ internal static class NativeSourceChecks
             Require(Field<TextBox>(view, "bodyInput").Text == "最新修订", "revision editor did not load latest revision");
             Field<Button>(view, "importButton").RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent)); await Task.Delay(15);
             Require(fake.RevisionSaved && Field<TextBox>(view, "bodyInput").Text.Length == 0, "revision save did not refresh/reset");
+            // NUI-8 D6 回归：修订编辑会把所属章节标题写回 composing 的标题输入框。
+            // 编辑第二章后必须回到默认「第一章」，否则下一次 TXT 导入会把「第二章」
+            // 当作本次标题（写进 multipart 的 title 字段并回显在成功提示里）。
+            var secondEdit = NativeParityChecks.Descendants(view).OfType<Button>().First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "修改 第二章 的原文");
+            secondEdit.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent)); await Task.Delay(15);
+            Require(Field<TextBox>(view, "titleInput").Text == "第二章", "revision editor must show the edited chapter title");
+            Field<TextBox>(view, "bodyInput").Text = "第二章新修订";
+            Field<Button>(view, "importButton").RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent)); await Task.Delay(20);
+            Require(Field<TextBox>(view, "titleInput").Text == "第一章", "composing title must drop the chapter title left by revision editing (#D6)");
+            var staleTitleFile = Path.Combine(output, "stale-title-fixture.md");
+            try
+            {
+                File.WriteAllText(staleTitleFile, "第二章的新内容");
+                fake.UploadBody = "";
+                await (Task)typeof(SourceView).GetMethod("ImportFileAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(view, [staleTitleFile])!;
+                Require(fake.UploadBody.Contains("第一章"),
+                    "file import must not reuse a stale chapter title as the multipart title (#D6)");
+                Require(fake.UploadBody.Contains("第二章的新内容"), "file import lost the uploaded body");
+            }
+            finally { File.Delete(staleTitleFile); }
             var delayedScript = fake.PendingScript = new TaskCompletionSource<HttpResponseMessage>();
             var lateRefresh = view.RefreshAsync();
             view.Deactivate(); view.Activate(Context("empty-project")); await view.RefreshAsync();

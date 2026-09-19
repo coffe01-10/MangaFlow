@@ -76,6 +76,7 @@ internal static class NativeVisualChecks
                 NativeRerenderChecks.Run();
                 NativeParityChecks.Run(output, state);
                 NativeInteractionChecks.Run(output);
+                NativeNui8ParityChecks.Run(output);
                 app.Shutdown();
             }
             catch (Exception e) { failure = e; }
