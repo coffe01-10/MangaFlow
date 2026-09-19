@@ -14,7 +14,12 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
 
 需要 .NET 8 SDK、Rust，以及现有 `.venv-desktop` Python 环境。默认数据目录为
 `%LOCALAPPDATA%/MangaFlow/Native`，不会自动搬迁旧客户端数据。
-原生客户端尚非可独立分发的安装包，发布前须升级受支持的 .NET LTS 并验证打包。
+
+发布产物用 `apps/desktop/scripts/build-native-installer.ps1 -Version <x.y.z>` 打
+NSIS 安装器（框架依赖 .NET 8 桌面运行时），静默装/覆盖升级/静默卸载验收见
+`apps/desktop/scripts/verify-native-installer.ps1`；实测结论与边界记在
+`docs/native-ui-migration.md` 的 NUI-8 收口轮一节。.NET 8 LTS 支持到 2026-11-12，
+升大版本须另开独立 PR 并复跑性能与安装验收。
 
 ## 与网页一致的界面
 
