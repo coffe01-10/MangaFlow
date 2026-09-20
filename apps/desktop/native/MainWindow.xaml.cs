@@ -217,8 +217,13 @@ public partial class MainWindow : Window
             // change applies from the next tick (web: settings cache update).
             settings.RuntimeSaved -= OnRuntimeSettingsSaved;
             settings.RuntimeSaved += OnRuntimeSettingsSaved;
+            // D5：保存动作归壳——保存中禁用壳「保存运行设置」按钮（web save.isPending）。
+            // 处理器以 ContentHost.Content 为守卫，cached view 的陈旧订阅不碰按钮。
+            settings.RuntimeSavingChanged -= OnRuntimeSavingChanged;
+            settings.RuntimeSavingChanged += OnRuntimeSavingChanged;
         }
         ContentHost.Content = view as UIElement ?? throw new InvalidOperationException("视图不是 UI 元素");
+        OnRuntimeSavingChanged();   // 进页即同步一次按钮态（含离开设置页后的复位）
         await ActivateCurrentViewAsync();
         return true;
     }
@@ -243,6 +248,15 @@ public partial class MainWindow : Window
         // SettingsView already published the value into PollInterval; re-arm the
         // timers so the next tick runs on the new period.
         ApplyPollIntervals();
+    }
+
+    // D5：保存中禁用壳「保存运行设置」（数据源 SettingsView.RuntimeSaving，
+    // web save.isPending 同语义）；离开设置页后由导航重入时复位。
+    private void OnRuntimeSavingChanged()
+    {
+        if (closing) return;
+        SaveRuntimeButton.IsEnabled = ContentHost.Content is SettingsView settings
+            && state.Connected && !settings.RuntimeSaving;
     }
 
     private void ApplyPollIntervals()
@@ -432,7 +446,7 @@ public partial class MainWindow : Window
         state.Breadcrumb = page switch
         {
             "home" => "漫画生产台",
-            "settings-global" => "系统设置",
+            "settings-global" => "系统设置与运行诊断",
             "usage" => "用量与成本看板",
             "help" => "使用帮助",
             _ => $"{project?.Name ?? "项目"} / {state.Navigation.Current.Title}",
@@ -440,7 +454,7 @@ public partial class MainWindow : Window
         TopTitle.Text = page switch
         {
             "home" => "漫画生产台",
-            "settings-global" => "系统设置",
+            "settings-global" => "系统设置与运行诊断",
             "usage" => "用量看板",
             "help" => "使用帮助",
             _ => project?.Name ?? "项目工作区",
