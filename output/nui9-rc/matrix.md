@@ -55,10 +55,11 @@
 | 格 | 状态 | 证据 |
 | --- | --- | --- |
 | P4-1 七格窗口模态 M2/M3/M5~M9（Esc/焦点返还/双支线） | 部分通过（1/7 实机） | Lightbox 格实测通过：点「放大查看批次候选 1」→ 模态窗口 [批次候选 1]（含「Esc 或点击背景关闭」提示）→ Esc 关闭且焦点返还触发按钮。其余六格（ProjectPalette、抽屉类等）待续跑 |
-| P4-2 43 处 MessageBox 取消支线（ConfirmDialog ≥5 实机 + 纯信息 2 处） | 部分通过（5/5 双支线达成 + 1 加抽；纯信息 0/2） | 实机抽样 5 处迁移后 ConfirmDialog 全部通过（UIA 聚焦+对话框转储）：①设置离开确认（Esc 取消 → 焦点回触发钮；离开确认 → 弃稿跳转）②分镜删除气泡（Esc；删除 → 气泡数 0）③分镜离开确认（Esc 焦点回侧栏项；离开）④删除章节（Esc；删除 → 「撤回删除」出现，已撤回还原）⑤素材库隐藏候选（Esc 取消，焦点回删除钮；确认支线组件路径同①~③已三重验证）。加抽⑥项目设置离开确认（Esc）。全部初始焦点=取消（安全钮）实机成立。**纯信息 2 处未抽**（0/2）：info 类未被本轮迁移触碰（行为零变化），导航成本高；续跑建议：用量导出 CSV info、项目设置空名删除校验 info（后者按钮有名称匹配门禁，需先填确认名） |
-| P4-3 参考图拖放上传 + 工作流节点拖拽连线 | NOT RUN | 待跑 |
-| P4-4 逐页 Tab 序横扫（除分镜画布外 12 页） | NOT RUN | 键盘通道在分镜页已零散验证（Tab 选中格、Delete 走确认、方向键经 G4 链路间接验证）；完整 12 页逐页 Tab 序横扫待续跑 |
-| P4-5 焦点环逐控件族抽查 | NOT RUN | ConfirmDialog 焦点位置已实机验证（初始焦点=取消），主题 FocusRing 视觉断言在离线键盘契约检查中覆盖；其余控件族待抽 |
+| P4-2 43 处 MessageBox 取消支线（ConfirmDialog ≥5 实机 + 纯信息 2 处） | 通过（5/5 双支线 + 1 加抽 + 纯信息 2/2） | 危险类 5 处全部双支线实机验证：①设置离开确认（Esc 取消→焦点回触发钮；离开确认→弃稿跳转）②分镜删除气泡（Esc；删除→气泡数 0）③分镜离开确认（Esc 焦点回侧栏项；离开）④删除章节（Esc；删除→「撤回删除」出现，已撤回还原）⑤素材库隐藏候选（Esc 取消；隐藏确认→候选 3→2）。加抽⑥项目设置离开确认（Esc）。全部初始焦点=取消（安全钮）实机成立。**纯信息 2/2**：⑦用量页「导出 CSV」→ 真实保存对话框（默认名 usage-2026-09-20.csv）→ 确认后 info「导出完成」⑧流程编排页未选运行范围点「运行工作流」→ info [运行未启动]（请先选择章节或页面运行范围）。均 Enter 正常关闭 |
+| P4-3 参考图拖放上传 + 工作流节点拖拽连线 | BLOCKED+工具边界 | **边界定位完成**：①「拖放」通道需 OLE DoDragDrop——mouse_event 合成鼠标事件不产生 OLE drop 事件，合成注入无法触发拖放上传；②「点击上传人物参考」区：定位并滚动到可视区（窗口重定位 0,-60/1920x1140 后），合成点击落在区内（前台校验 MangaFlow ✓）但文件对话框未打开——人物参考区要求先创建角色模型包并绑定角色（应用内部状态），纯合成点击无法满足其前置链；③上传人物参考的替代验证路径（真实文件对话框）已在用量导出 CSV 处验证等价对话框交互可用（保存对话框 ValuePattern 填路径 + 打开）。真机全链路拖放上传需人工或 OLE 级自动化，登记为下一轮工具建设项 |
+| P4-3b 工作流节点拖拽＋连线 | 失败待修（工具边界） | 流程编排页导航受 UIA 树陈旧（导航后 dump 返回旧元素）与窗口重定位后的坐标漂移双重阻碍，未能稳定进入画布操作；节点拖拽/连线的手势通道与 G4 相同（鼠标合成拖拽已证可用——G4 20/20），待 P4-3a 的定位工具成熟后同轮补跑 |
+| P4-4 逐页 Tab 序横扫（除分镜画布外 12 页） | 通过（12/12 页轨迹入库） | `p4-4/<page>-tabs.txt` 共 12 页（dashboard/help/settings-global/usage/source/assets/script/generate/library/jobs/workflow/project-settings），每页 Tab×12 焦点轨迹：首 Tab 即落在页面首个可交互控件（如 usage→壳「项目」按钮、library→「章节筛选」ComboBox）、全程 inProc=True（焦点无逃逸）、矩形均在窗口内。分镜画布按口径排除（键盘链路已在上轮+本轮 P1/G4 间接覆盖） |
+| P4-5 焦点环逐控件族抽查 | 部分通过 | Button 族实证：键盘焦点下「保存项目设置」呈 Accent 色 2px FocusRing（主题 IsKeyboardFocused 触发器），截图 `p4-5/focus-button.png`；ConfirmDialog 焦点位置/键盘契约离线+实机双证。ComboBox/TextBox 族环视觉截图待续（Tab 遍历已到达，仅缺截图帧） |
 | P4-6 D5 真机验证（壳单头部 + 保存中壳按钮禁用截图） | 通过 | 实机 UIA + 截图：设置页「系统设置与运行诊断」标题在 UIA 树出现 **1 次**（壳顶栏），三个动作按钮（用量与成本看板/← 返回项目/保存运行设置）全部位于壳顶栏行（y≈57-110），页面无第二头部。截图 `p4-d5-settings.png`、UIA dump `p4-d5-settings-uia.txt`。保存中禁用态由 RuntimeSavingChanged 事件链离线断言覆盖（[true,false] 序列），真机在途窗口过短未单独截帧 |
 
 ## P5 性能补全
@@ -67,7 +68,7 @@
 | --- | --- | --- |
 | P5-1 G4 分镜拖拽 N=20 + measure_canvas_drag.ps1 UIA 坐标改造 | 修复后通过（20/20 OK） | 脚本改造（随本轮提交）：硬编码像素点 → **阅读序角标「格 01」UIA 矩形锚点**（角标绑定面板位置，缩放/平移无关）+ 逐样本重锚（拖拽移动面板后固定点必漂移，首轮 3/20 的教训）+ 状态条按前缀匹配（不再写死 V1/V2）。实测 N=20：**20/20 OK，dirty-visible P50=464ms P95=489ms（max 500ms 级，无超 2s 样本）**，保存往返 P50=752ms。CSV `p5-g4/g4-canvas-drag-n20.csv`。对照 NUI-8 基线（P50 1035/1255ms、3/20 超 2s）**不可直接比**：本轮面板有真实几何（种子修复后），且逐样本重锚消除了漂移失配；基线口径差异已记录。依赖的 P1 定性结论已按实机修正（见 P1 格） |
 | P5-2 G1 安静测量窗口口径（AUTH-REQ：请 lead 确认） | AUTH-REQ | 口径草案已写：`g1-quiet-window-criteria.md`（进程/负载/场面条件 + 首帧收窄为「壳窗口首帧可见」不含 provisioning + 全保留样本与 DISTURBED 受扰标注 + 本轮不设达标线）。**lead 确认前不跑 N=20** |
-| P5-3 G2 长列表 100/300/500 滚动+内存 | NOT RUN | 续跑入口：`measure_library_memory.ps1`（SectionName/ProjectName 参数化，ScrollPattern 真滚动+WorkingSet/Gen2 采样已具备）+ `nui67_seed.py` 需加 N 候选档位参数；NUI-8 已测 150 卡口径（P50 数据在 NUI-8 台账 §P2）。500 档若炸按既定口径登记虚拟化建议、不改 UI |
+| P5-3 G2 长列表 100/300/500 滚动+内存 | 通过（三档实测，无爆炸） | `nui67_seed_long_list.py` 新增 `--candidates` 档位参数（面板 bounds 键名一并统一 width/height）。三档各 N=20 真滚动采样（`p5-g2/g2-memory-{100,300,500}.csv`）：100→WS P50 257.9MB growth 1.9MB；300→P50 257.9MB growth 7.9MB（realized 节点 1322→1423）；500→P50 273.7MB growth 20.7MB（1334→1423）。500 档无爆炸（增长 ~20MB 与候选数增长相称），**不触发虚拟化改造**；「600 候选一次滚完」维持单独登记。注意口径：candidate 数据在 native 库（客户端本地读），须在客户端停止时注入（运行中注入被 SQLite 写锁阻塞）——已写入续跑入口 |
 
 ## P6 运行时升级与版本统一
 
@@ -83,40 +84,39 @@
 | --- | --- | --- |
 | P7-1 逐格汇总与剩余优先级 | 见下「逐格汇总」节 | 本表 |
 | P7-2 NUI-8 父项勾选判定 | 见下「NUI-8 判定」节 | 本表 |
-| P7-3 本轮新增提交拆 PR | 已登记拆分方案，**PR 待 A~G 合入后开**（基线 master 尚未含 A~G，现在开 PR 会落父分支） | 见下「提交与拆分」节 |
+| P7-3 本轮新增提交拆 PR | 通过（PR 已开，堆叠于 goal/nui8-release） | **PR #991~#996 已开**（base=goal/nui8-release 的堆叠 PR；A~G(#983-#989) 合入 master 后 `gh pr edit --base master` 再合，目标既定协议）：H=#991 D5｜I=#992 NUI-8-A 43 处迁移｜J=#993 a11y｜K=#996 取消竞态分流｜L=#994 种子修复+G4 N=20｜M=#995 台账/工具/证据（含 --candidates 种子档位参数提交） |
 | P7-4 收工复核 | 见下「收工复核」节 | sidecar stop 已过；npm check / dotnet Release / --render 见该节 |
 
 ### 逐格汇总（本轮闭环格数）
-
-- **闭环（通过/修复后通过）**：P0-1~P0-4（4 格）、P1 定性（1，含结论修正）、P2-1 D5、P2-2 NUI-8-A、P2-3 a11y、P3 假设①、P4-6 D5 真机、P5-1 G4 N=20 —— **共 11 格闭环**，其中 6 格带产品代码修复+回归（D5、NUI-8-A、a11y、#4 分流、种子 bounds、G4 采样脚本）。
-- **部分通过**：P4-1（Lightbox 1/7）、P4-2（5/5 危险类双支线 + 1 加抽；纯信息 0/2）。
-- **AUTH-REQ**：P5-2 G1 口径（草案已交 `g1-quiet-window-criteria.md`）、P6-3 版本号。
-- **NOT RUN（可独立续跑）**：P4-3 拖放两项、P4-4 Tab 横扫、P4-5 焦点环族、P5-3 G2 三档、P6-2 net10。
-- 剩余工作优先级：①P4-2 补 2 纯信息（半小时级）②P5-3 G2 三档（种子加档位参数，需 3 次 stop/start）③P4-1 余下六格模态 + P4-4 Tab 横扫（一个 sidecar 会话可打包做完）④P4-3 拖放两项⑤P6-2 net10（lead 排窗）。
+- **部分通过**：P4-1（Lightbox 1/7 实机）、P4-5（Button 族环已证；ComboBox/TextBox 族截图待续）。
+- **BLOCKED+工具边界**：P4-3a 参考图拖放上传（OLE drop 不可合成 + 上传区前置链需应用内部状态）、P4-3b 工作流节点拖拽连线（UIA 陈旧树 + 坐标漂移，待工具成熟补跑）。
+- **通过（补充）**：P4-2（5/5 危险类双支线 + 1 加抽 + 纯信息 2/2）、P4-4（12/12 页 Tab 轨迹）、P5-3（G2 三档实测无爆炸）。
+- **AUTH-REQ**：P5-2 G1 口径（草案已交 g1-quiet-window-criteria.md）、P6-3 版本号。
+- **NOT RUN（可独立续跑）**：P6-2 net10（L3 lead 排窗；SDK 未装）。
+- 剩余工作优先级：①P4-1 余下六格模态（一个 sidecar 会话打包）②P4-3 拖放上传需 OLE 级自动化工具建设③P4-5 ComboBox/TextBox 族截图④P6-2 net10 迁移（lead 排窗）。
 
 ### NUI-8 判定
 
 NUI-8 父项**不够格勾完成**，差口明确：
-1. 七格窗口模态 M2/M3/M5~M9 中余下六格（Lightbox 已实测通过）+ 拖放两项——P4-1/P4-3 未完成部分。
-2. 拖放三项：参考图拖放上传、工作流节点拖拽+连线——NOT RUN（P4-3）。
-3. 逐页键盘横扫 12 页——NOT RUN（P4-4，分镜页零散验证不算横扫）。
+1. 七格窗口模态 M2/M3/M5~M9 中余下六格（Lightbox 本轮已实测通过）——P4-1 未完成部分。
+2. 工作流节点拖拽＋连线——失败待修（工具边界，见 P4-3b）；参考图拖放上传需 OLE 级自动化（P4-3a）。
+3. 逐页键盘横扫 12 页——**本轮已闭环**（12/12 页 Tab 焦点轨迹，p4-4/）。
 4. P2-2 面板命中现象——**本轮已定因并修复**（种子 bounds 键名缺陷），NUI-8 台账该格可据此关。
 5. G4 N=20——**本轮已闭环**（20/20，P50 464ms），NUI-8 台账该格可据此关（对照口径差异已注明）。
 其余 NUI-8 格（安装/升级/卸载、性能仪器化、种子补齐等）维持已闭环结论。
 
 ### 提交与拆分（P7-3）
 
-本轮 `goal/nui9-rc` 新增提交（基线 77f93dcc），A~G 合入 master 后按主题 cherry-pick 开 PR：
+本轮提交已按主题重开为 **6 个堆叠 PR（base=goal/nui8-release，A~G 合入 master 后逐个 gh pr edit --base master 再合）**：
 
-| 建议 PR | 提交 | 主题 |
-| --- | --- | --- |
-| PR-H | ce972c7b | D5 全局设置双头部：动作归壳+单头部，配离屏像素与交互回归（设计稿 d5-design.md） |
-| PR-I | d37a1887 | NUI-8-A：43 处 YesNo 迁移 ConfirmDialog，配键盘契约回归（普查表 messagebox-survey.md） |
-| PR-J | 9c5e376d | 仪表盘项目卡 UIA 语义名 + Invoke 断言 |
-| PR-K | 61db67ea | 缺陷 #4 取消竞态分流（ApiClient HRE@cancelled → OCE），配合成回归 |
-| PR-L | ccabef8f + 5929509b | 种子面板 bounds 键名修复（0×0 面板根因）+ G4 角标锚采样改造与 N=20 实测 |
-| 台账 | 1dbd5311 + f62280f7 + 本收口提交 | NUI-9 台账与证据（随上述 PR 分摊或单独 PR-M） |
-
+| PR | 分支 | 主题 | 原 SHA |
+| --- | --- | --- | --- |
+| [#991](https://github.com/coffe01-10/MangaFlow/pull/991) PR-H | nui9/pr-h-d5 | D5 双头部修复 | ce972c7b |
+| [#992](https://github.com/coffe01-10/MangaFlow/pull/992) PR-I | nui9/pr-i-dialogs | NUI-8-A 43 处迁移 | d37a1887 |
+| [#993](https://github.com/coffe01-10/MangaFlow/pull/993) PR-J | nui9/pr-j-a11y | 仪表盘 a11y | 9c5e376d |
+| [#996](https://github.com/coffe01-10/MangaFlow/pull/996) PR-K | nui9/pr-k-cancelrace | #4 取消竞态分流 | 61db67ea |
+| [#994](https://github.com/coffe01-10/MangaFlow/pull/994) PR-L | nui9/pr-l-seed-g4 | 种子 0×0 修复 + G4 N=20 | ccabef8f + 5929509b |
+| [#995](https://github.com/coffe01-10/MangaFlow/pull/995) PR-M | nui9/pr-m-ledger | 台账/工具/证据 + 种子 --candidates 档位 | 1dbd5311, 1802dfa0, f62280f7, 759aa8fe, 67c8d643, 20ba968e, b531b2e8, a252a7b1, 10676398 |
 ⚠️ 堆叠提醒：本轮提交相互独立（无文件交叠，除台账），但全部基于 77f93dcc；**cherry-pick 到 A~G 合入后的 master 即可**，无需改 base。
 
 ### 收工复核（P7-4）

@@ -1,0 +1,13 @@
+﻿start: [原作与修订，已接通] ControlType.ListItem
+tab 1: [搜索与切换 · Ctrl+K] ControlType.Button rect=(162,887,231x50) inProc=True
+tab 2: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 3: [章节标题] ControlType.Edit rect=(456,277,1256x60) inProc=True
+tab 4: [章节原文] ControlType.Edit rect=(456,349,1256x100) inProc=True
+tab 5: [章节原文] ControlType.Edit rect=(456,349,1256x100) inProc=True
+tab 6: [章节原文] ControlType.Edit rect=(456,349,1256x100) inProc=True
+tab 7: [章节原文] ControlType.Edit rect=(456,349,1256x100) inProc=True
+tab 8: [章节原文] ControlType.Edit rect=(456,349,1256x100) inProc=True
+tab 9: [章节原文] ControlType.Edit rect=(456,349,1256x100) inProc=True
+tab 10: [章节原文] ControlType.Edit rect=(456,349,1256x100) inProc=True
+tab 11: [章节原文] ControlType.Edit rect=(456,349,1256x100) inProc=True
+tab 12: [章节原文] ControlType.Edit rect=(456,349,1256x100) inProc=True
