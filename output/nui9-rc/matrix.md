@@ -126,6 +126,7 @@ NUI-8 父项**不够格勾完成**，差口明确：
 - --render 全套：PASS ✓（迁移与 a11y 断言落地后第 3 轮跑，`render-round3.log`：「Native client checks passed: 56; WPF navigation and visual checks passed」，对照 56 项无漂移）。
 - npm run check 终跑：**全绿** ✓（`p7-npm-check-final.log`）：pytest **1663 passed, 47 skipped**（= NUI-8 基线 1663+47，零漂移）；vitest **56 files / 615 tests passed**（= 基线，零漂移）；生产构建通过（"All checks passed!"）。
 - npm run check 复跑（实机抽样与种子档位参数落地后）：**再次全绿** ✓（`p7-npm-check-final2.log`：pytest 1663 passed, 47 skipped；vitest 56 files / 615 passed）——种子档位参数变更后门禁复验通过。
+- 第二轮实机采样后终跑（M8 修复 a8cb5f5b + 本轮证据入库后）：**全绿** ✓（`p7-npm-check-final3.log`：pytest **1663 passed, 47 skipped**、vitest **56 files / 615 passed**、生产构建通过，"All checks passed!"，零漂移）。sidecar stop：编排器报告两条 leftover（MangaFlow.Native 23212=本轮实机采样手动启动的实例，不在编排器 Job 内；native-host 5988=helper 派生）——已手动 taskkill 并复核：进程表无 MangaFlow.Native/native-host，3000/8000 释放。教训登记：实机采样中途重启应用时，应走编排器或采样后并入 stop 前清理。
 
 ## 运行记录
 
