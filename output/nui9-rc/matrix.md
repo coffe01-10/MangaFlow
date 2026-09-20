@@ -125,6 +125,7 @@ NUI-8 父项**不够格勾完成**，差口明确：
 - dotnet build -c Release：0 error ✓（本轮实机验证所用 Release exe 即含全部修复后构建）。
 - --render 全套：PASS ✓（迁移与 a11y 断言落地后第 3 轮跑，`render-round3.log`：「Native client checks passed: 56; WPF navigation and visual checks passed」，对照 56 项无漂移）。
 - npm run check 终跑：**全绿** ✓（`p7-npm-check-final.log`）：pytest **1663 passed, 47 skipped**（= NUI-8 基线 1663+47，零漂移）；vitest **56 files / 615 tests passed**（= 基线，零漂移）；生产构建通过（"All checks passed!"）。
+- npm run check 复跑（实机抽样与种子档位参数落地后）：**再次全绿** ✓（`p7-npm-check-final2.log`：pytest 1663 passed, 47 skipped；vitest 56 files / 615 passed）——种子档位参数变更后门禁复验通过。
 
 ## 运行记录
 
