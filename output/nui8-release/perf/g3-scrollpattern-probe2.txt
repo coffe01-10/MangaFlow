@@ -1,0 +1,8 @@
+﻿TARGET name=项目页面导航 before: extent=0x0 viewport=0x0 vPct=0
+  SetScrollPercent(-1,100) OK after: extent=0x0 viewport=0x0 vPct=100
+  SetScrollPercent(-1,0) OK after: extent=0x0 viewport=0x0 vPct=0
+  Scroll(LargeDown) THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。
+TARGET name=素材库滚动区 before: extent=0x0 viewport=0x0 vPct=0
+  SetScrollPercent(-1,100) OK after: extent=0x0 viewport=0x0 vPct=100
+  SetScrollPercent(-1,0) OK after: extent=0x0 viewport=0x0 vPct=0
+  Scroll(LargeDown) THREW: MethodException: 找不到“Scroll”的重载，参数计数为:“1”。

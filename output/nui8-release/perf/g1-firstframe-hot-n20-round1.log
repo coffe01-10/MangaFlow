@@ -1,0 +1,27 @@
+
+Sample Mode FirstFrameMs WindowHandleMs InputIdleMs CleanClose Exited LeftoverChildren
+------ ---- ------------ -------------- ----------- ---------- ------ ----------------
+     1 hot         740.3            621         755       True   True                 
+     2 hot         750.4            650         759       True   True                 
+     3 hot         750.7            659         760       True   True                 
+     4 hot            -1            647         767       True   True                 
+     5 hot            -1            522         586       True   True                 
+     6 hot            -1            617         692       True   True                 
+     7 hot            -1            540         601       True   True                 
+     8 hot            -1            567         627       True   True                 
+     9 hot            -1            608         695       True   True                 
+    10 hot            -1            585         649       True   True                 
+    11 hot            -1            541         636       True   True                 
+    12 hot            -1            583         635       True   True                 
+    13 hot            -1            554         604       True   True                 
+    14 hot            -1            572         654       True   True                 
+    15 hot            -1            533         591       True   True                 
+    16 hot            -1            535         602       True   True                 
+    17 hot            -1            541         630       True   True                 
+    18 hot            -1            526         606       True   True                 
+    19 hot            -1            511         584       True   True                 
+    20 hot            -1            536         599       True   True                 
+
+
+
+csv=D:\自媒体\漫画工作流\output\nui8-release\perf\g1-firstframe-hot-n20.csv
