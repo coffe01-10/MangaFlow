@@ -142,12 +142,16 @@ public sealed partial class StoryboardView : WorkspaceView
     public override async void Activate(WorkspaceContext context)
     {
         base.Activate(context);
+        // 作用域守卫（net10 迟到失败窗口）：钉住本次激活的 CTS 实例。跨项目切换
+        // （Deactivate→Activate 续新 CTS）之后，上一轮激活的三章请求迟到失败若
+        // 无守卫会画进新项目；成功续体同理不得把旧项目数据写进字段。
+        var requestLifetime = lifetime;
         try
         {
             var chapterRows = await Api.SendAsync($"projects/{ProjectId}/chapters", cancellation: lifetime.Token);
             var characterRows = await Api.SendAsync($"projects/{ProjectId}/characters", cancellation: lifetime.Token);
             var outfitRows = await Api.SendAsync($"projects/{ProjectId}/outfits", cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
+            if (lifetime.Token.IsCancellationRequested || !ReferenceEquals(requestLifetime, lifetime)) return;
             chapters = chapterRows.EnumerateArray().Select(ChapterItem.From).ToList();
             characters = characterRows.EnumerateArray().Select(CharacterItem.From).ToList();
             outfits = outfitRows.EnumerateArray().Select(OutfitItem.From).ToList();
@@ -189,6 +193,7 @@ public sealed partial class StoryboardView : WorkspaceView
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (!ReferenceEquals(requestLifetime, lifetime) || lifetime.Token.IsCancellationRequested) return;
             inspector.Children.Clear();
             inspector.Children.Add(Kit.Caption($"页面列表读取失败：{error.Message}"));
         }
@@ -282,10 +287,15 @@ public sealed partial class StoryboardView : WorkspaceView
         // 守卫——A 章的 pages 响应慢于 B 切换落地时，旧响应会把 pages/画布翻回 A 而
         // 选择器仍显示 B，用户在错误的章节视图上编辑。非最新请求的响应整份丢弃。
         var requestVersion = ++pagesLoadVersion;
+        // 作用域守卫（net10 迟到失败窗口）：以发起时的 CTS 实例钉住请求所属的
+        // 视图作用域——跨项目切换时 Deactivate→Activate 会续新 CTS，仅靠版本号
+        // 管不住「新激活尚未发起加载」的空档；旧项目的迟到失败一律不渲染。
+        var requestLifetime = lifetime;
         try
         {
             var rows = await Api.SendAsync($"chapters/{chapterId}/pages", cancellation: lifetime.Token);
-            if (requestVersion != pagesLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            if (requestVersion != pagesLoadVersion || lifetime.Token.IsCancellationRequested
+                || !ReferenceEquals(requestLifetime, lifetime)) return;
             pages = rows.EnumerateArray().Select(PageItem.From).ToList();
             UpdateStructureBar();
             RenderPageBar();
@@ -303,8 +313,10 @@ public sealed partial class StoryboardView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            // 迟到的失败同属已被取代的请求：不得把较新请求已落下的页面列表盖成错误卡
-            if (requestVersion != pagesLoadVersion) return;
+            // 迟到的失败同属已被取代的请求：不得把较新请求已落下的页面列表盖成错误卡；
+            // 作用域已更换/取消的失败（跨项目切换空档）同样不得渲染。
+            if (requestVersion != pagesLoadVersion || !ReferenceEquals(requestLifetime, lifetime)
+                || lifetime.Token.IsCancellationRequested) return;
             inspector.Children.Add(Kit.Caption($"页面列表读取失败：{error.Message}"));
         }
     }
@@ -354,12 +366,16 @@ public sealed partial class StoryboardView : WorkspaceView
         var bubbleDraftSnapshot = preserveDrafts ? bubbles.ToDictionary(b => b.Id, b => (b.Rect, b.Moved)) : null;
         var selectedPanelId = preserveDrafts ? selected?.Id : null;
         var selectedBubbleId = preserveDrafts ? selectedBubble?.Id : null;
+        // 作用域守卫（net10 迟到失败窗口，LoadPagesAsync 同款）：跨项目切换的空档里
+        // 旧项目的整页分镜迟到失败不得画进新项目。
+        var requestLifetime = lifetime;
         try
         {
             // 迟到的旧响应先用局部变量承接，守卫通过后再写字段：无条件赋值会在
             // 快速连点两页时把旧页分镜短暂污染进字段（P3-6 同类竞态）。
             var fresh = await Api.SendAsync($"pages/{item.Id}/storyboard", cancellation: lifetime.Token);
-            if (requestVersion != pageLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            if (requestVersion != pageLoadVersion || lifetime.Token.IsCancellationRequested
+                || !ReferenceEquals(requestLifetime, lifetime)) return;
             storyboard = fresh;
             // 拉取成功后才切换页签状态与记住的页号；页版本以服务端为准刷新，
             // 冲突恢复（放弃并重新加载）后的重试才有新锚点，否则永远撞同一个 409
@@ -431,8 +447,10 @@ public sealed partial class StoryboardView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            // 迟到的失败同样属于已被取代的请求：不得回滚较新请求已经落下的选中页签
-            if (requestVersion != pageLoadVersion) return;
+            // 迟到的失败同样属于已被取代的请求：不得回滚较新请求已经落下的选中页签；
+            // 作用域已更换/取消的失败（跨项目切换空档）同样不得渲染。
+            if (requestVersion != pageLoadVersion || !ReferenceEquals(requestLifetime, lifetime)
+                || lifetime.Token.IsCancellationRequested) return;
             currentPage = previous;   // 失败回滚页签选中态
             RenderPageBar();
             UpdateStatus("读取失败");

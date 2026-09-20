@@ -95,10 +95,14 @@ public sealed class ScriptView : WorkspaceView
     public override async void Activate(WorkspaceContext context)
     {
         base.Activate(context);
+        // 章节列表请求同样要钉住发起时的作用域：跨项目切换时旧项目的迟到失败
+        // 若在「新激活已换绑、尚未发起加载」的空档浮出，不得画进新项目（同
+        // LoadScriptAsync 的作用域守卫）。
+        var requestLifetime = lifetime;
         try
         {
             var rows = await Api.SendAsync($"projects/{ProjectId}/chapters", cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
+            if (lifetime.Token.IsCancellationRequested || !ReferenceEquals(requestLifetime, lifetime)) return;
             chapters = rows.EnumerateArray().Select(ChapterItem.From).ToList();
             chapterSelector.Items.Clear();
             foreach (var chapter in chapters)
@@ -131,6 +135,7 @@ public sealed class ScriptView : WorkspaceView
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (!ReferenceEquals(requestLifetime, lifetime) || lifetime.Token.IsCancellationRequested) return;
             body.Children.Clear();
             var host = Context!;
             body.Children.Add(ErrorCard(error.Message, () => { Activate(host); return Task.CompletedTask; }));
@@ -143,6 +148,11 @@ public sealed class ScriptView : WorkspaceView
         // 迟到响应隔离:快速切换章节时,旧章节数据不得覆盖新章节的渲染
         // (与 SourceView 的 activation / StoryboardView 的守卫同一模式)。
         var requestVersion = ++scriptLoadVersion;
+        // net10 迁移发现的迟到失败窗口：请求所属的视图作用域以「发起时的 CTS 实例」
+        // 为准——Deactivate 之后 Activate 会续新 CTS（ViewKit），仅比对 scriptLoadVersion
+        // 管不住「新激活尚未发起加载」的空档；此时旧项目的失败若浮出（net10 HttpClient
+        // 故障优先于取消，不再总是包成 OCE），就会画进新项目的页面。
+        var requestLifetime = lifetime;
         if (quiet)
         {
             // SC-2: quiet 加载不置 loadingScript（不渲染 spinner），改用独立在途标志去重，
@@ -172,7 +182,8 @@ public sealed class ScriptView : WorkspaceView
             var loadOutfits = Api.SendAsync($"projects/{ProjectId}/outfits", cancellation: lifetime.Token);
             var loadSceneAssets = Api.SendAsync(QueryBuilder.Build($"projects/{ProjectId}/scene-assets", ("limit", 200)), cancellation: lifetime.Token);
             await Task.WhenAll(loadScript, loadCharacters, loadOutfits, loadSceneAssets);
-            if (requestVersion != scriptLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            if (requestVersion != scriptLoadVersion || lifetime.Token.IsCancellationRequested
+                || !ReferenceEquals(requestLifetime, lifetime)) return;
             var scriptRow = await loadScript;
             var characterRows = await loadCharacters;
             var outfitRows = await loadOutfits;
@@ -195,7 +206,10 @@ public sealed class ScriptView : WorkspaceView
         catch (Exception error) when (error is not OperationCanceledException)
         {
             // SC-1: 旧请求的迟到失败既不能盖掉新请求已渲染的章节，也不属于 quiet 静默重试路径。
-            if (quiet || requestVersion != scriptLoadVersion) return;
+            // 作用域守卫：请求发起后的 CTS 已被 Deactivate 取消、或被新激活续成新实例，
+            // 这份失败就属于已离开的视图作用域，一律不渲染（不依赖版本号推进的时序运气）。
+            if (quiet || requestVersion != scriptLoadVersion
+                || !ReferenceEquals(requestLifetime, lifetime) || lifetime.Token.IsCancellationRequested) return;
             body.Children.Clear();
             // 错误卡替换了画布：签名与已渲染内容不再对应，下次成功加载必须重绘。
             renderedScriptSignature = "";
