@@ -60,11 +60,12 @@ NUI-6 不能据该轮勾选完成。
 - **工作流连线拖拽复验 PASS**（P4-3b，net10 实机）：n1 输出端口 → agent.parse 输入
   端口合成拖拽，draft_version 6→7 + 新边落库；前轮「合成点击失效」系测试脚本
   坐标系误读（截图像素=物理像素），非应用缺陷。
-- **边界（如实）**：`--render` 收口终跑首轮失败于零位移手势断言——离屏检查遭实机
-  物理鼠标移动干扰（当时前台为用户浏览器），待安静窗口重跑（P2-3 安静窗同二进制
-  56 项 PASS 在档）；真实签名与应用内检查更新维持 AUTH-REQ；多 DPI 单屏环境
-  BLOCKED。payload 运行时捆绑建议 AUTH-REQ 登记（建议捆绑用户目录级 Desktop
-  Runtime，DOTNET_ROOT 机制已实测）。
+- **`--render` 收口终跑 PASS**（P5-4，安静窗）：exit 0、`Native client checks passed:
+  56; WPF navigation and visual checks passed`，对照基线 56 项零漂移；首轮失败于零
+  位移手势断言，取证为实机物理鼠标移动干扰离屏检查（非应用缺陷，两轮互证）。
+  真实签名与应用内检查更新维持 AUTH-REQ；多 DPI 单屏环境 BLOCKED。payload 运行时
+  捆绑建议 AUTH-REQ 登记（建议捆绑用户目录级 Desktop Runtime，DOTNET_ROOT 机制已
+  实测）。
 
 ## 2026-09-19 NUI-8 发布收口轮（分支 `goal/nui8-release`）
 
