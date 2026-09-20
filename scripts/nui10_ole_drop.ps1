@@ -147,12 +147,50 @@ $carrier.Size = New-Object System.Drawing.Size(48, 32)
 $carrier.Opacity = 0.35
 $carrier.Text = 'nui10 ole drop carrier'
 $carrier.Show()
-[System.Windows.Forms.Application]::DoEvents()
+# Take real foreground before injecting LEFT DOWN: SendInput routes the press
+# into the FOREGROUND thread's queue, and a background process cannot steal
+# foreground with Form.Activate alone (observed 2026-09-20: press landed on
+# the target app, DoDragDrop bailed None in 9 ms, or hung waiting for a
+# release its thread never saw). AttachThreadInput borrows the foreground
+# thread's input state so SetForegroundWindow succeeds from background.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class Nui10Fg {
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int v);
+  public static bool Take(IntPtr target) {
+    uint pid; uint fgThread = GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+    uint me = GetCurrentThreadId();
+    bool ok = false;
+    if (fgThread != 0 && fgThread != me && AttachThreadInput(fgThread, me, true)) {
+      ok = SetForegroundWindow(target);
+      AttachThreadInput(fgThread, me, false);
+    } else {
+      ok = SetForegroundWindow(target);
+    }
+    return ok;
+  }
+  public static bool LeftIsDown() { return (GetAsyncKeyState(0x01) & 0x8000) != 0; }
+}
+'@
+$deadline = (Get-Date).AddSeconds(3)
+while ($carrier.Handle -ne [Nui10Fg]::GetForegroundWindow() -and (Get-Date) -lt $deadline) {
+  [void][Nui10Fg]::Take($carrier.Handle)
+  Start-Sleep -Milliseconds 120
+  [System.Windows.Forms.Application]::DoEvents()
+}
+Write-Output ("carrier foreground: " + ($carrier.Handle -eq [Nui10Fg]::GetForegroundWindow()))
 
 [Nui10OleDrop.Native]::MoveTo($FromX + 20, $FromY + 12)
 Start-Sleep -Milliseconds 80
 [Nui10OleDrop.Native]::LeftDown()
 Start-Sleep -Milliseconds $HoldBeforeMoveMs
+Write-Output ("left button down after injection: " + [Nui10Fg]::LeftIsDown())
 
 # Worker thread: after DoDragDrop enters its modal loop, walk the cursor to
 # the target and release. SendInput is global, safe from an MTA thread.
@@ -177,6 +215,13 @@ $pump.AddScript({
   }
   Start-Sleep -Milliseconds 150
   [Nui10OleDrop.Native]::LeftUp()
+  # Cancel guard: if the OLE session is still alive 2.5 s after release (the
+  # modal loop never saw our up), ESC aborts it so DoDragDrop cannot hang the
+  # tool forever. Benign once the drag has ended (no modal open in our flows).
+  Start-Sleep -Milliseconds 2500
+  [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+  Start-Sleep -Milliseconds 400
+  [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
   $sync.Done = $true
 }) | Out-Null
 $pump.AddArgument($sync) | Out-Null
