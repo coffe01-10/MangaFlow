@@ -1,0 +1,13 @@
+﻿start: [任务中心，已接通] ControlType.ListItem
+tab 1: [搜索与切换 · Ctrl+K] ControlType.Button rect=(162,887,231x50) inProc=True
+tab 2: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 3: [近期任务] ControlType.Button rect=(447,247,126x52) inProc=True
+tab 4: [历史记录] ControlType.Button rect=(579,247,126x52) inProc=True
+tab 5: [归档全部终态] ControlType.Button rect=(1584,247,154x52) inProc=True
+tab 6: [] ControlType.Button rect=(448,318,1297x60) inProc=True
+tab 7: [选择PAGE_GENERATION] ControlType.CheckBox rect=(475,447,36x25) inProc=True
+tab 8: [调用与成本] ControlType.Button rect=(693,479,139x42) inProc=True
+tab 9: [重试] ControlType.Button rect=(1457,435,94x48) inProc=True
+tab 10: [归档] ControlType.Button rect=(1559,435,94x48) inProc=True
+tab 11: [] ControlType.Button rect=(448,570,1297x60) inProc=True
+tab 12: [显示任务中心快捷栏] ControlType.Button rect=(1669,954,95x47) inProc=True

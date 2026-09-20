@@ -1,0 +1,13 @@
+﻿start: [项目设置，已接通] ControlType.ListItem
+tab 1: [搜索与切换 · Ctrl+K] ControlType.Button rect=(162,887,231x50) inProc=True
+tab 2: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 3: [返回工作区] ControlType.Button rect=(1442,156,127x52) inProc=True
+tab 4: [保存项目设置] ControlType.Button rect=(1579,156,172x52) inProc=True
+tab 5: [导演模式] ControlType.RadioButton rect=(493,662,609x78) inProc=True
+tab 6: [半自动] ControlType.RadioButton rect=(493,749,609x78) inProc=True
+tab 7: [自动] ControlType.RadioButton rect=(493,836,609x78) inProc=True
+tab 8: [草稿清晰度 1K] ControlType.Button rect=(1584,677,60x53) inProc=True
+tab 9: [草稿清晰度 2K] ControlType.Button rect=(1644,677,60x53) inProc=True
+tab 10: [正式清晰度 1K] ControlType.Button rect=(1524,761,60x53) inProc=True
+tab 11: [正式清晰度 2K] ControlType.Button rect=(1584,761,60x53) inProc=True
+tab 12: [正式清晰度 4K] ControlType.Button rect=(1644,761,60x53) inProc=True

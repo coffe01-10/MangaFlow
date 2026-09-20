@@ -1,0 +1,13 @@
+﻿start: [帮助] ControlType.Button
+tab 1: [设置] ControlType.Button rect=(1271,59,78x50) inProc=True
+tab 2: [系统设置] ControlType.Button rect=(1490,57,112x53) inProc=True
+tab 3: [＋ 新建项目] ControlType.Button rect=(1617,57,134x53) inProc=True
+tab 4: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 5: [← 返回项目] ControlType.Button rect=(212,196,132x52) inProc=True
+tab 6: [跳转到01 导入原作] ControlType.Button rect=(212,697,119x42) inProc=True
+tab 7: [跳转到02 建立参考资产] ControlType.Button rect=(338,697,149x42) inProc=True
+tab 8: [跳转到03 编排与生产] ControlType.Button rect=(496,697,134x42) inProc=True
+tab 9: [跳转到04 检查与导出] ControlType.Button rect=(638,697,134x42) inProc=True
+tab 10: [跳转到故障排查] ControlType.Button rect=(780,697,97x42) inProc=True
+tab 11: [跳转到桌面快捷键] ControlType.Button rect=(884,697,112x42) inProc=True
+tab 12: [打开系统设置  →] ControlType.Button rect=(1486,959,169x52) inProc=True
