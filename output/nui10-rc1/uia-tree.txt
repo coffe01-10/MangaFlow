@@ -1,0 +1,151 @@
+﻿ControlType.Window|重建本页版式|(666,268) 588x484
+ControlType.Text|重建本页版式|(705,336) 510x36
+ControlType.Text|重建将删除本页全部格子与气泡，并从已确认剧本与原文区间重新映射；已生成候选会因分镜版本过期。这不是视觉拖拽的替代操作。|(705,382) 510x38
+ControlType.Text|本页格数|(705,438) 510x17
+ControlType.Button|3|(705,470) 60x42
+ControlType.Text|3|(730,482) 10x19
+ControlType.Button|4|(773,470) 60x42
+ControlType.Text|4|(798,482) 9x19
+ControlType.Button|5|(840,470) 60x42
+ControlType.Text|5|(865,482) 10x19
+ControlType.Button|6|(908,470) 60x42
+ControlType.Text|6|(933,482) 9x19
+ControlType.Button|7|(975,470) 60x42
+ControlType.Text|7|(1,000,482) 10x19
+ControlType.Button|8|(1,043,470) 60x42
+ControlType.Text|8|(1,068,482) 9x19
+ControlType.Text|版式|(705,527) 510x18
+ControlType.Button|动态错落|(705,560) 120x42
+ControlType.Text|动态错落|(735,572) 60x19
+ControlType.Button|均衡网格|(833,560) 120x42
+ControlType.Text|均衡网格|(863,572) 60x19
+ControlType.Text|当前第 1 页为 4 格。|(705,622) 510x18
+ControlType.Button|取消|(953,660) 112x52
+ControlType.Text|取消|(993,676) 32x20
+ControlType.Button|确认重建|(1,078,659) 137x52
+ControlType.Text|确认重建|(1,114,675) 65x20
+ControlType.Button|折叠侧栏|(169,47) 60x53
+ControlType.Text|☰|(192,63) 14x21
+ControlType.Button|← 项目|(229,47) 99x53
+ControlType.Text|← 项目|(251,63) 54x21
+ControlType.Text|NUI67 并排对照主项目|(348,58) 985x31
+ControlType.Text|● 项目工作区|(1,353,64) 89x19
+ControlType.Button|在工作流中查看|(1,462,47) 162x53
+ControlType.Text|在工作流中查看|(1,486,63) 114x21
+ControlType.Button|项目设置|(1,639,47) 112x53
+ControlType.Text|项目设置|(1,662,63) 65x21
+ControlType.Text|PROJECT / 01|(169,138) 216x17
+ControlType.Text|NUI67 并排对照主项目|(169,170) 216x33
+ControlType.Text|3 章 · 3 页已规划|(169,213) 216x19
+ControlType.List|项目页面导航|(162,259) 231x588
+ControlType.ListItem|原作与修订，已接通|(163,281) 203x60
+ControlType.Text|01|(338,301) 18x19
+ControlType.Text|原作与修订|(208,301) 120x19
+ControlType.ListItem|参考资产，已接通|(163,347) 203x60
+ControlType.Text|02|(338,367) 18x19
+ControlType.Text|参考资产|(208,367) 120x19
+ControlType.ListItem|漫画剧本，已接通|(163,413) 203x60
+ControlType.Text|03|(338,434) 18x19
+ControlType.Text|漫画剧本|(208,434) 120x19
+ControlType.ListItem|分页与分镜，已接通|(163,479) 203x60
+ControlType.Text|04|(338,500) 18x19
+ControlType.Text|分页与分镜|(208,500) 120x19
+ControlType.ListItem|单页生成，已接通|(163,546) 203x60
+ControlType.Text|05|(338,566) 18x19
+ControlType.Text|单页生成|(208,566) 120x19
+ControlType.ListItem|生成素材库，已接通|(163,612) 203x60
+ControlType.Text|06|(338,632) 18x19
+ControlType.Text|生成素材库|(208,632) 120x19
+ControlType.ListItem|任务中心，已接通|(163,678) 203x60
+ControlType.Text|07|(338,699) 18x19
+ControlType.Text|任务中心|(208,699) 120x19
+ControlType.ListItem|流程编排，已接通|(163,744) 203x60
+ControlType.Text|FL|(340,765) 15x19
+ControlType.Text|流程编排|(208,765) 120x19
+ControlType.ListItem|项目设置，已接通|(163,811) 203x60
+ControlType.Text|ST|(338,831) 17x19
+ControlType.Text|项目设置|(208,831) 120x19
+ControlType.Separator||(162,872) 231x2
+ControlType.Button|搜索与切换 · Ctrl+K|(162,885) 231x50
+ControlType.Text|搜索与切换 · Ctrl+K|(184,899) 151x21
+ControlType.Custom||(442,141) 1,334x810
+ControlType.Text|PAGE CAPACITY / 动态分页|(442,141) 1,005x19
+ControlType.Text|内容有多少，页面就有多少|(442,173) 1,005x41
+ControlType.ComboBox|章节选择|(1,477,141) 256x72
+ControlType.Text|3 页|(1,748,167) 28x20
+ControlType.Pane||(442,252) 105x684
+ControlType.Button||(442,252) 105x95
+ControlType.Text|P.001|(472,263) 45x21
+ControlType.Text|4 格|(472,291) 45x20
+ControlType.Text|已采用|(472,316) 45x20
+ControlType.Button||(442,353) 105x95
+ControlType.Text|P.002|(472,365) 45x21
+ControlType.Text|3 格|(472,392) 45x20
+ControlType.Text|已规划|(472,417) 45x20
+ControlType.Button||(442,454) 105x95
+ControlType.Text|P.003|(472,466) 45x21
+ControlType.Text|2 格|(472,493) 45x20
+ControlType.Text|已规划|(472,518) 45x20
+ControlType.Pane||(562,252) 1,214x684
+ControlType.Text|版式已重建 · 当前 V3|(578,275) 1,055x24
+ControlType.Button|专注模式|(1,663,263) 97x48
+ControlType.Text|专注模式|(1,680,277) 60x20
+ControlType.Text|第 1 页 · 0/180 字 · 0/8 气泡|(562,337) 1,042x21
+ControlType.Text|来自漫画剧本：1 个场景 · 3 个情节拍；修改不会删除已有候选。|(562,364) 1,042x20
+ControlType.Button|从本页重新计算|(1,634,337) 142x50
+ControlType.Text|从本页重新计算|(1,652,352) 105x20
+ControlType.Text|2 页缺少剧本与分镜来源|(580,416) 630x23
+ControlType.Text|这是旧版分页数据，不能直接生图。请先到漫画剧本页删除分页，再重新生成剧本并计算分页。|(580,443) 630x20
+ControlType.Button|前往漫画剧本|(1,228,414) 143x50
+ControlType.Text|前往漫画剧本|(1,252,428) 96x21
+ControlType.Button|－|(574,504) 52x48
+ControlType.Text|－|(592,518) 15x20
+ControlType.Text|25%|(632,518) 52x20
+ControlType.Button|＋|(690,504) 52x48
+ControlType.Text|＋|(708,518) 15x20
+ControlType.Button|适配窗口|(748,504) 97x48
+ControlType.Text|适配窗口|(766,518) 60x20
+ControlType.Button|复位|(851,504) 67x48
+ControlType.Text|复位|(869,518) 30x20
+ControlType.Button|吸附|(924,504) 67x48
+ControlType.Text|吸附|(942,518) 30x20
+ControlType.Button|阅读序|(997,504) 82x48
+ControlType.Text|阅读序|(1,015,518) 45x20
+ControlType.Button|出血框|(1,085,504) 82x48
+ControlType.Text|出血框|(1,103,518) 45x20
+ControlType.Button|安全区|(1,173,504) 82x48
+ControlType.Text|安全区|(1,191,518) 45x20
+ControlType.Button|撤销|(1,261,504) 67x48
+ControlType.Text|撤销|(1,279,518) 30x20
+ControlType.Button|重做|(1,334,504) 67x48
+ControlType.Text|重做|(1,352,518) 30x20
+ControlType.Button|页菜单 ▾|(1,407,504) 100x48
+ControlType.Text|页菜单 ▾|(1,425,518) 63x20
+ControlType.Button|保存本页|(1,513,504) 111x48
+ControlType.Text|保存本页|(1,537,517) 64x21
+ControlType.Button|隐藏导演台|(1,630,504) 112x48
+ControlType.Text|隐藏导演台|(1,648,518) 75x20
+ControlType.Text|Tab 切换格子 · 方向键微调（Shift 加速） · 回车打开属性 · Delete 删除气泡|(574,562) 1,190x20
+ControlType.Pane||(562,606) 742x330
+ControlType.Text|💬|(976,686) 19x20
+ControlType.Text|💬|(976,686) 19x20
+ControlType.Text|💬|(976,686) 19x20
+ControlType.Text|格 01|(978,653) 34x19
+ControlType.Text|格 02|(978,782) 34x19
+ControlType.Text|格 03|(871,782) 34x19
+ControlType.ScrollBar||(1,283,606) 21x330
+ControlType.Button||(∞,∞) -∞x-∞
+ControlType.Button||(1,283,904) 21x32
+ControlType.Thumb||(1,283,606) 21x298
+ControlType.Thumb||(1,305,606) 8x330
+ControlType.Pane||(1,314,606) 462x330
+ControlType.Text|P.001|(1,332,624) 427x19
+ControlType.Text|分镜导演台|(1,332,653) 427x36
+ControlType.Text|点击画布中的格子或气泡查看属性。Tab 切换格子，方向键微调，Delete 删除气泡。|(1,314,707) 462x40
+ControlType.Button|隐藏任务中心快捷栏|(1,634,960) 62x42
+ControlType.Text|▾|(1,658,971) 14x20
+ControlType.Text|打开任务中心|(189,971) 90x20
+ControlType.Text|PAGE_GENERATION · 已完成|(297,972) 184x18
+ControlType.Text|共 2 项 · 0 运行 · 0 等待 · 1 失败 · 1 完成|(1,067,972) 552x18
+ControlType.Text|WPF · 本地工作台|(1,641,1,017) 110x18
+ControlType.Text|已就绪 · Ctrl+K 快速切换项目|(169,1,017) 1,472x18

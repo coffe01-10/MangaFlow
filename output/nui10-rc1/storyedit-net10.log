@@ -1,0 +1,2 @@
+PASS(段): 面板拖拽合成手势链路（capture→moved(offset=0.254,0.135)→提交撤销栈）离线可用，零位移提交为 no-op，中心命中探针落在面板子树
+PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan/inspector key isolation/panel-edit dialog entry/refresh draft preservation all match the web contract

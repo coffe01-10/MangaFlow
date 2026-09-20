@@ -1,0 +1,104 @@
+﻿ControlType.Button|折叠侧栏|(169,47) 60x53
+ControlType.Text|☰|(192,63) 14x21
+ControlType.Button|← 项目|(229,47) 99x53
+ControlType.Text|← 项目|(251,63) 54x21
+ControlType.Text|NUI67 并排对照主项目|(348,58) 985x31
+ControlType.Text|● 项目工作区|(1353,64) 89x19
+ControlType.Button|在工作流中查看|(1462,47) 162x53
+ControlType.Text|在工作流中查看|(1486,63) 114x21
+ControlType.Button|项目设置|(1639,47) 112x53
+ControlType.Text|项目设置|(1662,63) 65x21
+ControlType.Text|PROJECT / 01|(169,138) 216x17
+ControlType.Text|NUI67 并排对照主项目|(169,170) 216x33
+ControlType.Text|3 章 · 3 页已规划|(169,213) 216x19
+ControlType.List|项目页面导航|(162,259) 231x588
+ControlType.ListItem|原作与修订，已接通|(163,281) 203x60
+ControlType.Text|01|(338,301) 18x19
+ControlType.Text|原作与修订|(208,301) 120x19
+ControlType.ListItem|参考资产，已接通|(163,347) 203x60
+ControlType.Text|02|(337,367) 17x19
+ControlType.Text|参考资产|(209,367) 118x19
+ControlType.ListItem|漫画剧本，已接通|(163,413) 203x60
+ControlType.Text|03|(338,434) 18x19
+ControlType.Text|漫画剧本|(208,434) 120x19
+ControlType.ListItem|分页与分镜，已接通|(163,479) 203x60
+ControlType.Text|04|(338,500) 18x19
+ControlType.Text|分页与分镜|(208,500) 120x19
+ControlType.ListItem|单页生成，已接通|(163,546) 203x60
+ControlType.Text|05|(338,566) 18x19
+ControlType.Text|单页生成|(208,566) 120x19
+ControlType.ListItem|生成素材库，已接通|(163,612) 203x60
+ControlType.Text|06|(338,632) 18x19
+ControlType.Text|生成素材库|(208,632) 120x19
+ControlType.ListItem|任务中心，已接通|(163,678) 203x60
+ControlType.Text|07|(338,699) 18x19
+ControlType.Text|任务中心|(208,699) 120x19
+ControlType.ListItem|流程编排，已接通|(163,744) 203x60
+ControlType.Text|FL|(340,765) 15x19
+ControlType.Text|流程编排|(208,765) 120x19
+ControlType.ListItem|项目设置，已接通|(163,811) 203x60
+ControlType.Text|ST|(338,831) 17x19
+ControlType.Text|项目设置|(208,831) 120x19
+ControlType.Separator||(162,872) 231x2
+ControlType.Button|搜索与切换 · Ctrl+K|(162,885) 231x50
+ControlType.Text|搜索与切换 · Ctrl+K|(184,899) 151x21
+ControlType.Custom||(432,131) 1324x820
+ControlType.Pane||(432,131) 1324x820
+ControlType.Button|人物设定|(432,131) 110x55
+ControlType.Text|人物设定|(451,144) 72x24
+ControlType.Button|服装档案|(551,131) 110x55
+ControlType.Text|服装档案|(570,144) 72x24
+ControlType.Button|场景资产|(670,131) 110x55
+ControlType.Text|场景资产|(689,144) 72x24
+ControlType.Button|漫画风格|(789,131) 110x55
+ControlType.Text|漫画风格|(808,144) 72x24
+ControlType.Button|原始参考素材|(908,131) 146x55
+ControlType.Text|原始参考素材|(927,144) 108x24
+ControlType.Text|C H A R A C T E R  B I B L E  /  角色资产|(432,223) 1245x16
+ControlType.Text|姓名、绰号与参考图绑定|(432,251) 1245x41
+ControlType.Text|2 个角色|(1677,272) 58x20
+ControlType.Edit|新角色主要姓名|(432,338) 586x52
+ControlType.Text|主要姓名（剧本默认使用）|(448,355) 554x20
+ControlType.Edit|新角色绰号，用逗号分隔|(1028,338) 565x52
+ControlType.Text|绰号，用逗号分隔|(1044,355) 533x20
+ControlType.Button|＋ 添加角色|(1603,337) 132x55
+ControlType.Text|＋ 添加角色|(1627,354) 85x21
+ControlType.Pane||(432,412) 1303x105
+ControlType.Button||(432,412) 220x100
+ControlType.Text|林晚|(447,432) 190x20
+ControlType.Text|又名 小晚|(447,452) 190x20
+ControlType.Text|1 张参考图 · 2 项已锁定|(447,472) 190x20
+ControlType.Button||(662,412) 220x100
+ControlType.Text|陈默|(677,432) 190x20
+ControlType.Text|无绰号|(677,452) 190x20
+ControlType.Text|1 张参考图 · 1 项已锁定|(677,472) 190x20
+ControlType.Text|项目视觉模型（必须显式选择，并在各生成页面保持一致）|(432,549) 1303x21
+ControlType.Text|暂无已启用且支持参考图编辑的图片模型，请先到系统设置配置供应商。|(432,570) 1303x21
+ControlType.Text|CHARACTER MODEL PACKAGE / 角色模型包|(432,652) 1200x19
+ControlType.Text|版本化角色资产：规格、矩阵与服装集|(432,684) 1200x41
+ControlType.Text|0 个模型包|(1662,652) 73x72
+ControlType.ComboBox|选择要创建模型包的角色|(432,768) 247x55
+ControlType.Button|＋ 创建角色模型包|(689,768) 180x55
+ControlType.Text|＋ 创建角色模型包|(713,785) 133x21
+ControlType.Text|新建角色不会自动创建模型包；只有发布过的版本才会进入生成默认继承。|(879,786) 495x20
+ControlType.Text|尚未创建角色模型包。为角色创建模型包后，可以维护四视图矩阵、表情集与默认服装。|(432,843) 1303x20
+ControlType.Text|人物参考|(432,903) 1303x27
+ControlType.Button||(432,945) 1303x200
+ControlType.Text|↑|(1073,981) 20x52
+ControlType.Text|拖拽图片到这里，或点击上传人物参考|(905,1045) 357x30
+ControlType.Text|请先选择要绑定的角色|(905,1088) 357x21
+ControlType.Text|人物参考|(432,1180) 1223x20
+ControlType.Text|0 FILES|(1685,1180) 50x20
+ControlType.Text|绑定主要姓名与绰号，用于保持脸、发型和体型一致。|(432,1210) 1303x20
+ControlType.Text|尚无人物参考|(432,1255) 1303x20
+ControlType.ScrollBar||(1735,131) 21x820
+ControlType.Button||(∞,∞) -∞x-∞
+ControlType.Button||(1735,677) 21x274
+ControlType.Thumb||(1735,131) 21x546
+ControlType.Button|隐藏任务中心快捷栏|(1634,960) 62x42
+ControlType.Text|▾|(1658,971) 14x20
+ControlType.Text|打开任务中心|(189,971) 90x20
+ControlType.Text|PAGE_GENERATION · 已完成|(297,972) 184x18
+ControlType.Text|共 2 项 · 0 运行 · 0 等待 · 1 失败 · 1 完成|(1067,972) 552x18
+ControlType.Text|WPF · 本地工作台|(1641,1017) 110x18
+ControlType.Text|已就绪 · Ctrl+K 快速切换项目|(169,1017) 1472x18

@@ -1,0 +1,13 @@
+﻿ControlType.Pane | pid=8232 | StatusBarWnd
+ControlType.Pane | pid=14232 | 
+ControlType.Window | pid=40180 | MangaFlow · 原生工作台
+ControlType.Window | pid=23104 | ZCode
+ControlType.Window | pid=14232 | 下载 - 文件资源管理器
+ControlType.Window | pid=38304 | 下载 .NET 10.0 Desktop Runtime (v10.0.12) - Windows x64 Installer - Google Chrome
+ControlType.Window | pid=14232 | 下载 - 文件资源管理器
+ControlType.Window | pid=12976 | Clash Verge
+ControlType.Pane | pid=35280 | com.ccswitch.desktop-siw
+ControlType.Pane | pid=35280 | 
+ControlType.Pane | pid=19008 | NVIDIA GeForce Overlay
+ControlType.Pane | pid=12976 | 
+ControlType.Pane | pid=14232 | Program Manager
