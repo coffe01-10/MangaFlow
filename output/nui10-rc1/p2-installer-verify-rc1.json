@@ -1,0 +1,31 @@
+﻿{
+    "at":  "2026-09-20 19:52:00",
+    "installer":  44119087,
+    "install_dir":  "C:\\Users\\chen\\AppData\\Local\\Temp\\mangaflow-installer-verify-0371a0b06eca46ab8f2847ff296598d1\\install",
+    "user_data_dir":  "C:\\Users\\chen\\AppData\\Local\\Temp\\mangaflow-installer-verify-0371a0b06eca46ab8f2847ff296598d1\\user-data",
+    "install_layout_missing":  [
+
+                               ],
+    "upgrade_layout_missing":  [
+
+                               ],
+    "registered_display_version":  "1.0.0-rc1",
+    "expected_version":  "1.0.0-rc1",
+    "user_data_drift_after_install":  {
+
+                                      },
+    "user_data_drift_after_upgrade":  {
+
+                                      },
+    "user_data_drift_after_uninstall":  {
+
+                                        },
+    "uninstall_leftover":  [
+
+                           ],
+    "uninstall_registry_removed":  true,
+    "launch_probe":  "NOT RUN —— 未加 -Launch",
+    "user_data_drift_after_launch":  [
+
+                                     ]
+}

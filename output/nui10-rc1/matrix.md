@@ -52,15 +52,15 @@
 | P2-4b G2 三档 net10 | 见 P4 会话 | 待实机会话 |
 | P2-4c G4 N=20 net10 | 通过（轻微漂移已归因） | `measure_canvas_drag.ps1`（net10，badge 锚定 canvas 拖拽）：**20/20 OK**。dirty-visible P50=**480ms** P95=**522ms**；save roundtrip P50=**797ms**。CSV `p2-g4/g4-net10-n20.csv`，日志 `p2-g4-run.log`。**对照 net8（nui9 p5-g4，同格式 N=20）**：P50 464→480（+3.5%）、P95 489→522（+6.7%）、save P50 749.5→797（+6.3%）——与 G1 同方向的小幅右移（net10 运行时开销），无方差爆炸、无异常离群；按「只登记不优化」口径处理，达标线由 lead 定 |
 | P2-4d G5 启动/退出清理 net10 | 通过（零漂移） | 证据同 P2-4a 的 G1 run：**20/20 CleanClose=True + Exited=True + LeftoverChildren 空**（net8 基线 20/20 同干净，零漂移）。测后进程表复核随 P5-4 收工 |
-| P2-5 安装器六格复跑 | 待 P3-1 | 依赖版本统一（1.0.0-rc1）后重打 |
-| P2-6 安装器 payload 策略（运行时捆绑与否） | AUTH-REQ（本轮登记建议，不实施） | **建议方案：payload 捆绑用户目录级 .NET 10 Desktop Runtime**（复制到安装目录内，启动器/native-host 设 `DOTNET_ROOT` 指向安装内运行时——该机制已由 P2-4a 实测验证：未设 DOTNET_ROOT 即出现「缺运行时」错误对话框，属直接证据）。理由：①当前 payload 已 200MB 级（robocopy 仓布局），运行时 +~75MB 边际成本低；②framework-dependent 不捆绑 = 把缺运行时失败面暴露给终端用户；③备选「要求机器预装」不可控。**前置耦合**：真代码签名属采购决策（AUTH-REQ，本轮不签），无签名安装器将被 SmartScreen 拦截——分发策略（捆绑体积 vs 预装要求 vs 签名采购）需 lead 一并拍板后才可实施 |
+| P2-5 安装器六格复跑 | 修复后通过（-Launch 格 NOT RUN+原因） | net10 Release 重建（ProductVersion **1.0.0-rc1+7c536d4d**；native-host.exe 按 start-native 流程 cargo release 重建后拷入——shell-core 9/16 后有 3 提交，旧拷贝已过期，新 sha256 6a69ba0d…，拷贝哈希比对通过）→ `build-native-installer.ps1 -NoShortcuts` 重打：**MangaFlow-Native-1.0.0-rc1-x64.exe，42.1MB，sha256 BBF94309A3DE5283EC465D4339C02878534E5C24E1E689B88D60B41A7B0BA3C0**。`verify-native-installer.ps1`：[1/4]静默安装（布局 6 探针全在、DisplayVersion=1.0.0-rc1）[2/4]同目录覆盖升级 [3/4]静默卸载（目录+注册表 300s 内消失、零残留）[4/4]证据 JSON——**用户数据三阶段逐字节零漂移**。证据 `p2-installer-verify-rc1.json`。-Launch 启动探测 NOT RUN：会拉起客户端窗口干扰正在使用实机的用户，安装/升级/卸载语义已由其余格覆盖，按脚本自身口径如实标注 |
+| P2-6 安装器 payload 策略（运行时捆绑与否） | AUTH-REQ（本轮登记建议，不实施） | **建议方案：payload 捆绑用户目录级 .NET 10 Desktop Runtime**（复制到安装目录内，启动器/native-host 设 `DOTNET_ROOT` 指向安装内运行时——该机制已由 P2-4a 实测验证：未设 DOTNET_ROOT 即出现「缺运行时」错误对话框，属直接证据）。理由：①当前 payload 压缩后 42.1MB（源 140MB），运行时边际成本低；②framework-dependent 不捆绑 = 把缺运行时失败面暴露给终端用户；③备选「要求机器预装」不可控。**前置耦合**：真代码签名属采购决策（AUTH-REQ，本轮不签），无签名安装器将被 SmartScreen 拦截——分发策略（捆绑体积 vs 预装要求 vs 签名采购）需 lead 一并拍板后才可实施 |
 
 ## P3 版本统一与发布元数据
 
 | 项 | 状态 | 证据与说明 |
 | --- | --- | --- |
 | P3-1 版本统一 1.0.0-rc1 | 通过（文件层；安装产物验证归 P2-5） | 全仓源扫描（排除 obj/bin/dist）旧版本号仅 3 处，全部统一：①`MangaFlow.Native.csproj:11` `0.3.0`→`1.0.0-rc1`（SemVer2 合法，InformationalVersion 将带 +hash）；②`build-native-installer.ps1:9` 默认 `$Version` `0.9.0`→`1.0.0-rc1`（产出 `MangaFlow-Native-1.0.0-rc1-x64.exe`，NSIS DisplayVersion 写同值）；③`verify-native-installer.ps1:15` 默认 `$Version` 同步（注册表核对口径）。`CHANGELOG.md` 顶部新增 `1.0.0-rc1 — 2026-09-20` 段：桌面壳换代（WPF 原生客户端+sidecar+NSIS 安装器）、本轮两个种子/取名缺陷修复、实测数字（G1 net8/net10、M9/M6/节点拖拽）与 NOT RUN/BLOCKED 边界（签名 AUTH-REQ、应用内更新 AUTH-REQ、连线/G2 档位待实机、多 DPI BLOCKED） |
-| P3-2 0.9.0→1.0.0-rc1 升级路径验证 | NOT RUN（依赖 P2-5 六格复跑窗口） | 升级=同机覆盖安装语义，由 `verify-native-installer.ps1` 覆盖升级格承担；需先按 P3-1 新版本重打安装器（点内 net10 构建产物 + staging），安排在实机空闲窗口与 P2-5 同轮执行 |
+| P3-2 0.9.0→1.0.0-rc1 升级路径验证 | 通过（0.9.0 为版本元数据等价替身，已注记） | 0.9.0 原产物不存在（output/desktop-installer 为空）——用当前 payload 打 `-Version 0.9.0` 外壳替身（仅 VERSION define 不同，sha256 996CDFFB…）。序列：静默装 0.9.0 → 注册表读得 **0.9.0**（p32-baseline）→ 同 root 用 rc1 安装器执行 verify 六格（其 [1/4] 即跨版本升级）→ DisplayVersion 翻转为 **1.0.0-rc1**、布局齐、用户数据三阶段零漂移、卸载净。证据 `p3-upgrade-090-to-rc1.json`。替身与真 0.9.0 的差异仅在 payload 内容（安装器语义/注册表/数据契约完全一致），如实注记 |
 
 ## P4 交互工具建设与剩余格子
 
@@ -87,3 +87,4 @@
 - 2026-09-20：P1-1 G1 口径定稿；P1-2 net8 G1 N=20 完成（20/20 干净，P50=1058.7/P95=1114）。P2-0 设计先行入台账，P2-1 SDK 10.0.401 装用户目录，P2-2 六文件迁移 0 error。P2-3 第一轮 --render 暴露 net10 迟到失败家族缺陷，12 处修复后 56 项 + 子套件全绿。
 - 2026-09-20：实机会话 nui10-live2 重启（新种子）。M9 补齐 page 1 ranges/beat_ids 种子接线（变异实验通过）后重建成功支线 PASS；M6 局部修改入口 PASS；P4-3a OLE 拖放 + 上传对话框自动化在无头会话全链路取证后记 BLOCKED（细节见 P4 表）。会话因孤儿文件对话框死锁执行 stop --clean，重启为 nui10-live3（wpf_pid 3908）继续 P4-3b 与 G2 阶梯。
 - 2026-09-20：nui10-live4（wpf 24508）跑 P4-3b：发现并修复种子 draft_graph legacy 形状（保存链 422 瘫痪）+ AddNode label 取名缺陷，回归测试通过；节点拖拽两轮 DB 取证 PASS（v3→4、v5→6）。连线拖拽多轮未生效，取证定性为实机窗口争用（ZCode/WPS 与 WPF 同 rect 抢 z 序、最小化窗口注入落空），非应用缺陷判据不足；重启 sidecar 复用 run-dir（v6 完好）后确认用户正在本机活跃使用（WPS 前台），按实机独占规则停止全部合成输入，连线记 BLOCKED 待空闲复验。转入不依赖 GUI 的 P3-1/P2-6/台账工作。
+- 2026-09-20：P3-1 版本三处统一 + CHANGELOG 增量提交（e7065c3c）。实机仍被占用（WPS 持续前台），转 GUI-free 收口：net10 Release 重建（1.0.0-rc1+7c536d4d；native-host 按 start-native 流程 cargo 重建+哈希比对拷入）→ 重打 rc1 安装器（42.1MB）→ verify 六格 PASS（-Launch NOT RUN+原因）→ P3-2 跨版本升级序列 PASS（0.9.0 替身外壳→rc1，DisplayVersion 翻转、数据零漂移），两个证据 JSON 入 output/nui10-rc1/。全量 npm run check 收口跑启动。
