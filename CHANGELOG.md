@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.0.0-rc1 — 2026-09-20（Release Candidate）
+
+桌面壳换代发布候选：Windows 原生 WPF 客户端（MangaFlow.Native）取代 Tauri 壳成为唯一桌面形态，配套嵌入式 sidecar 后端与 NSIS 安装器；工具链迁移 .NET 10。
+
+### Added（桌面 · WPF 原生客户端）
+
+- **WPF 原生工作台**取代 Tauri/WebView2 壳：项目导航（章节/参考资产/剧本/分页/单页/素材/任务）、可视化分镜画布、工作流编排（节点增删/拖动/连线/校验/发布/版本列表/草稿自动保存）、生成台与任务中心桌面实现；UIA 自动化语义（AutomationId/名称）与键盘焦点环逐格验收。
+- **嵌入式 sidecar**：客户端经 native-host.exe 派生 .venv-desktop 后端（127.0.0.1 随机端口、owner token），独立 SQLite 用户数据目录；保存链为 版本化 PATCH + 防抖 + 离开确认。
+- **NSIS 安装器**（`apps/desktop/scripts/build-native-installer.ps1` + `installer/mangaflow-native.nsi`）：静默装/覆盖升级/静默卸三态验收脚本 `verify-native-installer.ps1`（安装目录与用户数据取临时路径，不触碰真机数据）；注册表 DisplayVersion 写入。
+- 升级路径基线自 0.9.0 起跳（0.9.0 为上一轮安装器验证版本），本轮统一至 1.0.0-rc1。
+
+### Fixed
+
+- 种子数据 draft_graph 为 legacy 形状（{label,params}/{source,target}），API GET 原样透传导致 native 端保存链全量 PATCH 必 422——改为 canonical v2（显式端口 + source_node 四元组）并加回归测试。
+- 工作流「添加节点」读取目录的 display_name 字段而目录实际暴露 label，新增节点空名触发 422——取值改为 label 优先。
+- .NET 10 迁移暴露的迟到失败家族（render 套件 12 处断言/超时口径）修复，56 项 render 全绿。
+
+### Verified（本轮实测）
+
+- G1 启动基线：net8 N=20 P50=1058.7ms/P95=1114ms；net10 N=20 P50=1198.7ms/P95=1231.5ms（+130ms 归因冷启动样本，见台账）。
+- M9 版式重建成功支线、M6 局部修改入口、工作流节点拖拽持久化（draft_version 3→4→6）实机通过。
+
+### NOT RUN / BLOCKED（如实保留）
+
+- 真代码签名证书（采购决策，AUTH-REQ）、应用内检查更新（设计未实现，AUTH-REQ）。
+- 工作流连线拖拽、G2 素材库 100/300/500/600 内存档位、安装器 1.0.0-rc1 六格复跑：本轮实机会话被人工使用占用，合成输入停发，留待实机空闲复验。
+- 多 DPI / 跨屏（单屏环境 BLOCKED）；付费类调用一律 AUTH-REQ。
+
 ## 0.2.0 — 2026-09-06（Release Candidate）
 
 自 0.1.0 以来的第一个发布候选：连续漫画生产工作台（Web）交付完成，Windows 桌面壳（Tauri 2）达到可安装形态，生产缺陷经多轮红队/定向复审收口。
