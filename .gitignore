@@ -83,3 +83,4 @@ apps/desktop/dist/web-standalone/
 # Third-party binaries + their download archives are not source.
 tools/nsis-*/
 tools/*.zip
+output/nui9-g2-*/
