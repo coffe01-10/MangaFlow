@@ -162,20 +162,21 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
             session.flush()
             chapter.current_source_revision_id = revision.id
             offset = 0
+            chapter_segments = []
             for seg_no, paragraph in enumerate(text.split("\n"), start=1):
-                session.add(
-                    SourceSegment(
-                        source_revision_id=revision.id,
-                        ordinal=seg_no,
-                        text=paragraph,
-                        start_offset=offset,
-                        end_offset=offset + len(paragraph),
-                        sha256=hashlib.sha256(paragraph.encode("utf-8")).hexdigest(),
-                    )
+                segment = SourceSegment(
+                    source_revision_id=revision.id,
+                    ordinal=seg_no,
+                    text=paragraph,
+                    start_offset=offset,
+                    end_offset=offset + len(paragraph),
+                    sha256=hashlib.sha256(paragraph.encode("utf-8")).hexdigest(),
                 )
+                session.add(segment)
+                chapter_segments.append(segment)
                 offset += len(paragraph) + 1
-            chapters.append((chapter, revision))
-        chapter1, revision1 = chapters[0]
+            chapters.append((chapter, revision, chapter_segments))
+        chapter1, revision1, segments1 = chapters[0]
 
         # Script: scene + beats + READY revision (chapter 1)
         scene = Scene(
@@ -189,36 +190,36 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
         )
         session.add(scene)
         session.flush()
-        session.add_all(
-            [
-                Beat(
-                    scene_id=scene.id,
-                    ordinal=1,
-                    action="林晚靠在栏杆上,捏着线稿",
-                    narration="天台的风把她的头发吹向一侧",
-                    importance=0.7,
-                ),
-                Beat(
-                    scene_id=scene.id,
-                    ordinal=2,
-                    action="陈默推门而入",
-                    speaker_name="陈默",
-                    dialogue="你还在画?",
-                    emotion="犹豫",
-                    importance=0.9,
-                ),
-                Beat(
-                    scene_id=scene.id,
-                    ordinal=3,
-                    action="线稿滑落",
-                    speaker_name="林晚",
-                    dialogue="别看!",
-                    emotion="慌张",
-                    must_visualize=True,
-                    importance=1.0,
-                ),
-            ]
-        )
+        beats = [
+            Beat(
+                scene_id=scene.id,
+                ordinal=1,
+                action="林晚靠在栏杆上,捏着线稿",
+                narration="天台的风把她的头发吹向一侧",
+                importance=0.7,
+            ),
+            Beat(
+                scene_id=scene.id,
+                ordinal=2,
+                action="陈默推门而入",
+                speaker_name="陈默",
+                dialogue="你还在画?",
+                emotion="犹豫",
+                importance=0.9,
+            ),
+            Beat(
+                scene_id=scene.id,
+                ordinal=3,
+                action="线稿滑落",
+                speaker_name="林晚",
+                dialogue="别看!",
+                emotion="慌张",
+                must_visualize=True,
+                importance=1.0,
+            ),
+        ]
+        session.add_all(beats)
+        session.flush()
         session.add(
             ScriptRevision(
                 chapter_id=chapter1.id,
