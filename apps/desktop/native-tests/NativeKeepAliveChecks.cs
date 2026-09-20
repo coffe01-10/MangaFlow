@@ -82,6 +82,38 @@ internal static class NativeKeepAliveChecks
         var diagnostic = captured.ToString();
         report.Extra["transport_diagnostic"] = diagnostic.Trim();
 
+        // 取消竞态分流回归（缺陷 #4 假设①，NUI-9 P3）：调用方取消在途请求时，
+        // socket 层可能以 HttpRequestException（真机日志原文 "An error occurred
+        // while sending the request"）冒泡而非 OperationCanceledException。
+        // ApiClient 必须把它分流成取消语义（OCE），不得冒充传输失败弹错、
+        // 不得写「传输失败」诊断——真机「保存失败：An error occurred…」正是这条路径。
+        {
+            var raceStderr = new StringWriter();
+            Console.SetError(raceStderr);
+            try
+            {
+                using var api = new ApiClient("http://127.0.0.1:12345", new CancelRaceHandler());
+                using var cts = new CancellationTokenSource();
+                var send = api.SendAsync("workflows/w1", HttpMethod.Patch, new { version = 1 }, cts.Token);
+                Thread.Sleep(50);   // 请求进入 handler 的挂起等待
+                cts.Cancel();       // 画布切换取消在途请求
+                try
+                {
+                    send.GetAwaiter().GetResult();
+                    throw new Exception("取消竞态本应抛出异常");
+                }
+                catch (OperationCanceledException) { }   // 分流正确：取消语义
+                catch (HttpRequestException)
+                {
+                    throw new Exception("取消竞态被误报为传输失败（缺陷 #4 假设① 成立）");
+                }
+                if (raceStderr.ToString().Contains("传输失败"))
+                    throw new Exception("取消竞态不得写传输失败诊断");
+                Console.WriteLine("[keepalive/offline] cancel-race routed to cancellation semantics (no transport-failure misreport)");
+            }
+            finally { Console.SetError(previousError); }
+        }
+
         report.Write(evidenceDir, "keepalive-offline");
         Console.WriteLine($"[keepalive/offline] burst={report.Fmt("burst")} " +
                           $"idle-gap-save={report.Fmt("idle-gap-save")} " +
@@ -388,6 +420,18 @@ internal static class NativeKeepAliveChecks
             File.WriteAllText(path, JsonSerializer.Serialize(payload,
                 new JsonSerializerOptions { WriteIndented = true }));
             Console.WriteLine($"[keepalive] evidence -> {path}");
+        }
+    }
+
+    /// <summary>取消竞态模拟：token 取消后 socket 层以 HttpRequestException 冒泡
+    /// （真机缺陷 #4 误报的异常形态），而不是规范的 OperationCanceledException。</summary>
+    private sealed class CancelRaceHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            try { await Task.Delay(Timeout.Infinite, token); }
+            catch (OperationCanceledException) { }
+            throw new HttpRequestException("An error occurred while sending the request");
         }
     }
 }
