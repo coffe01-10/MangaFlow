@@ -14,8 +14,8 @@ using MangaFlow.Native;
 using MangaFlow.Native.Services;
 using MangaFlow.Native.Views;
 
-// 分镜视图六项编辑能力的回归检查（面板缩放手柄 / 新增气泡 / 对白编辑 409 /
-// 出血安全区叠加 / 专注模式 / 从本页重新计算）。
+// 分镜视图七项编辑能力的回归检查（面板缩放手柄 / 新增气泡 / 对白编辑 409 /
+// 出血安全区叠加 / 专注模式 / 从本页重新计算 / 编辑本格对话框入口）。
 //
 // 【需 lead 注册】本文件按任务约束未接入运行入口：建议在
 // NativeInteractionChecks.RunIsolated 的 await 链（或专用入口）追加
@@ -124,6 +124,7 @@ internal static class NativeStoryboardEditChecks
             FocusModeChecks(view);
             await ReplanChecks(view, fixture);
             await InspectorKeyIsolationChecks(view, fixture);
+            PanelEditDialogEntryChecks(view);
             await PanelDragGestureChecks(view, fixture);
             await RefreshKeepsDraftsChecks(view, fixture);
             await ScriptRefreshKeepsFormsChecks();
@@ -131,7 +132,7 @@ internal static class NativeStoryboardEditChecks
             await ScriptLeaveSeamChecks();
         }
         finally { view.Deactivate(); }
-        Console.WriteLine("PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan/inspector key isolation/refresh draft preservation all match the web contract");
+        Console.WriteLine("PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan/inspector key isolation/panel-edit dialog entry/refresh draft preservation all match the web contract");
     }
 
     // ── 1. 缩放手柄：bounds 变更、撤销栈、整包 PUT 载荷、最小尺寸 ──
@@ -423,6 +424,26 @@ internal static class NativeStoryboardEditChecks
             view.DeleteConfirmOverride = null;
         }
         finally { owner.Close(); }
+    }
+
+    // ── 7.4 编辑本格对话框入口（NUI-9 P4-1/M8 实机发现的产品回归）：
+    // dc901b01 重写检查器标题时把动作钮写成 null，EditPanel/PanelEditDialog 从此
+    // 全仓无调用点——对话框（含机位高度/拟声词/人物状态/409 冲突恢复等检查器
+    // 内联编辑没有的字段）整体不可达。离线钉住入口的存在性：未选中格不得出现
+    // 「编辑本格」、选中格必须有且仅有一个。对话框本体的 Esc/焦点/双支线由
+    // 实机 M8 采样验证（检查器帧泵与 ShowDialog 模态泵嵌套时背景优先级操作
+    // 被饿死，离线驱动真实 ShowDialog 不可靠——与 ReplanChecks 走 seam 同理）。
+    private static void PanelEditDialogEntryChecks(StoryboardView view)
+    {
+        var inspector = Field<System.Windows.Controls.StackPanel>(view, "inspector");
+        view.SelectPanelForTest(-1);   // SelectPanel(null) 同时清空格与气泡选中
+        Layout(view, 1400, 1000);
+        Require(!Buttons(inspector, "编辑本格").Any(), "未选中格时检查器不得出现「编辑本格」按钮");
+
+        view.SelectPanelForTest(0);
+        Layout(view, 1400, 1000);
+        Require(Buttons(inspector, "编辑本格").SingleOrDefault() != null,
+            "选中格后检查器必须有「编辑本格」按钮（dc901b01 曾把它丢成 null，PanelEditDialog 因此不可达）");
     }
 
     // ── 7.5 面板拖拽合成手势（NUI-9 P2-2 定性）：MouseLeftButtonDown → MouseMove →
