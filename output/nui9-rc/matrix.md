@@ -54,12 +54,12 @@
 
 | 格 | 状态 | 证据 |
 | --- | --- | --- |
-| P4-1 七格窗口模态 M2/M3/M5~M9（Esc/焦点返还/双支线） | 部分通过（1/7 实机） | Lightbox 格实测通过：点「放大查看批次候选 1」→ 模态窗口 [批次候选 1]（含「Esc 或点击背景关闭」提示）→ Esc 关闭且焦点返还触发按钮。其余六格（ProjectPalette、抽屉类等）待续跑 |
+| P4-1 七格窗口模态 M2/M3/M5~M9（Esc/焦点返还/双支线） | 修复后通过（6/7 实机；M6 未触发） | **M8 PanelEditDialog（修复后通过，产品回归）**：根因=dc901b01 重写 InspectorHeading 时把「编辑本格」动作钮丢成 null，EditPanel/PanelEditDialog 全仓无调用点（7bfda33b 曾挂），对话框（机位高度/拟声词/人物状态/409 冲突恢复等检查器没有的字段）整体不可达；且画布提示「回车打开属性」从未有 Enter 实现。修复：①恢复 InspectorHeading 动作钮 ②补 OnCanvasKey case Key.Return（选中格回车打开属性）。离线回归 PanelEditDialogEntryChecks（未选中无钮/选中恰一钮，--storyedit 全链 PASS）。实机：选中格回车→[编辑本格分镜] 全字段对话框打开（人物状态 林晚/陈默）→Esc 关闭焦点回画布（回车再开证功能返还）→确认支线 背景=「天台·夜（M8保存支线）」PATCH 落库（panel version 25→26）→取消支线 [取消] 关闭不落库。详见 p4-1/m8-paneledit.md。**M9 LayoutRebuildDialog（部分通过）**：页菜单▾→重建本页版式 打开；Esc/取消 关闭且焦点精确返还 [页菜单▾]；确认支线被服务端守卫 409「当前页缺少剧本或原文追溯」（种子页无 ranges/beat/scene——设计内守卫非缺陷），错误框正常弹出；成功支线登记数据建设项（p4-1/m9-layoutrebuild.md）。**M7 SceneEditor（通过）**：场景卡[编辑基本信息]→[编辑场景资产] 全字段对话框；Esc 焦点返还触发钮；确认支线 天气=「黄昏·晚霞（M7实机）」落库 version 1→2。**M3 InputDialog（通过）**：漫画风格 [重命名]→[修改素材名称]；取消/Esc 双路径关闭均焦点返还 [重命名]；确认支线 display_name=「M3重命名的风格参考页」落库。**M2 重试任务（取消支线通过，确认支线 AUTH-REQ 未执行）**：任务中心失败任务 [重试]→ConfirmDialog [重试任务]（费用警示）；初始焦点=[取消]安全钮；Esc 关闭焦点返还 [重试]，DB 无新任务。M4/M5 上轮已过。M6 LocalEditWindow 未触发（单页生成入口需图像模型前置，供应商未配置） |
 | P4-2 43 处 MessageBox 取消支线（ConfirmDialog ≥5 实机 + 纯信息 2 处） | 通过（5/5 双支线 + 1 加抽 + 纯信息 2/2） | 危险类 5 处全部双支线实机验证：①设置离开确认（Esc 取消→焦点回触发钮；离开确认→弃稿跳转）②分镜删除气泡（Esc；删除→气泡数 0）③分镜离开确认（Esc 焦点回侧栏项；离开）④删除章节（Esc；删除→「撤回删除」出现，已撤回还原）⑤素材库隐藏候选（Esc 取消；隐藏确认→候选 3→2）。加抽⑥项目设置离开确认（Esc）。全部初始焦点=取消（安全钮）实机成立。**纯信息 2/2**：⑦用量页「导出 CSV」→ 真实保存对话框（默认名 usage-2026-09-20.csv）→ 确认后 info「导出完成」⑧流程编排页未选运行范围点「运行工作流」→ info [运行未启动]（请先选择章节或页面运行范围）。均 Enter 正常关闭 |
-| P4-3 参考图拖放上传 + 工作流节点拖拽连线 | BLOCKED+工具边界 | **边界定位完成**：①「拖放」通道需 OLE DoDragDrop——mouse_event 合成鼠标事件不产生 OLE drop 事件，合成注入无法触发拖放上传；②「点击上传人物参考」区：定位并滚动到可视区（窗口重定位 0,-60/1920x1140 后），合成点击落在区内（前台校验 MangaFlow ✓）但文件对话框未打开——人物参考区要求先创建角色模型包并绑定角色（应用内部状态），纯合成点击无法满足其前置链；③上传人物参考的替代验证路径（真实文件对话框）已在用量导出 CSV 处验证等价对话框交互可用（保存对话框 ValuePattern 填路径 + 打开）。真机全链路拖放上传需人工或 OLE 级自动化，登记为下一轮工具建设项 |
-| P4-3b 工作流节点拖拽＋连线 | 失败待修（工具边界） | 流程编排页导航受 UIA 树陈旧（导航后 dump 返回旧元素）与窗口重定位后的坐标漂移双重阻碍，未能稳定进入画布操作；节点拖拽/连线的手势通道与 G4 相同（鼠标合成拖拽已证可用——G4 20/20），待 P4-3a 的定位工具成熟后同轮补跑 |
+| P4-3 参考图拖放上传 + 工作流节点拖拽连线 | BLOCKED+工具边界 | **边界定位完成**：①「拖放」通道需 OLE DoDragDrop——mouse_event 合成鼠标事件不产生 OLE drop 事件，合成注入无法触发拖放上传；②「点击上传人物参考」区：定位并滚动到可视区（窗口重定位 0,-60/1920x1140 后），合成点击落在区内（前台校验 MangaFlow ✓）但文件对话框未打开——人物参考区要求先创建角色模型包并绑定角色（应用内部状态），纯合成点击无法满足其前置链；③上传文件对话框通道本身可被合成驱动——本轮 M3 采样中漫画风格「点击上传漫画风格」经键盘聚焦+Space 打开真实 [打开] 对话框（剪贴板粘贴路径；SendKeys 直输被中文 IME 损坏）成功上传（1 FILES 落库）——②的阻塞确认为人物参考前置链而非对话框通道；④用量导出 CSV 保存对话框等价交互亦可用。真机全链路拖放上传需人工或 OLE 级自动化，登记为下一轮工具建设项 |
+| P4-3b 工作流节点拖拽＋连线 | 失败待修（工具边界，已恢复常规几何重试） | 恢复常规窗口几何后重试：①端口连线拖拽（SOURCE_INPUT 右缘 (888,478) → SCRIPT 左缘 (915,478)）无连线生成；②节点主体拖拽（(1010,470)→(1160,550)）节点未移动；③标题栏拖拽 (785,437)→(935,517) 后 SCRIPT 节点被**选中**（属性面板显示 节点类型 SCRIPT/超时 900/重试 3——鼠标事件确实到达画布与节点）。节点不随拖拽移动的原因待查（画布节点移动可能由自动布局接管或拖拽手柄另有实现），同 G4 已证鼠标合成拖拽通道本身可用。过程截图 wf-restored/wf-page4/wf-connect-attempt/wf-nodedrag/wf-nodedrag2/wf-nodedrag3.png |
 | P4-4 逐页 Tab 序横扫（除分镜画布外 12 页） | 通过（12/12 页轨迹入库） | `p4-4/<page>-tabs.txt` 共 12 页（dashboard/help/settings-global/usage/source/assets/script/generate/library/jobs/workflow/project-settings），每页 Tab×12 焦点轨迹：首 Tab 即落在页面首个可交互控件（如 usage→壳「项目」按钮、library→「章节筛选」ComboBox）、全程 inProc=True（焦点无逃逸）、矩形均在窗口内。分镜画布按口径排除（键盘链路已在上轮+本轮 P1/G4 间接覆盖） |
-| P4-5 焦点环逐控件族抽查 | 部分通过 | Button 族实证：键盘焦点下「保存项目设置」呈 Accent 色 2px FocusRing（主题 IsKeyboardFocused 触发器），截图 `p4-5/focus-button.png`；ConfirmDialog 焦点位置/键盘契约离线+实机双证。ComboBox/TextBox 族环视觉截图待续（Tab 遍历已到达，仅缺截图帧） |
+| P4-5 焦点环逐控件族抽查 | 通过（三控件族实拍） | Button 族：键盘焦点下「保存项目设置」呈 Accent 色 2px FocusRing（`p4-5/focus-button.png`）。TextBox 族：项目设置 [任务并发] 键盘焦点呈 Accent 边框环（`p4-5/focus-textbox-runtime.png`）。ComboBox 族：项目设置 [文字任务默认路由] 键盘焦点（UIA SetFocus→BringIntoView 滚入可视区）呈高亮 FocusRing（`p4-5/focus-combobox-routing.png`）。ConfirmDialog 焦点位置/键盘契约离线+实机双证。工具沉淀：`scripts/nui9_combo_focus_shot.ps1`（注意 PS5.1 BOM-less 脚本内 CJK 字面量会 mojibake——脚本内改用 ControlType+宽度匹配） |
 | P4-6 D5 真机验证（壳单头部 + 保存中壳按钮禁用截图） | 通过 | 实机 UIA + 截图：设置页「系统设置与运行诊断」标题在 UIA 树出现 **1 次**（壳顶栏），三个动作按钮（用量与成本看板/← 返回项目/保存运行设置）全部位于壳顶栏行（y≈57-110），页面无第二头部。截图 `p4-d5-settings.png`、UIA dump `p4-d5-settings-uia.txt`。保存中禁用态由 RuntimeSavingChanged 事件链离线断言覆盖（[true,false] 序列），真机在途窗口过短未单独截帧 |
 
 ## P5 性能补全
@@ -88,17 +88,17 @@
 | P7-4 收工复核 | 见下「收工复核」节 | sidecar stop 已过；npm check / dotnet Release / --render 见该节 |
 
 ### 逐格汇总（本轮闭环格数）
-- **部分通过**：P4-1（Lightbox 1/7 实机）、P4-5（Button 族环已证；ComboBox/TextBox 族截图待续）。
-- **BLOCKED+工具边界**：P4-3a 参考图拖放上传（OLE drop 不可合成 + 上传区前置链需应用内部状态）、P4-3b 工作流节点拖拽连线（UIA 陈旧树 + 坐标漂移，待工具成熟补跑）。
-- **通过（补充）**：P4-2（5/5 危险类双支线 + 1 加抽 + 纯信息 2/2）、P4-4（12/12 页 Tab 轨迹）、P5-3（G2 三档实测无爆炸）。
-- **AUTH-REQ**：P5-2 G1 口径（草案已交 g1-quiet-window-criteria.md）、P6-3 版本号。
+- **通过**：P4-2（5/5 危险类双支线 + 1 加抽 + 纯信息 2/2）、P4-4（12/12 页 Tab 轨迹）、P4-5（Button/TextBox/ComboBox 三族环实拍）、P5-3（G2 三档实测无爆炸）。
+- **修复后通过**：P4-1 六格补采样收官——M8 产品回归修复（编辑本格入口恢复+回车实现，`编辑本格分镜` 对话框实机双支线+落库）+ M9（模态契约过；确认成功支线被设计内守卫 409 挡，登记数据建设项）+ M7/M3（双支线+落库）+ M2 取消支线（确认支线 AUTH-REQ）；M6 未触发（图像模型供应商前置，登记）。
+- **BLOCKED+工具边界**：P4-3a 参考图拖放上传（OLE drop 不可合成；上传文件对话框通道已由 M3 采样证可驱动，人物参考阻塞在其前置链）、P4-3b 工作流节点拖拽连线（UIA 陈旧树 + 坐标漂移，待工具成熟补跑）。
+- **AUTH-REQ**：P5-2 G1 口径（草案已交 g1-quiet-window-criteria.md）、P6-3 版本号、M2 重试确认支线。
 - **NOT RUN（可独立续跑）**：P6-2 net10（L3 lead 排窗；SDK 未装）。
-- 剩余工作优先级：①P4-1 余下六格模态（一个 sidecar 会话打包）②P4-3 拖放上传需 OLE 级自动化工具建设③P4-5 ComboBox/TextBox 族截图④P6-2 net10 迁移（lead 排窗）。
+- 剩余工作优先级：①P4-3 OLE 级拖放自动化与节点拖拽工具建设 ②M6 LocalEditWindow（需配置图像模型供应商后触发）③M9 重建成功支线（需补造带剧本追溯的页面数据）④P6-2 net10 迁移（lead 排窗）。
 
 ### NUI-8 判定
 
 NUI-8 父项**不够格勾完成**，差口明确：
-1. 七格窗口模态 M2/M3/M5~M9 中余下六格（Lightbox 本轮已实测通过）——P4-1 未完成部分。
+1. 七格窗口模态——**本轮已收官至 6/7**（M4/M5/M8/M9/M7/M3/M2 实机；M6 未触发见 P4-1 格；M9 成功支线与 M2 确认支线各有口径注明）。剩余仅 M6 一格，属环境前置（图像模型供应商）而非产品缺陷。
 2. 工作流节点拖拽＋连线——失败待修（工具边界，见 P4-3b）；参考图拖放上传需 OLE 级自动化（P4-3a）。
 3. 逐页键盘横扫 12 页——**本轮已闭环**（12/12 页 Tab 焦点轨迹，p4-4/）。
 4. P2-2 面板命中现象——**本轮已定因并修复**（种子 bounds 键名缺陷），NUI-8 台账该格可据此关。
@@ -125,9 +125,11 @@ NUI-8 父项**不够格勾完成**，差口明确：
 - dotnet build -c Release：0 error ✓（本轮实机验证所用 Release exe 即含全部修复后构建）。
 - --render 全套：PASS ✓（迁移与 a11y 断言落地后第 3 轮跑，`render-round3.log`：「Native client checks passed: 56; WPF navigation and visual checks passed」，对照 56 项无漂移）。
 - npm run check 终跑：**全绿** ✓（`p7-npm-check-final.log`）：pytest **1663 passed, 47 skipped**（= NUI-8 基线 1663+47，零漂移）；vitest **56 files / 615 tests passed**（= 基线，零漂移）；生产构建通过（"All checks passed!"）。
+- npm run check 复跑（实机抽样与种子档位参数落地后）：**再次全绿** ✓（`p7-npm-check-final2.log`：pytest 1663 passed, 47 skipped；vitest 56 files / 615 passed）——种子档位参数变更后门禁复验通过。
 
 ## 运行记录
 
 - 2026-09-19：轮启动。goal/nui8-release 已 push；PR #983~#989 已开（见 P0-1）。
 - 2026-09-19：P1 离线定性完成；P2/P3 代码修复与回归落地（D5、NUI-8-A 43 处迁移、a11y、#4 取消竞态分流）；--render 全套 56 项 PASS。
 - 2026-09-20：实机会话（run-dir output/nui9-live3，--no-seed 复用）：D5 真机验证、P4-2 抽样 5+1 处、P4-1 Lightbox、**发现并修复种子面板 0×0 缺陷（P1 结论修正）**、G4 N=20 全 20/20。npm run check 终跑全绿（1663+47 / 56 files 615，零漂移）。sidecar stop 复检干净。
+- 2026-09-20（第二轮，同 run-dir 续跑）：**M8 产品回归发现与修复**（编辑本格入口 dc901b01 丢失 + 回车未实现；离线回归 PanelEditDialogEntryChecks + --storyedit/--storyboard-page 全 PASS）+ M8/M9/M7/M3/M2 实机采样收官（详见 p4-1/ 三份证据）+ P4-5 三族焦点环实拍 + P4-3a 边界细化（上传对话框通道可驱动）。采样期间发现两次产品级守卫 409（重建/重算的剧本追溯前置）均属设计内行为，已登记。
