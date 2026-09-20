@@ -1,0 +1,13 @@
+﻿start: [漫画剧本，已接通] ControlType.ListItem
+tab 1: [搜索与切换 · Ctrl+K] ControlType.Button rect=(162,887,231x50) inProc=True
+tab 2: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 3: [选择要编辑剧本的章节] ControlType.ComboBox rect=(1404,159,275x54) inProc=True
+tab 4: [删除剧本] ControlType.Button rect=(1627,272,111x52) inProc=True
+tab 5: [编辑场景] ControlType.Button rect=(1612,472,125x50) inProc=True
+tab 6: [所属场景资产] ControlType.ComboBox rect=(461,706,1276x54) inProc=True
+tab 7: [环境变体] ControlType.ComboBox rect=(461,813,1276x54) inProc=True
+tab 8: [] ControlType.ComboBox rect=(501,899,238x54) inProc=True
+tab 9: [] ControlType.ComboBox rect=(798,899,238x54) inProc=True
+tab 10: [编辑] ControlType.Button rect=(1670,912,67x42) inProc=True
+tab 11: [编辑] ControlType.Button rect=(1670,911,67x42) inProc=True
+tab 12: [编辑] ControlType.Button rect=(1670,912,67x42) inProc=True

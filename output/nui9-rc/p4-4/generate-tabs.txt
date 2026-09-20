@@ -1,0 +1,13 @@
+﻿start: [单页生成，已接通] ControlType.ListItem
+tab 1: [搜索与切换 · Ctrl+K] ControlType.Button rect=(162,887,231x50) inProc=True
+tab 2: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 3: [抽卡] ControlType.Button rect=(1018,156,72x55) inProc=True
+tab 4: [导演] ControlType.Button rect=(1090,156,72x55) inProc=True
+tab 5: [章节选择] ControlType.ComboBox rect=(1462,171,275x54) inProc=True
+tab 6: [检查分镜] ControlType.Button rect=(1619,290,97x48) inProc=True
+tab 7: [1] ControlType.Button rect=(442,379,52x52) inProc=True
+tab 8: [2] ControlType.Button rect=(500,379,52x52) inProc=True
+tab 9: [3] ControlType.Button rect=(558,379,52x52) inProc=True
+tab 10: [浏览生成批次] ControlType.ComboBox rect=(1315,379,208x54) inProc=True
+tab 11: [沿用并重新检查] ControlType.Button rect=(463,584,159x52) inProc=True
+tab 12: [去处理] ControlType.Button rect=(1637,912,82x42) inProc=True

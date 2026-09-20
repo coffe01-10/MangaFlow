@@ -1,0 +1,13 @@
+﻿start: [MangaFlow · 原生工作台] ControlType.Window
+tab 1: [项目] ControlType.Button rect=(1116,59,78x50) inProc=True
+tab 2: [帮助] ControlType.Button rect=(1194,59,77x50) inProc=True
+tab 3: [设置] ControlType.Button rect=(1271,59,78x50) inProc=True
+tab 4: [系统设置] ControlType.Button rect=(1490,57,112x53) inProc=True
+tab 5: [＋ 新建项目] ControlType.Button rect=(1617,57,134x53) inProc=True
+tab 6: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 7: [设置首页] ControlType.Button rect=(1519,146,111x52) inProc=True
+tab 8: [返回项目] ControlType.Button rect=(1640,146,111x52) inProc=True
+tab 9: [时间范围] ControlType.ComboBox rect=(197,297,162x54) inProc=True
+tab 10: [按项目筛选] ControlType.ComboBox rect=(374,297,212x54) inProc=True
+tab 11: [按供应商筛选] ControlType.ComboBox rect=(601,297,188x54) inProc=True
+tab 12: [按模型筛选] ControlType.ComboBox rect=(804,297,200x54) inProc=True

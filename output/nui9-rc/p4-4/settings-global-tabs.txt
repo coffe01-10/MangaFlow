@@ -1,0 +1,13 @@
+﻿start: [MangaFlow · 原生工作台] ControlType.Window
+tab 1: [用量与成本看板] ControlType.Button rect=(1281,57,161x53) inProc=True
+tab 2: [← 返回项目] ControlType.Button rect=(1457,57,134x53) inProc=True
+tab 3: [保存运行设置] ControlType.Button rect=(1606,57,145x53) inProc=True
+tab 4: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 5: [筛选供应商] ControlType.Edit rect=(197,403,1022x51) inProc=True
+tab 6: [文字] ControlType.Button rect=(197,466,69x54) inProc=True
+tab 7: [图片] ControlType.Button rect=(272,466,69x54) inProc=True
+tab 8: [能力] ControlType.ComboBox rect=(357,466,188x54) inProc=True
+tab 9: [仅已验证] ControlType.CheckBox rect=(557,481,100x25) inProc=True
+tab 10: [显示已隐藏] ControlType.CheckBox rect=(675,481,116x25) inProc=True
+tab 11: [排序] ControlType.ComboBox rect=(809,466,162x54) inProc=True
+tab 12: [＋ 添加供应商] ControlType.Button rect=(983,466,131x54) inProc=True
