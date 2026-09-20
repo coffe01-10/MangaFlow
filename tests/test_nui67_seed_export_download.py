@@ -51,6 +51,37 @@ def seeded_client(tmp_path, monkeypatch):
     app.dependency_overrides.clear()
 
 
+def test_seeded_workflow_draft_graph_is_canonical(seeded_client):
+    """P4-3b 回归：seed 的工作流草稿图必须是 canonical v2 形状。
+
+    旧形状（label/params 节点、source/target 边）GET 原样透传后，native 端
+    加载出无名无端口的节点，且任何编辑触发的全量 PATCH 都被 WorkflowGraph
+    校验 422 拒绝——native 工作流编辑器保存链整体瘫痪。
+    """
+    from app.services.workflow_engine.catalog import canonical_graph
+
+    client, SessionLocal, _ = seeded_client
+    with SessionLocal() as session:
+        from app.models import WorkflowDefinition
+
+        definition = session.scalars(select(WorkflowDefinition)).one()
+        workflow_id = definition.id
+
+    response = client.get(f"/api/v1/workflows/{workflow_id}")
+    assert response.status_code == 200, response.text
+    graph = response.json()["draft_graph"]
+
+    # 能过 API 自身的 canonical 校验（与 PATCH 同一契约）
+    canonical_graph(graph)
+    assert graph["nodes"], "seed 必须带节点"
+    for node in graph["nodes"]:
+        assert node.get("name"), f"节点 {node.get('id')} 缺 name（native 渲染无标题、PATCH 422）"
+    for edge in graph["edges"]:
+        assert edge.get("source_node") and edge.get("target_node"), (
+            f"边 {edge.get('id')} 缺 canonical 端点键，native 无法重建连线"
+        )
+
+
 def test_seeded_export_bundle_stays_inside_the_api_enum(seeded_client):
     _, SessionLocal, storage_root = seeded_client
     with SessionLocal() as session:

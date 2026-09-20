@@ -1074,7 +1074,10 @@ public sealed partial class WorkflowView : WorkspaceView
         var nodeType = type.Text("type");
         var id = $"{nodeType.Replace('.', '-')}-{Guid.NewGuid().ToString()[..8]}";
         var position = (X: 320 + nodes.Count * 24, Y: 120 + nodes.Count * 18);
-        var node = WorkflowNode.Create(id, nodeType, type.Text("display_name"), position, type);
+        // 节点目录的展示名字段是 label（node_type_catalog）；display_name 是历史键，
+        // 缺失时 Create 拿到空名字，保存必然 422（WorkflowNodeDefinition.name 非空）。
+        var displayName = type.Text("label", type.Text("display_name"));
+        var node = WorkflowNode.Create(id, nodeType, displayName, position, type);
         nodes.Add(node);
         AttachNodeHandlers(node);
         PushHistory(Snapshot("添加节点"));
