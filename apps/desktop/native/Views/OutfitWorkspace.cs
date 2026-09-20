@@ -270,7 +270,7 @@ internal sealed class OutfitWorkspace : StackPanel
     }
     private Task DeleteAsync(OutfitItem outfit)
     {
-        if (busy || !Active || MessageBox.Show(view.WindowHost(), $"删除服装档案“{outfit.Name}”？\n\n将同时删除绑定的 {outfit.ReferenceCount} 张参考图、已生成的穿着图，并清除剧本与分镜中的服装绑定。被其他档案共用的图片会保留。", "删除服装档案", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return Task.CompletedTask;
+        if (busy || !Active || new ConfirmDialog(view.WindowHost(), "删除服装档案", $"删除服装档案“{outfit.Name}”？\n\n将同时删除绑定的 {outfit.ReferenceCount} 张参考图、已生成的穿着图，并清除剧本与分镜中的服装绑定。被其他档案共用的图片会保留。", "删除", danger: true).ShowDialog() != true) return Task.CompletedTask;
         return RunAsync(async () => { await view.ApiSendOptional($"outfits/{outfit.Id}", HttpMethod.Delete); if (!Active) return; if (editing?.Id == outfit.Id) Reset(); if (resultOutfit == outfit.Id) { view.OutfitPreviewId = resultOutfit = resultBatch = ""; pendingResults = false; liveResults.Children.Clear(); } await RefreshDataAsync(); });
     }
     private Task GenerateAsync(OutfitItem outfit) => RunAsync(async () =>
@@ -388,8 +388,8 @@ internal sealed class OutfitWorkspace : StackPanel
         var kinds = new ComboBox { MinHeight = 36, Margin = new Thickness(0, 0, 6, 0) };
         foreach (var kind in new[] { "CHARACTER_REFERENCE", "OUTFIT_REFERENCE", "SCENE_REFERENCE", "STYLE_REFERENCE" }) kinds.Items.Add(new ComboBoxItem { Tag = kind, Content = Labels.Map(Labels.AssetKinds, kind) });
         kinds.SelectedIndex = 1;
-        kinds.SelectionChanged += async (_, _) => { var kind = (kinds.SelectedItem as ComboBoxItem)?.Tag as string; if (kind == null || kind == asset.Kind) return; kinds.SelectedIndex = 1; if (MessageBox.Show(view.WindowHost(), "修改素材用途可能解除已有绑定，确定继续吗？", "修改素材用途", MessageBoxButton.YesNo) == MessageBoxResult.Yes) await RunAsync(async () => { await view.ApiSend($"assets/{asset.Id}", HttpMethod.Patch, new { kind }); if (Active) await RefreshDataAsync(); }); };
-        actions.Children.Add(kinds); var remove = SourceIcon.Action("trash", "删除素材", async (_, _) => { if (MessageBox.Show(view.WindowHost(), "删除该素材及其候选记录，并解除已有绑定？", "删除素材", MessageBoxButton.YesNo) == MessageBoxResult.Yes) await RunAsync(async () => { await view.ApiSendOptional($"assets/{asset.Id}", HttpMethod.Delete); if (Active) await RefreshDataAsync(); }); }); Grid.SetColumn(remove, 1); actions.Children.Add(remove); text.Children.Add(actions);
+        kinds.SelectionChanged += async (_, _) => { var kind = (kinds.SelectedItem as ComboBoxItem)?.Tag as string; if (kind == null || kind == asset.Kind) return; kinds.SelectedIndex = 1; if (new ConfirmDialog(view.WindowHost(), "修改素材用途", "修改素材用途可能解除已有绑定，确定继续吗？", "继续").ShowDialog() == true) await RunAsync(async () => { await view.ApiSend($"assets/{asset.Id}", HttpMethod.Patch, new { kind }); if (Active) await RefreshDataAsync(); }); };
+        actions.Children.Add(kinds); var remove = SourceIcon.Action("trash", "删除素材", async (_, _) => { if (new ConfirmDialog(view.WindowHost(), "删除素材", "删除该素材及其候选记录，并解除已有绑定？", "删除", danger: true).ShowDialog() == true) await RunAsync(async () => { await view.ApiSendOptional($"assets/{asset.Id}", HttpMethod.Delete); if (Active) await RefreshDataAsync(); }); }); Grid.SetColumn(remove, 1); actions.Children.Add(remove); text.Children.Add(actions);
         var surface = Surface(grid, 10); if (selected.Contains(asset.Id)) surface.BorderBrush = AssetPageUi.Brush("Accent"); return surface;
     }
 }

@@ -206,11 +206,11 @@ internal sealed class CharacterReferencesPane : StackPanel
         {
             var kind = (kinds.SelectedItem as ComboBoxItem)?.Tag as string; if (kind == null || kind == asset.Kind) return;
             kinds.SelectedIndex = 0;
-            if (MessageBox.Show(view.WindowHost(), "修改素材用途可能解除已有绑定，确定继续吗？", "重分类", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+            if (new ConfirmDialog(view.WindowHost(), "重分类", "修改素材用途可能解除已有绑定，确定继续吗？", "继续").ShowDialog() != true) return;
             await RunAsync(async () => { await view.ApiSend($"assets/{asset.Id}", HttpMethod.Patch, new { kind }); });
         };
         actions.Children.Add(kinds);
-        var remove = SourceIcon.Action("trash", "删除素材", async (_, _) => { if (MessageBox.Show(view.WindowHost(), "删除该素材及其候选记录，并解除已有绑定？", "删除素材", MessageBoxButton.YesNo) == MessageBoxResult.Yes) await RunAsync(async () => { await view.ApiSendOptional($"assets/{asset.Id}", HttpMethod.Delete); }); });
+        var remove = SourceIcon.Action("trash", "删除素材", async (_, _) => { if (new ConfirmDialog(view.WindowHost(), "删除素材", "删除该素材及其候选记录，并解除已有绑定？", "删除", danger: true).ShowDialog() == true) await RunAsync(async () => { await view.ApiSendOptional($"assets/{asset.Id}", HttpMethod.Delete); }); });
         Grid.SetColumn(remove, 1); actions.Children.Add(remove); info.Children.Add(actions);
         return new Border { BorderBrush = AssetPageUi.Brush("Line"), BorderThickness = new Thickness(1), Background = AssetPageUi.Brush("Surface"), Padding = new Thickness(10), Child = grid };
     }

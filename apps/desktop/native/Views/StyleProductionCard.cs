@@ -49,7 +49,7 @@ internal sealed class StyleProductionCard : Border
         var tools = new WrapPanel(); tools.Children.Add(analyze);
         tools.Children.Add(Button("重新载入档案", async () =>
         {
-            if (paletteDirty && MessageBox.Show(owner.View.WindowHost(), "放弃当前未保存的色板修改，重新读取档案？", "重新载入", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+            if (paletteDirty && new ConfirmDialog(owner.View.WindowHost(), "重新载入", "放弃当前未保存的色板修改，重新读取档案？", "放弃", danger: true).ShowDialog() != true) return;
             paletteDirty = false; paletteFingerprint = ""; await owner.ReloadAsync();
         })); body.Children.Add(tools);
         var stage1 = Stage("01 / AI 色板草稿", draftState);

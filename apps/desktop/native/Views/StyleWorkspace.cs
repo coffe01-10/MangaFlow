@@ -204,9 +204,10 @@ internal sealed class StyleWorkspace : StackPanel
                 var next = SceneWorkspace.Value(kind);
                 if (next.Length == 0 || next == asset.Kind) return;
                 string LabelOf(string id) => kind.Items.OfType<ComboBoxItem>().FirstOrDefault(i => Equals(i.Tag, id))?.Content?.ToString() ?? id;
-                if (MessageBox.Show(View.WindowHost(),
+                if (new ConfirmDialog(View.WindowHost(),
+                    "更改参考用途",
                     $"将把「{asset.Name}」的用途从「{LabelOf(asset.Kind)}」改为「{LabelOf(next)}」，可能解除已有绑定。确定继续吗？",
-                    "更改参考用途", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                    "继续").ShowDialog() != true)
                 {
                     restoringKind = true;
                     foreach (ComboBoxItem item in kind.Items)
@@ -217,7 +218,7 @@ internal sealed class StyleWorkspace : StackPanel
                 await UpdateAssetAsync(asset.Id, HttpMethod.Patch, new { kind = next });
             };
             actions.Children.Add(kind);
-            actions.Children.Add(Kit.Act("删除", async (_, _) => { if (MessageBox.Show(View.WindowHost(), $"删除“{asset.Name}”？这会影响使用该图的参考档案。", "删除参考页", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes) await UpdateAssetAsync(asset.Id, HttpMethod.Delete); }, "CompactDanger"));
+            actions.Children.Add(Kit.Act("删除", async (_, _) => { if (new ConfirmDialog(View.WindowHost(), "删除参考页", $"删除“{asset.Name}”？这会影响使用该图的参考档案。", "删除", danger: true).ShowDialog() == true) await UpdateAssetAsync(asset.Id, HttpMethod.Delete); }, "CompactDanger"));
             body.Children.Add(actions);
             tiles.Children.Add(Surface(body, selected.Contains(asset.Id)));
         }

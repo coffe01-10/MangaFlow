@@ -7,7 +7,9 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Input;
 using MangaFlow.Native;
+using MangaFlow.Native.Controls;
 using MangaFlow.Native.Services;
 using MangaFlow.Native.Views;
 
@@ -72,7 +74,70 @@ internal static class NativeButtonChecks
             }
         }
         finally { view.Deactivate(); }
-        Console.WriteLine("PASS: rectangular toggles, web asset underlines/model cards, exclusive selection and project display names");
+        ConfirmDialogKeyboardChecks();
+        Console.WriteLine("PASS: rectangular toggles, web asset underlines/model cards, exclusive selection and project display names, ConfirmDialog keyboard contract (NUI-8-A)");
+    }
+
+    // NUI-8-A 键盘契约回归：ConfirmDialog 替换 MessageBox YesNo 后必须
+    // ①初始焦点落在安全钮（取消）②Esc 关闭且结果为取消 ③Tab 可达确认钮
+    // ④危险确认钮用 DangerButton 样式 ⑤确认钮不得设 IsDefault（回车不得触发危险动作）。
+    // ShowDialog 的模态泵会处理先入队的 Dispatcher 操作，用它驱动按键序列。
+    private static void ConfirmDialogKeyboardChecks()
+    {
+        var owner = new Window { Width = 300, Height = 120, ShowInTaskbar = false, ShowActivated = false,
+            WindowStartupLocation = WindowStartupLocation.Manual, Left = 0, Top = 0 };
+        owner.Show();
+        try
+        {
+            Button? cancel = null, confirm = null;
+            var dialog = new ConfirmDialog(owner, "标题", "消息", "删除", danger: true);
+            dialog.Loaded += (_, _) =>
+            {
+                cancel = Descendants(dialog).OfType<Button>().First(b => Equals(b.Content, "取消"));
+                confirm = Descendants(dialog).OfType<Button>().First(b => Equals(b.Content, "删除"));
+                System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() =>
+                {
+                    Require(Keyboard.FocusedElement == cancel, "ConfirmDialog 初始焦点必须落在安全钮（取消）");
+                    var esc = new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(dialog)!, 0, Key.Escape)
+                        { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+                    dialog.RaiseEvent(esc);
+                    Require(esc.Handled, "Esc 必须被 ConfirmDialog 处理");
+                }), System.Windows.Threading.DispatcherPriority.Input);
+            };
+            Require(dialog.ShowDialog() == false, "Esc 必须关闭对话框且结果为取消（false）");
+            Require(cancel != null && confirm != null, "ConfirmDialog 按钮未按预期构建");
+
+            Button? cancel2 = null, confirm2 = null;
+            var dialog2 = new ConfirmDialog(owner, "标题", "消息", "删除", danger: true);
+            dialog2.Loaded += (_, _) =>
+            {
+                cancel2 = Descendants(dialog2).OfType<Button>().First(b => Equals(b.Content, "取消"));
+                confirm2 = Descendants(dialog2).OfType<Button>().First(b => Equals(b.Content, "删除"));
+                System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() =>
+                {
+                    cancel2!.Focus();
+                    cancel2.MoveFocus(new System.Windows.Input.TraversalRequest(System.Windows.Input.FocusNavigationDirection.Next));
+                    Require(Keyboard.FocusedElement == confirm2, "Tab 必须能从取消到达确认钮（键盘可达）");
+                    Require(confirm2!.Style == (Style)Application.Current.FindResource("DangerButton"),
+                        "danger 确认钮必须使用 DangerButton 样式（视觉警示）");
+                    Require(!confirm2.IsDefault, "确认钮不得设 IsDefault——回车不得触发危险确认");
+                    dialog2.Close();
+                }), System.Windows.Threading.DispatcherPriority.Input);
+            };
+            dialog2.ShowDialog();
+        }
+        finally { owner.Close(); }
+    }
+
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    {
+        yield return root;
+        var count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            foreach (var nested in Descendants(child)) yield return nested;
+        }
     }
     private static void Layout(FrameworkElement view, int width, int height) { view.Measure(new Size(width, height)); view.Arrange(new Rect(0, 0, width, height)); view.UpdateLayout(); }
     private static void Require(bool value, string message) { if (!value) throw new Exception(message); }

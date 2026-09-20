@@ -244,7 +244,7 @@ public sealed partial class LibraryView : WorkspaceView
             actions.Children.Add(new TextBlock { Text = "✓ 已暂选", Foreground = (Brush)FindResource("Success"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 8, 0) });
             var retract = Kit.Act("撤回", async (_, _) =>
             {
-                if (MessageBox.Show(Host, "撤回暂选后，候选图片和生成记录仍会保留，后续页面将标记为待复查。是否继续？", "撤回暂选", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+                if (new ConfirmDialog(Host, "撤回暂选", "撤回暂选后，候选图片和生成记录仍会保留，后续页面将标记为待复查。是否继续？", "撤回").ShowDialog() == true)
                     await CandidateAction(candidate, "retract");
             }, "CompactDanger");
             retract.IsEnabled = candidate.PageId.Length > 0;
@@ -252,7 +252,7 @@ public sealed partial class LibraryView : WorkspaceView
         }
         else actions.Children.Add(Kit.Act("删除", async (_, _) =>
         {
-            if (MessageBox.Show(Host, "从素材库隐藏这个候选？生成文件和任务记录会保留。", "隐藏候选", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+            if (new ConfirmDialog(Host, "隐藏候选", "从素材库隐藏这个候选？生成文件和任务记录会保留。", "隐藏").ShowDialog() == true)
                 await CandidateAction(candidate, "delete");
         }, "CompactDanger"));
         foreach (var button in actions.Children.OfType<Button>()) button.Margin = new Thickness(0, 0, 6, 4);
