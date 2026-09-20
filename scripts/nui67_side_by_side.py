@@ -39,7 +39,7 @@ EVIDENCE = REPO / "output" / "nui67-acceptance"
 
 WEB_PORT = 3000
 API_PORT = 8000
-NATIVE_EXE = REPO / "apps" / "desktop" / "native" / "bin" / "Release" / "net8.0-windows" / "MangaFlow.Native.exe"
+NATIVE_EXE = REPO / "apps" / "desktop" / "native" / "bin" / "Release" / "net10.0-windows" / "MangaFlow.Native.exe"
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 user32 = ctypes.WinDLL("user32", use_last_error=True)
