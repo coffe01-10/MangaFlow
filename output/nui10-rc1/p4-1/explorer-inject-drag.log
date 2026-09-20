@@ -1,0 +1,4 @@
+23:40:30.258 DIAG: mode=inject from=(1298, 362) to=(541, 443) steps=30 screen=1536x864
+23:40:30.794 DIAG: DOWN at (1298, 362)
+23:40:32.748 DIAG: UP at (541, 443) async(LB)=0x1
+23:40:32.748 INJECT_DONE

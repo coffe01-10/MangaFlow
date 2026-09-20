@@ -63,6 +63,19 @@ NUI-6 不能据该轮勾选完成。
 - **`--render` 收口终跑 PASS**（P5-4，安静窗）：exit 0、`Native client checks passed:
   56; WPF navigation and visual checks passed`，对照基线 56 项零漂移；首轮失败于零
   位移手势断言，取证为实机物理鼠标移动干扰离屏检查（非应用缺陷，两轮互证）。
+- **OLE 拖放工具与拖放上传 PASS**（P4-1/P4-3a，2026-09-21 安静窗实机）：三代工具
+  `scripts/nui10_ole_drag_drop/` 入库（STA 裸 `DoDragDrop` P/Invoke + 独立 SendInput
+  注入线程 + ESC watchdog + 物理像素坐标，README 配使用说明与失败机理）。inject
+  通道驱动 Explorer 真实 DoDragDrop/CF_HDROP 三类实证：Explorer→Explorer 对照移动、
+  **参考图拖放上传**（参考资产页上传区 AllowDrop Drop→UploadAsync：uploads PNG+
+  缩略图与注入 UP 同秒落盘，assets `CHARACTER_REFERENCE` + character_references
+  绑定行次秒落库，UI「1 FILES」）、分镜画布面板拖拽自验（撤销激活、保存本页后
+  panels.bounds/version 持久化）。前两代负面结论根因定性：OLE 拖拽循环同步键态
+  盲区 + 进程 DPI 非感知坐标虚拟化（详见工具 README）。
+- **M9 重建成功支线 / M6 LocalEditWindow 入口实机 PASS**（P4-3/P4-6，nui10-live2）：
+  种子补齐带剧本追溯（ranges/beat/scene）页面数据后「重建本页版式」成功支线通过
+  （角标 4→3、版式版本递进、409 守卫仅出现在未追溯页，设计内）；候选卡「局部修改」
+  打开 LocalEditWindow（8 工具齐、干净关闭），付费预览未触碰（AUTH-REQ 维持）。
   真实签名与应用内检查更新维持 AUTH-REQ；多 DPI 单屏环境 BLOCKED。payload 运行时
   捆绑建议 AUTH-REQ 登记（建议捆绑用户目录级 Desktop Runtime，DOTNET_ROOT 机制已
   实测）。

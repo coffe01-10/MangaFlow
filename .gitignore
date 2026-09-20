@@ -84,3 +84,7 @@ apps/desktop/dist/web-standalone/
 tools/nsis-*/
 tools/*.zip
 output/nui9-g2-*/
+
+# NUI-10 P4-1 standalone OLE drag-drop tool build output
+scripts/nui10_ole_drag_drop/bin/
+scripts/nui10_ole_drag_drop/obj/

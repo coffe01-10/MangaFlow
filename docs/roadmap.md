@@ -80,8 +80,10 @@
   realized 节点平台与 net8 一致、无爆炸，不触发虚拟化改造。**工作流连线拖拽复验 PASS**
   （draft_version 6→7 + 新边落库；前轮失效系测试脚本坐标系误读）。**`--render` 收口
   终跑 PASS**（安静窗 exit 0、56 项零漂移；首轮失败经取证为实机鼠标移动干扰离屏
-  手势检查，非应用缺陷）。仍 **NOT RUN**：多 DPI（单屏环境 BLOCKED）、真实代码签名
-  （AUTH-REQ）。NUI-7 父项因此保持未完成。
+  手势检查，非应用缺陷）。**OLE 拖放上传 PASS**（2026-09-21，三代工具
+  `scripts/nui10_ole_drag_drop/` 入库：Explorer 真实 DoDragDrop/CF_HDROP 驱动参考图
+  拖放上传落盘落库，分镜面板拖拽自验持久化）。仍 **NOT RUN**：多 DPI（单屏环境
+  BLOCKED）、真实代码签名（AUTH-REQ）。NUI-7 父项因此保持未完成。
 
 2026-09-08 NUI-6C 轮基线为 `9812411`。lead 直接实现，无派工；未改 API/schema（仅
 ApiClient 的异常翻译，不改请求/响应契约）。专项审查报出 3×P1（动作 handler 取消

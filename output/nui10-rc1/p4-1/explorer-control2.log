@@ -1,0 +1,7 @@
+23:37:53.885 DIAG: mode=filedrop from=(300, 600) to=(668, 363) steps=20 screen=1536x864
+23:37:53.891 DIAG: OleInitialize hr=0x00000000
+23:37:53.904 TRACE: pre-DoDragDrop GetKeyState(LB)=0x0 GetAsyncKeyState(LB)=0x1
+23:37:54.392 DIAG: DOWN at (300, 600)
+23:37:55.845 DIAG: UP at (668, 363) async(LB)=0x1
+23:37:59.070 DIAG: watchdog — session still running after UP, tapping ESC
+23:38:00.726 DIAG: watchdog — stuck session, killing process
