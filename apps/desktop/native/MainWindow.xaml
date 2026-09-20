@@ -82,7 +82,7 @@
      <StackPanel x:Name="ProjectSummary" Margin="6,0,6,22">
       <TextBlock Text="PROJECT / 01" Style="{StaticResource Kicker}"/>
       <TextBlock Text="{Binding CurrentProject.Name}" ToolTip="{Binding CurrentProject.Name}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource Serif}" FontSize="18" Margin="0,12,0,8"/>
-      <TextBlock Text="{Binding CurrentProject.Summary}" Style="{StaticResource Caption}"/>
+      <TextBlock Text="{Binding CurrentProject.SidebarSummary}" Style="{StaticResource Caption}"/>
      </StackPanel>
      <ComboBox Grid.Row="1" x:Name="ProjectList" ItemsSource="{Binding Projects}" DisplayMemberPath="Name"
       SelectionChanged="SelectProject" AutomationProperties.Name="切换项目" Margin="0,0,0,12"/>

@@ -16,6 +16,7 @@ namespace MangaFlow.Native.Views;
 public sealed class SourceView : WorkspaceView
 {
     private readonly TextBox titleInput = new() { MaxLength = 200 };
+    private const string DefaultComposeTitle = "第一章";
     private readonly TextBox bodyInput = new()
     {
         AcceptsReturn = true, AcceptsTab = true, TextWrapping = TextWrapping.Wrap, Height = 80, Padding = new Thickness(16), FontSize = 13,
@@ -88,7 +89,7 @@ public sealed class SourceView : WorkspaceView
     private Border BuildComposeCard()
     {
         var form = new StackPanel();
-        titleInput.Text = "第一章";
+        titleInput.Text = DefaultComposeTitle;
         titleInput.Height = 48; titleInput.FontSize = 13;
         System.Windows.Automation.AutomationProperties.SetName(titleInput, "章节标题");
         form.Children.Add(titleInput);
@@ -131,7 +132,7 @@ public sealed class SourceView : WorkspaceView
         activation++;
         workflowBusy = importing = revisionLoading = false;
         SetComposeEnabled(true);
-        if (changed) { ResetCompose(); titleInput.Text = "第一章"; notice.Text = ""; pendingRestoreChapterIds.Clear(); undoBanner.Visibility = Visibility.Collapsed; activeChapterId = null; }
+        if (changed) { ResetCompose(); notice.Text = ""; pendingRestoreChapterIds.Clear(); undoBanner.Visibility = Visibility.Collapsed; activeChapterId = null; }
         activeChapterId ??= KeyValueStore.Get("workspace:chapter:" + ProjectId);
         parseButton.Click -= ParseChapter;
         planButton.Click -= PlanChapter;
@@ -288,6 +289,11 @@ public sealed class SourceView : WorkspaceView
     private void ResetCompose()
     {
         bodyInput.Text = "";
+        // 原文修订编辑会把所属章节的标题写回同一个输入框（EditChapter 里
+        // titleInput.Text = chapter.Title）。不清它，之后一次 TXT 导入会拿这个
+        // 遗留标题当本次标题——既写进 multipart 的 title 字段，也回显在成功提示里，
+        // 于是导入结果挂在一个从未导入过的章节名下。
+        titleInput.Text = DefaultComposeTitle;
         sourceType = "PASTE";
         editingChapterId = null;
         importButton.Content = SourceIcon.Label("upload", "导入粘贴原文");

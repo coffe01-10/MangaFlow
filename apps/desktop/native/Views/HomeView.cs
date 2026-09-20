@@ -67,10 +67,33 @@ public sealed class HomeView : WorkspaceView
         var left = new StackPanel();
         left.Children.Add(new TextBlock { Text = "工作区 / 00", Style = (Style)Application.Current.FindResource("SectionIndex") });
         var title = new TextBlock { FontFamily = (FontFamily)Application.Current.FindResource("Serif"), FontSize = 40, FontWeight = FontWeights.Bold, LineHeight = 47, Margin = new Thickness(0, 12, 0, 0) };
-        title.Inlines.Add(new System.Windows.Documents.Run("从文字开始，\n"));
-        var accent = new System.Windows.Documents.Run("把故事画出来。") { Foreground = (Brush)Application.Current.FindResource("Accent") };
-        title.Inlines.Add(accent);
+        title.Inlines.Add(new System.Windows.Documents.Run("从文字开始，"));
         left.Children.Add(title);
+        // NUI-8 D1：web 的第二行是 `em::after` 一条 2px 朱红线（bottom:-3px、rotate(-1deg)），
+        // 原生此前只给文字换了强调色，整条装饰缺失。用 Grid 而不是 StackPanel 承载「文字 + 线」：
+        // Grid 宽度由文字决定、线 Stretch 到同宽，横线才不会拉满整列（`em` 的下划线只覆盖文字本身）。
+        var accentLine = new TextBlock
+        {
+            Text = "把故事画出来。",
+            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
+            FontSize = 40, FontWeight = FontWeights.Bold, LineHeight = 47,
+            Foreground = (Brush)Application.Current.FindResource("Accent"),
+        };
+        var accentBlock = new Grid { HorizontalAlignment = HorizontalAlignment.Left };
+        accentBlock.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        accentBlock.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        accentBlock.Children.Add(accentLine);
+        var accentRule = new Border
+        {
+            Height = 2,
+            Background = (Brush)Application.Current.FindResource("Accent"),
+            Margin = new Thickness(0, -3, 0, 0),
+            RenderTransformOrigin = new Point(0.5, 0.5),
+            RenderTransform = new RotateTransform(-1),
+        };
+        System.Windows.Automation.AutomationProperties.SetName(accentRule, "hero-accent-rule");
+        Grid.SetRow(accentRule, 1); accentBlock.Children.Add(accentRule);
+        left.Children.Add(accentBlock);
         hero.Children.Add(left);
         var note = new TextBlock
         {
@@ -142,7 +165,9 @@ public sealed class HomeView : WorkspaceView
         };
         var dock = new DockPanel();
         var count = new TextBlock { Style = (Style)Application.Current.FindResource("Caption"), VerticalAlignment = VerticalAlignment.Bottom };
-        count.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("ProjectCount") { StringFormat = "{}{0} 个项目" });
+        // "{}" is a XAML markup escape only; set from code it reaches
+        // string.Format verbatim, the binding throws and silently yields "".
+        count.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("ProjectCount") { StringFormat = "{0} 个项目" });
         DockPanel.SetDock(count, Dock.Right);
         dock.Children.Add(count);
         var heading = new StackPanel();
