@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import zipfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -523,11 +524,27 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
         )
 
         # --- 导出门禁样例 ---
+        # NUI-8 P1-3：这里过去只插一行元数据，storage_key 指向的文件从未写过，
+        # byte_size/sha256 也是编的，所以素材库「下载导出包」必然 404、不落盘，
+        # 导出下载路径整条无法验收。现在真打一个 zip，并按实际字节算大小与摘要。
+        bundle_key = f"exports/{DATASET_TAG.lower()}-chapter1.zip"
+        bundle_path = storage_root / bundle_key
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for page_number, page_asset in enumerate((ref_page1, ref_page2, ref_page1b), start=1):
+                bundle.write(storage_root / page_asset.storage_key,
+                             f"chapter1/page-{page_number:03d}.png")
+        bundle_bytes = bundle_path.read_bytes()
+        # export_type must stay inside the product enum (schemas.py ExportRequest
+        # "^(PNG|PDF|JSON)$"); the download route keys media_type on it, so a
+        # made-up value such as "PNG_ZIP" 500s the whole download path.
         session.add(
             ExportBundle(
-                project_id=main.id, chapter_id=chapter1.id, export_type="PNG_ZIP",
-                storage_key=f"exports/{DATASET_TAG.lower()}-chapter1.zip",
-                byte_size=1024, sha256="1" * 64, page_count=3,
+                project_id=main.id, chapter_id=chapter1.id, export_type="PNG",
+                storage_key=bundle_key,
+                byte_size=len(bundle_bytes),
+                sha256=hashlib.sha256(bundle_bytes).hexdigest(),
+                page_count=3,
             )
         )
 
