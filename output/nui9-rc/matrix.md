@@ -74,7 +74,7 @@
 
 | 格 | 状态 | 证据 |
 | --- | --- | --- |
-| P6-1 global.json 钉 SDK 8.0.425（独立小 PR，最先合） | NOT RUN | 待开 PR |
+| P6-1 global.json 钉 SDK 8.0.425（独立小 PR，最先合） | 通过（PR 已开） | [#990](https://github.com/coffe01-10/MangaFlow/pull/990)（分支 nui8/pin-sdk-8-0-425，base=master）：global.json 钉 sdk 8.0.425（与本机 dotnet --version 一致），未自行合并交 lead；net10 迁移仍按 P6-2 口径 NOT RUN |
 | P6-2 .NET 8→net10 迁移（门禁：Release 0 error + 原生全套 + G1/G2/G4/G5 复基线 + 安装六格） | NOT RUN（L3：lead 设计先行） | 边界登记：net10 SDK 未装本机（dotnet --version=8.0.425，global.json 已钉 8.0.425，PR #990）。迁移 PR 前置：①lead 批准迁移窗口（.NET 8 EOL 2026-11-12，剩约 8 周）②本机装 net10 SDK 后才能评估 WPF 行为差异。门禁清单照 NUI-8 台账写死一条不少：dotnet build -c Release 0 error + 原生全套（含本轮新增 storyboard 手势/键盘契约检查）+ G1/G2/G4/G5 复基线 + 安装/静默升级/卸载六格复跑 |
 | P6-3 版本统一（csproj 0.3.0 vs 安装器 0.9.0） | AUTH-REQ | 两来源已核实存在（csproj Version 与 NSIS 安装器 0.9.0）；建议 lead 定 1.0.0-rc1 后统一并更新 CHANGELOG——未定前只登记不动手（沿用目标约定） |
 
@@ -84,7 +84,7 @@
 | --- | --- | --- |
 | P7-1 逐格汇总与剩余优先级 | 见下「逐格汇总」节 | 本表 |
 | P7-2 NUI-8 父项勾选判定 | 见下「NUI-8 判定」节 | 本表 |
-| P7-3 本轮新增提交拆 PR | 通过（PR 已开，堆叠于 goal/nui8-release） | **PR #991~#996 已开**（base=goal/nui8-release 的堆叠 PR；A~G(#983-#989) 合入 master 后 `gh pr edit --base master` 再合，目标既定协议）：H=#991 D5｜I=#992 NUI-8-A 43 处迁移｜J=#993 a11y｜K=#996 取消竞态分流｜L=#994 种子修复+G4 N=20｜M=#995 台账/工具/证据（含 --candidates 种子档位参数提交） |
+| P7-3 本轮新增提交拆 PR | 通过（PR 已开，堆叠于 goal/nui8-release） | **PR #991~#996 + #990 + PR-N 已开**（base=goal/nui8-release 的堆叠 PR，#990 base=master；A~G(#983-#989) 合入 master 后 `gh pr edit --base master` 再合，目标既定协议）：H=#991 D5｜I=#992 NUI-8-A 43 处迁移｜J=#993 a11y｜K=#996 取消竞态分流｜L=#994 种子修复+G4 N=20｜M=#995 台账/工具/证据｜N=#997 分镜编辑本格入口修复（a8cb5f5b，与 PR-M 同锚点注册区，PR-M 后合或按 PR 描述取并集）。P6-1 的 global.json 钉版走独立 PR #990。a8cb5f5b 之后的 3 个台账/证据提交（5e19abec、9f0d7036、f0947597）已 cherry-pick 并入 PR-M 分支 |
 | P7-4 收工复核 | 见下「收工复核」节 | sidecar stop 已过；npm check / dotnet Release / --render 见该节 |
 
 ### 逐格汇总（本轮闭环格数）
@@ -116,7 +116,8 @@ NUI-8 父项**不够格勾完成**，差口明确：
 | [#993](https://github.com/coffe01-10/MangaFlow/pull/993) PR-J | nui9/pr-j-a11y | 仪表盘 a11y | 9c5e376d |
 | [#996](https://github.com/coffe01-10/MangaFlow/pull/996) PR-K | nui9/pr-k-cancelrace | #4 取消竞态分流 | 61db67ea |
 | [#994](https://github.com/coffe01-10/MangaFlow/pull/994) PR-L | nui9/pr-l-seed-g4 | 种子 0×0 修复 + G4 N=20 | ccabef8f + 5929509b |
-| [#995](https://github.com/coffe01-10/MangaFlow/pull/995) PR-M | nui9/pr-m-ledger | 台账/工具/证据 + 种子 --candidates 档位 | 1dbd5311, 1802dfa0, f62280f7, 759aa8fe, 67c8d643, 20ba968e, b531b2e8, a252a7b1, 10676398 |
+| [#995](https://github.com/coffe01-10/MangaFlow/pull/995) PR-M | nui9/pr-m-ledger | 台账/工具/证据 + 种子 --candidates 档位 | 1dbd5311, 1802dfa0, f62280f7, 759aa8fe, 67c8d643, 20ba968e, b531b2e8, a252a7b1, 10676398 + 追加 5e19abec, 9f0d7036, f0947597（台账收尾/门禁日志） |
+| [#997](https://github.com/coffe01-10/MangaFlow/pull/997) PR-N | nui9/pr-n-paneledit | 分镜「编辑本格」入口修复 + 画布回车打开属性（M8） | a8cb5f5b |
 ⚠️ 堆叠提醒：本轮提交相互独立（无文件交叠，除台账），但全部基于 77f93dcc；**cherry-pick 到 A~G 合入后的 master 即可**，无需改 base。
 
 ### 收工复核（P7-4）
@@ -124,6 +125,7 @@ NUI-8 父项**不够格勾完成**，差口明确：
 - sidecar stop：本轮三次 stop 两次 `issues: none`；末次 `issues: ['WPF pid 33952 ignored graceful close — tree-killed']`（WPF 弹着离开确认对话框时收到停止，编排器按契约树杀并上报，端口/进程复检干净）——非本回归引入，编排器行为符合设计。
 - dotnet build -c Release：0 error ✓（本轮实机验证所用 Release exe 即含全部修复后构建）。
 - --render 全套：PASS ✓（迁移与 a11y 断言落地后第 3 轮跑，`render-round3.log`：「Native client checks passed: 56; WPF navigation and visual checks passed」，对照 56 项无漂移）。
+- --render 全套复跑（M8 修复 a8cb5f5b 后的最终代码态，第 4 轮）：**PASS** ✓（`render-round4.log`：「Native client checks passed: 56; WPF navigation and visual checks passed」，对照 56 项无漂移）——P7 门禁对最终 HEAD（f0947597）成立。
 - npm run check 终跑：**全绿** ✓（`p7-npm-check-final.log`）：pytest **1663 passed, 47 skipped**（= NUI-8 基线 1663+47，零漂移）；vitest **56 files / 615 tests passed**（= 基线，零漂移）；生产构建通过（"All checks passed!"）。
 - npm run check 复跑（实机抽样与种子档位参数落地后）：**再次全绿** ✓（`p7-npm-check-final2.log`：pytest 1663 passed, 47 skipped；vitest 56 files / 615 passed）——种子档位参数变更后门禁复验通过。
 - 第二轮实机采样后终跑（M8 修复 a8cb5f5b + 本轮证据入库后）：**全绿** ✓（`p7-npm-check-final3.log`：pytest **1663 passed, 47 skipped**、vitest **56 files / 615 passed**、生产构建通过，"All checks passed!"，零漂移）。sidecar stop：编排器报告两条 leftover（MangaFlow.Native 23212=本轮实机采样手动启动的实例，不在编排器 Job 内；native-host 5988=helper 派生）——已手动 taskkill 并复核：进程表无 MangaFlow.Native/native-host，3000/8000 释放。教训登记：实机采样中途重启应用时，应走编排器或采样后并入 stop 前清理。
@@ -134,3 +136,4 @@ NUI-8 父项**不够格勾完成**，差口明确：
 - 2026-09-19：P1 离线定性完成；P2/P3 代码修复与回归落地（D5、NUI-8-A 43 处迁移、a11y、#4 取消竞态分流）；--render 全套 56 项 PASS。
 - 2026-09-20：实机会话（run-dir output/nui9-live3，--no-seed 复用）：D5 真机验证、P4-2 抽样 5+1 处、P4-1 Lightbox、**发现并修复种子面板 0×0 缺陷（P1 结论修正）**、G4 N=20 全 20/20。npm run check 终跑全绿（1663+47 / 56 files 615，零漂移）。sidecar stop 复检干净。
 - 2026-09-20（第二轮，同 run-dir 续跑）：**M8 产品回归发现与修复**（编辑本格入口 dc901b01 丢失 + 回车未实现；离线回归 PanelEditDialogEntryChecks + --storyedit/--storyboard-page 全 PASS）+ M8/M9/M7/M3/M2 实机采样收官（详见 p4-1/ 三份证据）+ P4-5 三族焦点环实拍 + P4-3a 边界细化（上传对话框通道可驱动）。采样期间发现两次产品级守卫 409（重建/重算的剧本追溯前置）均属设计内行为，已登记。
+- 2026-09-20（第三轮，收口拆分）：--render 全套对最终代码态复跑 PASS（第 4 轮，`render-round4.log`；首轮复跑因实机鼠标物理干扰 PanelDragGestureChecks 光标位移断言作废，重跑即过）。M8 修复按 P7-3 拆出 **PR-N #997**（nui9/pr-n-paneledit，分支上 --storyedit 全链 PASS），3 个台账/证据提交 cherry-pick 并入 PR-M 分支；P6-1 格改为 PR #990 事实记录。
