@@ -1,0 +1,13 @@
+﻿start: [参考资产，已接通] ControlType.ListItem
+tab 1: [搜索与切换 · Ctrl+K] ControlType.Button rect=(162,887,231x50) inProc=True
+tab 2: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 3: [人物设定] ControlType.Button rect=(432,131,110x55) inProc=True
+tab 4: [服装档案] ControlType.Button rect=(551,131,110x55) inProc=True
+tab 5: [场景资产] ControlType.Button rect=(670,131,110x55) inProc=True
+tab 6: [漫画风格] ControlType.Button rect=(789,131,110x55) inProc=True
+tab 7: [原始参考素材] ControlType.Button rect=(908,131,146x55) inProc=True
+tab 8: [新角色主要姓名] ControlType.Edit rect=(432,338,586x52) inProc=True
+tab 9: [新角色绰号，用逗号分隔] ControlType.Edit rect=(1028,338,565x52) inProc=True
+tab 10: [] ControlType.Button rect=(432,412,220x100) inProc=True
+tab 11: [] ControlType.Button rect=(662,412,220x100) inProc=True
+tab 12: [选择要创建模型包的角色] ControlType.ComboBox rect=(432,768,247x55) inProc=True

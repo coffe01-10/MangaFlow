@@ -48,6 +48,14 @@ public sealed partial class SettingsView : WorkspaceView
     /// (web: the settings cache update lands on the next query interval).
     /// </summary>
     internal event Action? RuntimeSaved;
+    /// <summary>
+    /// D5：runtimeSaving 置位/清位时各 raise 一次。保存动作归壳后（页面不再
+    /// 自绘头部与动作按钮），壳据此禁用/恢复「保存运行设置」——与 web 的
+    /// save.isPending 同语义。
+    /// </summary>
+    internal event Action? RuntimeSavingChanged;
+    /// <summary>壳按钮禁用数据源：保存请求在途即 true（web: save.isPending）。</summary>
+    internal bool RuntimeSaving => runtimeSaving;
     private string capability = "ALL", modelType = "ALL", sort = "RECOMMENDED";
     private bool verified, hidden;
     private JsonElement runtime;
@@ -78,7 +86,7 @@ public sealed partial class SettingsView : WorkspaceView
         var message = "系统设置有未保存的修改（运行参数，或连接面板中录入到一半的密钥/手工模型），离开会丢弃这些内容。确定离开吗？";
         var leave = LeaveConfirmOverride is { } prompt
             ? await prompt(message)
-            : MessageBox.Show(Host, message, "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+            : new ConfirmDialog(Host, "离开确认", message, "离开").ShowDialog() == true;
         if (!leave) return false;
         // 同意离开即弃稿：把输入回填到已渲染的服务端值并清空连接面板草稿——
         // 草稿是实时检测的，不清理会在后续导航上反复弹窗。
@@ -482,7 +490,7 @@ public sealed partial class SettingsView : WorkspaceView
         var message = $"当前有连接面板包含未保存的输入，{action}会丢弃这些草稿。仍要继续吗？";
         return DiscardDraftsConfirmOverride is { } prompt
             ? await prompt(message)
-            : MessageBox.Show(Host, message, "丢弃草稿确认", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+            : new ConfirmDialog(Host, "丢弃草稿确认", message, "丢弃", danger: true).ShowDialog() == true;
     }
 
     private string appliedSearch = "";
@@ -700,6 +708,7 @@ public sealed partial class SettingsView : WorkspaceView
         if (runtimeSaving || runtime.ValueKind != JsonValueKind.Object) return;
         runtimeSaving = true;
         runtimeSave.IsEnabled = false;
+        RuntimeSavingChanged?.Invoke();
         runtimeError.Text = "";
         runtimeNotice.Visibility = Visibility.Collapsed;
         try
@@ -778,6 +787,7 @@ public sealed partial class SettingsView : WorkspaceView
         {
             runtimeSaving = false;
             runtimeSave.IsEnabled = true;
+            RuntimeSavingChanged?.Invoke();
         }
     }
 

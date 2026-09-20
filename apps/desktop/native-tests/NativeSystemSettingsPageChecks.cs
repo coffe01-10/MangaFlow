@@ -113,16 +113,24 @@ internal static class NativeSystemSettingsPageChecks
             ((TextBox)inputs["ui_poll_interval_seconds"]).Text = "4500";
             var queue = (ComboBox)inputs["queue_mode"]; queue.SelectedItem = queue.Items.OfType<ComboBoxItem>().Single(i => Equals(i.Tag, "LOCAL"));
             var save = Field<Button>(view, "runtimeSave");
+            // D5：壳按钮禁用的数据源——runtimeSaving 置位/清位各 raise 一次事件。
+            var savingStates = new List<bool>();
+            view.RuntimeSavingChanged += () => savingStates.Add(view.RuntimeSaving);
             fixture.Gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             Click(save); Click(save);
             await Until(() => fixture.Patches == 1); Require(!save.IsEnabled, "pending save disabled and duplicate guarded");
             fixture.Gate.SetResult(true); await Until(() => !Field<bool>(view, "runtimeSaving"));
+            Require(savingStates.SequenceEqual(new[] { true, false }), "RuntimeSavingChanged fires true then false per save (D5 shell button source)");
             Require(fixture.Payload.Number("default_concurrency") == 5 && fixture.Payload.Number("job_timeout_seconds") == 901
                 && fixture.Payload.Text("queue_mode") == "LOCAL" && fixture.Payload.Number("version") == 9
                 && fixture.Payload.EnumerateObject().Count() == 8, "runtime editable-only PATCH and number rounding");
             Require(Field<Border>(view, "runtimeNotice").Visibility == Visibility.Visible, "successful save feedback");
+            // D5：设置页只有壳一条头部——页面不再自绘「kicker+标题+动作」，动作按钮归壳。
+            Require(!Desc(view).OfType<TextBlock>().Any(t => t.Text == "系统设置与运行诊断" || t.Text == "SYSTEM / CONTROL ROOM"),
+                "D5: page draws no second header (title/kicker owned by the shell)");
+            Require(Desc(view).OfType<Button>().All(b => !Equals(b.Content, "用量与成本看板") && !Equals(b.Content, "返回项目")),
+                "D5: usage/back actions live only in the shell SettingsActions");
             var scroll = Field<ScrollViewer>(view, "scroller"); Layout(view, 1440, 1000); scroll.ScrollToEnd(); Layout(view, 1440, 1000);
-            Require(save.TranslatePoint(new Point(), view).Y < 150, "save remains at top after scrolling");
             Render(view, 1440, 1000, Path.Combine(output, "native-system-settings-saved.png"));
             fixture.Gate = null;
             // A05：保存期间的新运行参数不得被提交时的旧响应覆盖——提交 5 后改 7，
@@ -213,11 +221,9 @@ internal static class NativeSystemSettingsPageChecks
                     "confirmed leave discards drafts: runtime inputs revert and key fields clear (A07)");
             }
 
-            Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "用量与成本看板")));
-            Require(navigated == "usage", "usage navigation is wired");
-            Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "返回项目")));
-            Require(navigated == "home", "return navigation is wired");
-            Console.WriteLine("PASS: system settings layouts, runtime payload/rounding, pending duplicate guard, in-flight edit protection (A05), conflict version sync + retry (A06), leave protection with draft discard (A07), connection-draft guards on search/collapse (A08), independent status labels on failures (A09), provider search, diagnostic retry and navigation.");
+            // D5：页面级用量/返回按钮已删除，导航接线归壳（MainWindow ShowUsage/
+            // ShowHome → NavigateAsync，自带 ConfirmLeaveAsync）。
+            Console.WriteLine("PASS: system settings single-header D5 ownership, layouts, runtime payload/rounding, pending duplicate guard, in-flight edit protection (A05), conflict version sync + retry (A06), leave protection with draft discard (A07), connection-draft guards on search/collapse (A08), independent status labels on failures (A09), provider search and diagnostic retry.");
             Console.WriteLine("HTTP fixtures and offscreen WPF only. Live backend/provider mutations, native high-DPI windows and animation timing NOT RUN.");
         }
         finally { view.Deactivate(); }

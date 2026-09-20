@@ -206,7 +206,7 @@ internal sealed class SceneWorkspace : StackPanel
         var actions = new WrapPanel(); actions.Children.Add(Action("绑定变体图", () => UploadAsync(scene, id)));
         if (!variant.Flag("is_canonical")) actions.Children.Add(Action("设为默认", () => ChangeAsync($"{Base}/{scene.Text("id")}/variants/{id}", HttpMethod.Patch, new { version = variant.Number("version"), is_canonical = true })));
         actions.Children.Add(Action("编辑", () => { EditVariant(scene, variant); return Task.CompletedTask; }));
-        actions.Children.Add(Action("删除", async () => { if (MessageBox.Show(view.WindowHost(), $"删除环境变体“{variant.Text("name")}”？专属参考会解除绑定，剧本场景回退到资产默认参考。", "删除变体", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes) await ChangeAsync($"{Base}/{scene.Text("id")}/variants/{id}", HttpMethod.Delete); }, "CompactDanger"));
+        actions.Children.Add(Action("删除", async () => { if (new ConfirmDialog(view.WindowHost(), "删除变体", $"删除环境变体“{variant.Text("name")}”？专属参考会解除绑定，剧本场景回退到资产默认参考。", "删除", danger: true).ShowDialog() == true) await ChangeAsync($"{Base}/{scene.Text("id")}/variants/{id}", HttpMethod.Delete); }, "CompactDanger"));
         actions.IsEnabled = !Deleted(scene); cell.Children.Add(actions); return Surface(cell, variant.Flag("is_canonical"));
     }
     private async Task RunAsync(Func<Task> action)
@@ -263,7 +263,7 @@ internal sealed class SceneWorkspace : StackPanel
         var references = count == null ? "无法确认引用数量。相关剧本场景将失去场景参考消费，地点文本仍保留。"
             : count > 0 ? $"当前项目中有 {count} 个剧本场景绑定了该资产。归档后它们会失去场景参考消费，地点文本仍保留。"
             : "当前已加载的剧本中没有发现绑定。";
-        if (MessageBox.Show(view.WindowHost(), $"归档场景“{scene.Text("name")}”？\n\n{references}\n之后可通过“显示已归档”恢复。", "归档场景", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+        if (new ConfirmDialog(view.WindowHost(), "归档场景", $"归档场景“{scene.Text("name")}”？\n\n{references}\n之后可通过“显示已归档”恢复。", "归档").ShowDialog() == true)
             await ChangeAsync($"{Base}/{scene.Text("id")}", HttpMethod.Delete);
     }
     internal async Task<int?> CountBindingsAsync(string sceneId)

@@ -1,0 +1,79 @@
+﻿apps\desktop\native\App.xaml.cs:50:MessageBox.Show("未找到 MangaFlow 后端。请使用 start-native.ps1 启动。", "MangaFlow");
+apps\desktop\native\MainWindow.xaml.cs:728:catch (Exception error) { MessageBox.Show(this, error.Message, "无法打开文件夹"); }
+apps\desktop\native\MainWindow.xaml.cs:762:catch (Exception error) { MessageBox.Show(this, error.Message, "导出未完成"); }
+apps\desktop\native\Views\AssetsView.cs:1121:if (MessageBox.Show(view.WindowHost(),
+apps\desktop\native\Views\CharacterAssetPage.cs:209:if (MessageBox.Show(view.WindowHost(), "修改素材用途可能解除已有绑定，确定继续吗？", "重分类", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+apps\desktop\native\Views\CharacterAssetPage.cs:213:var remove = SourceIcon.Action("trash", "删除素材", async (_, _) => { if (MessageBox.Show(view.WindowHost(), "删除该素材及其候选记录，并解除已有绑定？", "删除素材", MessageBoxButton.YesNo) == MessageBoxResult.Yes) await RunAsync(async () => { await view.ApiSendOptional($"assets/{asset.Id}", HttpMethod.Delete); }); });
+apps\desktop\native\Views\CharacterPackagePane.cs:176:: MessageBox.Show(view.WindowHost(), message, "角色模型包", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+apps\desktop\native\Views\CharacterPackagePane.cs:428:: MessageBox.Show(view.WindowHost(), "草稿规格有未保存修改，离开将丢弃这些编辑。确定离开？",
+apps\desktop\native\Views\CharacterPackagePane.cs:445:: MessageBox.Show(view.WindowHost(),
+apps\desktop\native\Views\CharacterPackagePane.cs:466:: MessageBox.Show(view.WindowHost(), $"删除草稿 V{draft.Number("version_number")} 及其矩阵绑定？该操作不可撤销。",
+apps\desktop\native\Views\GenerateView.cs:787:if (MessageBox.Show(Host, "删除这个候选？收藏状态也会一并移除。", "删除候选",
+apps\desktop\native\Views\GenerateView.cs:805:if (MessageBox.Show(Host, "请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？",
+apps\desktop\native\Views\GenerateView.cs:822:if (MessageBox.Show(Host, $"升至 {resolution} 会调用一次所选图片模型（可能计费），并基于该候选生成一个新批次。是否继续？",
+apps\desktop\native\Views\GenerateView.cs:885:if (MessageBox.Show(Host, "请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？",
+apps\desktop\native\Views\GenerateView.cs:1516:var result = MessageBox.Show(Host, "导演指令尚未提交，离开会丢弃已输入的指令与预览选择。仍要离开吗？",
+apps\desktop\native\Views\JobsView.cs:220:if (MessageBox.Show(Host, "重试可能再次调用模型并产生费用。确认重试这个任务？", "重试任务",
+apps\desktop\native\Views\JobsView.cs:242:if (MessageBox.Show(Host, "仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？",
+apps\desktop\native\Views\JobsView.cs:308:if (MessageBox.Show(Host, "将所有已完成、失败和已取消任务移入历史记录？生成候选与溯源信息不会删除。",
+apps\desktop\native\Views\LibraryView.cs:247:if (MessageBox.Show(Host, "撤回暂选后，候选图片和生成记录仍会保留，后续页面将标记为待复查。是否继续？", "撤回暂选", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+apps\desktop\native\Views\LibraryView.cs:255:if (MessageBox.Show(Host, "从素材库隐藏这个候选？生成文件和任务记录会保留。", "隐藏候选", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+apps\desktop\native\Views\LocalEditWindow.cs:323:if (busy || MessageBox.Show(this, "请确认修改区域与页面文字已人工校对。暂选此结果后仍需完成视觉检查。是否继续？",
+apps\desktop\native\Views\LocalEditWindow.cs:355:if (MessageBox.Show(this,
+apps\desktop\native\Views\LocalEditWindow.cs:375:return MessageBox.Show(this, "已画的选区与修改指令尚未提交，关闭会丢弃这些内容。仍要关闭吗？",
+apps\desktop\native\Views\OutfitWorkspace.cs:273:if (busy || !Active || MessageBox.Show(view.WindowHost(), $"删除服装档案“{outfit.Name}”？\n\n将同时删除绑定的 {outfit.ReferenceCount} 张参考图、已生成的穿着图，并清除剧本与分镜中的服装绑定。被其他档案共用的图片会保留。", "删除服装档案", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return Task.CompletedTask;
+apps\desktop\native\Views\OutfitWorkspace.cs:391:kinds.SelectionChanged += async (_, _) => { var kind = (kinds.SelectedItem as ComboBoxItem)?.Tag as string; if (kind == null || kind == asset.Kind) return; kinds.SelectedIndex = 1; if (MessageBox.Show(view.WindowHost(), "修改素材用途可能解除已有绑定，确定继续吗？", "修改素材用途", MessageBoxButton.YesNo) == MessageBoxResult.Yes) await RunAsync(async () => { await view.ApiSend($"assets/{asset.Id}", HttpMethod.Patch, new { kind }); if (Active) await RefreshDataAsync(); }); };
+apps\desktop\native\Views\OutfitWorkspace.cs:392:actions.Children.Add(kinds); var remove = SourceIcon.Action("trash", "删除素材", async (_, _) => { if (MessageBox.Show(view.WindowHost(), "删除该素材及其候选记录，并解除已有绑定？", "删除素材", MessageBoxButton.YesNo) == MessageBoxResult.Yes) await RunAsync(async () => { await view.ApiSendOptional($"assets/{asset.Id}", HttpMethod.Delete); if (Active) await RefreshDataAsync(); }); }); Grid.SetColumn(remove, 1); actions.Children.Add(remove); text.Children.Add(actions);
+apps\desktop\native\Views\ProjectSettingsView.cs:433:MessageBox.Show(Host, "请输入完整项目名称", "删除项目", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\ProjectSettingsView.cs:436:if (MessageBox.Show(Host, $"确认从工作台删除项目“{expected}”？", "删除项目", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+apps\desktop\native\Views\ProjectSettingsView.cs:457:MessageBox.Show(Host, error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\ProjectSettingsView.cs:469:: MessageBox.Show(Host, "项目设置有未保存的修改（包括已输入的删除确认名称），离开会丢弃这些内容。确定离开吗？",
+apps\desktop\native\Views\ReferenceWorkspace.cs:146:internal bool Ask(string text) => Confirm?.Invoke(text) ?? MessageBox.Show(View.WindowHost(), text, "参考素材", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+apps\desktop\native\Views\SceneWorkspace.cs:209:actions.Children.Add(Action("删除", async () => { if (MessageBox.Show(view.WindowHost(), $"删除环境变体“{variant.Text("name")}”？专属参考会解除绑定，剧本场景回退到资产默认参考。", "删除变体", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes) await ChangeAsync($"{Base}/{scene.Text("id")}/variants/{id}", HttpMethod.Delete); }, "CompactDanger"));
+apps\desktop\native\Views\SceneWorkspace.cs:266:if (MessageBox.Show(view.WindowHost(), $"归档场景“{scene.Text("name")}”？\n\n{references}\n之后可通过“显示已归档”恢复。", "归档场景", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+apps\desktop\native\Views\ScriptView.cs:373:else MessageBox.Show(Host, error.Message, "服装指定未保存", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\ScriptView.cs:420:if (MessageBox.Show(Host, "删除本章漫画剧本？分页、分镜和页面候选会同时从工作区移除；原文、素材文件与任务记录保留，之后可重新生成。",
+apps\desktop\native\Views\ScriptView.cs:430:MessageBox.Show(Host, error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\ScriptView.cs:445:MessageBox.Show(Host, error.Message, "生成剧本未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\ScriptView.cs:504:var result = MessageBox.Show(Host, "当前场景 / 情节拍的修改尚未保存，切换章节会丢弃这些修改。仍要切换吗？",
+apps\desktop\native\Views\ScriptView.cs:931:if (action.Text.Trim().Length == 0) { MessageBox.Show(Window.GetWindow(this), "可视化动作不能为空。", "保存情节拍"); return; }
+apps\desktop\native\Views\SettingsView.cs:89:: MessageBox.Show(Host, message, "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+apps\desktop\native\Views\SettingsView.cs:493:: MessageBox.Show(Host, message, "丢弃草稿确认", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+apps\desktop\native\Views\SettingsView.cs:1517:MessageBox.Show(panel.Owner.Host, error.Message, "展示偏好未保存", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\SourceView.cs:249:MessageBox.Show(Host, $"当前输入框已有未导入的原文（{bodyInput.Text.Trim().Length} 字），载入章节修订会覆盖它。继续吗？",
+apps\desktop\native\Views\SourceView.cs:284:if (bodyInput.Text.Trim().Length > 0 && MessageBox.Show(Host, "取消修改会丢弃输入框中的全部文本。继续吗？", "取消修改",
+apps\desktop\native\Views\SourceView.cs:396:if (MessageBox.Show(Host, "删除后会暂时隐藏该章节，可立即撤回。继续吗？", "删除章节",
+apps\desktop\native\Views\SourceView.cs:414:MessageBox.Show(Host, "章节删除失败，请重试：" + error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\SourceView.cs:445:MessageBox.Show(Host, "章节撤回失败，请重试：" + error.Message, "撤回未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\SourceView.cs:483:var result = MessageBox.Show(Host, message, "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
+apps\desktop\native\Views\StoryboardView.cs:1130:MessageBox.Show(Host, error.Message, "保存本格未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\StoryboardView.cs:1350:MessageBox.Show(Host, error.Message, "保存本格未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\StoryboardView.cs:1404:MessageBox.Show(Host, error.Message, "保存更改未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\StoryboardView.cs:1441:MessageBox.Show(Host, error.Message, "新增气泡未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\StoryboardView.cs:1481:MessageBox.Show(Host, error.Message, "重新计算未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\StoryboardView.cs:1504:: MessageBox.Show(Host, "删除这个文字气泡？", "删除气泡", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+apps\desktop\native\Views\StoryboardView.cs:1526:MessageBox.Show(Host, error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\StoryboardView.cs:1558:MessageBox.Show(Host, error.Message, "重建未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\StoryboardView.cs:1615:MessageBox.Show(Host, error.Message + "\n\n画布草稿已保留，可重试保存或放弃草稿。", "保存未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\StoryboardView.cs:1784:var result = MessageBox.Show(Host, "分镜画布有未保存的几何草稿，离开将丢失。确定离开吗？",
+apps\desktop\native\Views\StoryboardView.cs:2325:MessageBox.Show(this, outcome.Message, "保存本格未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\StyleProductionCard.cs:52:if (paletteDirty && MessageBox.Show(owner.View.WindowHost(), "放弃当前未保存的色板修改，重新读取档案？", "重新载入", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+apps\desktop\native\Views\StyleWorkspace.cs:207:if (MessageBox.Show(View.WindowHost(),
+apps\desktop\native\Views\StyleWorkspace.cs:220:actions.Children.Add(Kit.Act("删除", async (_, _) => { if (MessageBox.Show(View.WindowHost(), $"删除“{asset.Name}”？这会影响使用该图的参考档案。", "删除参考页", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes) await UpdateAssetAsync(asset.Id, HttpMethod.Delete); }, "CompactDanger"));
+apps\desktop\native\Views\UsageView.cs:817:MessageBox.Show(Host, "尚无可导出的数据。", "导出 CSV");
+apps\desktop\native\Views\UsageView.cs:828:MessageBox.Show(Host, "CSV 已导出。", "导出完成");
+apps\desktop\native\Views\UsageView.cs:832:MessageBox.Show(Host, error.Message, "导出未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\ViewKit.cs:150:MessageBox.Show(Host, "无法打开图片预览：" + error.Message, "图片预览", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\WorkflowView.cs:851:: Host != null && MessageBox.Show(Host, message, "恢复版本", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+apps\desktop\native\Views\WorkflowView.cs:884:MessageBox.Show(Host, conflict.Message, "恢复版本失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\WorkflowView.cs:890:MessageBox.Show(Host, error.Message, "恢复版本失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\WorkflowView.cs:1689:MessageBox.Show(Host, string.Join("\n", issues.Select(i => $"[{i.Text("severity")}] {i.Text("message")}")), "校验问题");
+apps\desktop\native\Views\WorkflowView.cs:1694:MessageBox.Show(Host, error.Message, "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\WorkflowView.cs:1725:MessageBox.Show(Host, error.Message, "发布失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\WorkflowView.cs:1750:MessageBox.Show(Host, error.Message, "导出未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\WorkflowView.cs:1794:MessageBox.Show(Host, error.Message, "导入失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\WorkflowView.cs:1802:MessageBox.Show(Host, "请先选择章节或页面运行范围", "运行工作流");
+apps\desktop\native\Views\WorkflowView.cs:1827:MessageBox.Show(Host, error.Message, "运行未启动", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\WorkflowView.cs:1918:catch (Exception error) { MessageBox.Show(Host, error.Message, "取消失败"); }
+apps\desktop\native\Views\WorkflowView.cs:1964:MessageBox.Show(Host, error.Message, "重试运行失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+apps\desktop\native\Views\WorkflowView.cs:2449:: MessageBox.Show(Host, "当前工作流草稿保存失败。确定放弃未保存的修改并离开吗？\n（选择“否”可留在本页，草稿保留在画布上等待重试）",

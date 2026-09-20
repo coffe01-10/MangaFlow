@@ -1,0 +1,13 @@
+﻿start: [流程编排，已接通] ControlType.ListItem
+tab 1: [搜索与切换 · Ctrl+K] ControlType.Button rect=(162,887,231x50) inProc=True
+tab 2: [MangaFlow · 原生工作台] ControlType.Window rect=(135,0,1650x1020) inProc=True
+tab 3: [选择工作流] ControlType.ComboBox rect=(544,155,288x42) inProc=True
+tab 4: [导出] ControlType.Button rect=(1351,153,80x42) inProc=True
+tab 5: [导入] ControlType.Button rect=(1432,153,80x42) inProc=True
+tab 6: [保存] ControlType.Button rect=(1513,153,80x42) inProc=True
+tab 7: [校验] ControlType.Button rect=(1594,153,80x42) inProc=True
+tab 8: [发布] ControlType.Button rect=(1675,153,80x42) inProc=True
+tab 9: [运行已发布流程] ControlType.Button rect=(1605,221,155x51) inProc=True
+tab 10: [关闭节点库] ControlType.Button rect=(686,294,42x43) inProc=True
+tab 11: [] ControlType.Button rect=(458,405,245x83) inProc=True
+tab 12: [] ControlType.Button rect=(458,496,245x83) inProc=True

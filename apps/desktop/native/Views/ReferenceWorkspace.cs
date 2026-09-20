@@ -143,7 +143,7 @@ internal sealed class ReferencesPane : StackPanel
         catch (Exception e) { if (Active) error.Text = e.Message; return false; }
         finally { busy = false; if (Active) UpdateState(); }
     }
-    internal bool Ask(string text) => Confirm?.Invoke(text) ?? MessageBox.Show(View.WindowHost(), text, "参考素材", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+    internal bool Ask(string text) => Confirm?.Invoke(text) ?? new ConfirmDialog(View.WindowHost(), "参考素材", text, "继续").ShowDialog() == true;
     private async Task Upload(string? path = null)
     {
         if (!Active || busy) return;

@@ -1502,7 +1502,7 @@ public sealed partial class StoryboardView : WorkspaceView
         // 同一模式）；生产路径为 null。
         var confirmed = DeleteConfirmOverride is { } prompt
             ? prompt()
-            : MessageBox.Show(Host, "删除这个文字气泡？", "删除气泡", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+            : new ConfirmDialog(Host, "删除气泡", "删除这个文字气泡？", "删除", danger: true).ShowDialog() == true;
         if (!confirmed) return;
         var pageAtRequest = currentPage;
         if (pageAtRequest == null) return;
@@ -1788,9 +1788,8 @@ public sealed partial class StoryboardView : WorkspaceView
         // 测试缝：headless 检查替换模态确认；生产路径为 null
         if (LeaveConfirmOverride is { } prompt) return prompt();
         if (!dirty) return Task.FromResult(true);
-        var result = MessageBox.Show(Host, "分镜画布有未保存的几何草稿，离开将丢失。确定离开吗？",
-            "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (result != MessageBoxResult.Yes) return Task.FromResult(false);
+        var result = new ConfirmDialog(Host, "离开确认", "分镜画布有未保存的几何草稿，离开将丢失。确定离开吗？", "离开").ShowDialog();
+        if (result != true) return Task.FromResult(false);
         // 同意离开即弃稿：每个 true 调用点都会继续用新状态覆盖画布，但 dirty
         // 原样保留会让同一次弃稿在再次激活/切换章节时重复弹窗。
         dirty = false;

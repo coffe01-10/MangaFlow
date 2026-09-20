@@ -9,15 +9,11 @@ public sealed partial class SettingsView
 {
     private void BuildSystemPage()
     {
+        // D5：头部与三个动作按钮归壳（MainWindow SettingsActions + 顶栏标题），
+        // 页面不再自绘第二条「kicker+标题+动作」头部——web 只有
+        // topbar.settings-topbar 一条（apps/web/app/settings/page.tsx:126-133）。
         var root = new DockPanel();
-        var actions = new WrapPanel();
-        var usage = Kit.Act("用量与成本看板", async (_, _) => { if (Context != null && await ConfirmLeaveAsync()) await Context.NavigateSection("usage", ""); }, "Ghost");
-        var back = Kit.Act("返回项目", async (_, _) => { if (Context != null && await ConfirmLeaveAsync()) await Context.OpenDashboard(); }, "Ghost");
-        foreach (var button in new[] { usage, back, runtimeSave }) { button.Margin = new Thickness(0, 0, 8, 0); actions.Children.Add(button); }
         runtimeSave.Click += SaveRuntime;
-        var header = new Border { Padding = new Thickness(20, 12, 12, 12), BorderBrush = AssetPageUi.Brush("Line"), BorderThickness = new Thickness(0, 0, 0, 1),
-            Child = new PageHeading(SystemHeading("系统设置与运行诊断", "SYSTEM / CONTROL ROOM"), actions) };
-        DockPanel.SetDock(header, Dock.Top); root.Children.Add(header);
         var page = new StackPanel { Margin = new Thickness(28, 30, 28, 48) };
         page.Children.Add(BuildStatusStrip());
         var board = new Grid { Name = "SettingsBoard" };

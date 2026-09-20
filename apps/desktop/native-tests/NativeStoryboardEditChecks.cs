@@ -125,6 +125,7 @@ internal static class NativeStoryboardEditChecks
             await ReplanChecks(view, fixture);
             await InspectorKeyIsolationChecks(view, fixture);
             PanelEditDialogEntryChecks(view);
+            await PanelDragGestureChecks(view, fixture);
             await RefreshKeepsDraftsChecks(view, fixture);
             await ScriptRefreshKeepsFormsChecks();
             await ScriptActivateLoadsOnceChecks();
@@ -443,6 +444,141 @@ internal static class NativeStoryboardEditChecks
         Layout(view, 1400, 1000);
         Require(Buttons(inspector, "编辑本格").SingleOrDefault() != null,
             "选中格后检查器必须有「编辑本格」按钮（dc901b01 曾把它丢成 null，PanelEditDialog 因此不可达）");
+    }
+
+    // ── 7.5 面板拖拽合成手势（NUI-9 P2-2 定性）：MouseLeftButtonDown → MouseMove →
+    // MouseLeftButtonUp 直接 raise 在面板 Border 上——与真实鼠标同一 BeginPanelDrag 入口，
+    // 但不经系统命中测试；位移取自鼠标设备的活位置（SetCursorPos 驱动、GetCursorPos 校验），
+    // 窗口必须显示在屏内（离屏窗口收不到 WM_MOUSEMOVE，设备点不更新）。
+    // 判别（NUI-8 台账 P5 剩余第 2 项）：链路离线能把格拖走并提交 ⇒ 真机「拖拽/同点点击
+    // 无反应」不是产品逻辑缺陷，而是注入通道/坐标差异；链路任何一环断（捕获失败/回调不进/
+    // 不提交）则本检查在对应断言处失败。附带命中探针：面板中心的 WPF 命中测试必须落在
+    // 面板 Border 子树内——独立排除「产品侧遮罩吃掉命中」这一候选。
+    private static async Task PanelDragGestureChecks(StoryboardView view, Fixture fixture)
+    {
+        // 基线复位：RefreshAsync 是 preserve 语义（#341，刷新不得静默弃稿），不能当
+        // 复位用；改为撤销到栈底，几何与服务端 (0.1,0.1,0.5,0.4) 对齐且撤销栈清空。
+        for (var i = 0; i < 50 && view.CanUndoForTest; i++)
+        {
+            Click(Buttons(view, "撤销").First());
+            await Settle();
+        }
+        Require(!view.CanUndoForTest, "撤销 50 步仍未到栈底：前序检查遗留了异常多的草稿");
+        await Settle();
+        Field<ToggleButton>(view, "snapButton").IsChecked = false;   // 提交走纯 clamp 分支，期望矩形才可精确断言
+        var page = Field<Canvas>(view, "page");
+
+        GetCursorPos(out var cursorBefore);
+        var owner = new Window
+        {
+            ShowInTaskbar = false, ShowActivated = false,
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Left = Math.Max(8, SystemParameters.WorkArea.Right - 1120),
+            Top = Math.Max(8, SystemParameters.WorkArea.Bottom - 780),
+            Width = 1100, Height = 760,
+            Content = view,
+        };
+        owner.Show();
+        try
+        {
+            Layout(view, 1100, 760);
+            var element = page.Children.OfType<Border>().Single(b => b.Cursor == Cursors.Hand && b.Child is null && b.Tag is null);
+            var center = new Point(Canvas.GetLeft(element) + element.ActualWidth / 2, Canvas.GetTop(element) + element.ActualHeight / 2);
+            var deviceCenter = element.PointToScreen(center);
+            Require(SetCursorPos((int)deviceCenter.X, (int)deviceCenter.Y),
+                "SetCursorPos 失败：拖拽定性需要可驱动的鼠标设备（非交互桌面无法进行）");
+            await Settle();
+            GetCursorPos(out var now);
+            Require(Math.Abs(now.X - deviceCenter.X) <= 3 && Math.Abs(now.Y - deviceCenter.Y) <= 3,
+                $"光标未落到面板中心（期望 {deviceCenter.X:F0},{deviceCenter.Y:F0}，实际 {now.X},{now.Y}）");
+
+            // 命中探针：面板中心的命中测试必须落在面板 Border 子树内
+            var hit = page.InputHitTest(center);
+            Require(InSubtree(hit as DependencyObject, element),
+                $"面板中心命中 {(hit?.GetType().Name ?? "null")} 而非面板 Border 子树——产品侧存在吃掉命中的遮罩（只有此分支才是产品缺陷）");
+
+            var origin = view.PanelRectForTest(0);
+            Require(origin.Width > 0.3, $"面板基线矩形异常：{origin}（撤销到栈底后应为服务端 0.5×0.4）");
+
+            // 零位移手势：down/move/up 同一设备点 → offset=(0,0) → 提交必须是 no-op
+            RaiseDown(element);
+            Require(element.IsMouseCaptured, "down 后 CaptureMouse 未生效（IsMouseCaptured=false）");
+            Require(Field<object>(view, "panelGesture") is not null, "down 后 panelGesture 未武装（BeginPanelDrag 未完整执行）");
+            Require(view.SelectedPanelIdForTest == "panel-1", "down 应先选中该格（SelectPanel）");
+            RaiseMove(element);
+            await Settle();
+            RaiseUp(element);
+            await Settle();
+            Require(!view.CanUndoForTest, "零位移手势不得进入撤销栈");
+            Require(view.PanelRectForTest(0) == origin, "零位移手势不得改变几何");
+
+            // 实位移手势：down 在中心 → 光标移 60×45 物理像素 → raise move → up 提交
+            var dirX = origin.Right < 0.7 ? 1 : -1;
+            var dirY = origin.Bottom < 0.7 ? 1 : -1;
+            var deviceTarget = new Point(deviceCenter.X + dirX * 60, deviceCenter.Y + dirY * 45);
+            var delta = page.PointFromScreen(deviceTarget) - page.PointFromScreen(deviceCenter);
+            var expected = new Rect(origin.X + delta.X / page.Width, origin.Y + delta.Y / page.Height, origin.Width, origin.Height);
+            Require(expected.X >= 0 && expected.Y >= 0 && expected.Right <= 1 && expected.Bottom <= 1,
+                $"期望矩形出界：{expected}（基线 {origin}）——方向自适应分支有误");
+            RaiseDown(element);
+            await Settle();
+            Require(Field<object>(view, "panelGesture") is not null, "实位移手势 down 后 panelGesture 丢失");
+            Require(SetCursorPos((int)deviceTarget.X, (int)deviceTarget.Y), "第二次 SetCursorPos 失败");
+            await Settle();
+            RaiseMove(element);
+            await Settle();
+            var gesture = Field<object>(view, "panelGesture");
+            var offset = (Point)gesture!.GetType().GetProperty("Offset")!.GetValue(gesture)!;
+            Require(offset.X != 0 || offset.Y != 0, $"move 后 Offset 仍为 {offset}：moved 回调未执行或设备点未更新");
+            var movedRect = view.PanelRectForTest(0);
+            Require(Math.Abs(movedRect.X - expected.X) < 1e-6 && Math.Abs(movedRect.Y - expected.Y) < 1e-6,
+                $"拖拽期间几何未按设备位移更新（实际 {movedRect.X:F4},{movedRect.Y:F4}，期望 {expected.X:F4},{expected.Y:F4}，offset={offset}）");
+            RaiseUp(element);
+            await Settle();
+            Require(view.CanUndoForTest, "实位移手势必须提交进撤销栈");
+            Require(view.PanelRectForTest(0) == movedRect, "提交后几何不得漂移");
+            Require(!element.IsMouseCaptured, "up 后必须释放鼠标捕获");
+            // 状态还原：撤销本手势的提交，把几何还给服务端值——后续检查
+            // （刷新保草稿等）以 (0.1,0.1,0.5,0.4) 基线构造自己的草稿。
+            Click(Buttons(view, "撤销").First());
+            await Settle();
+            Require(!view.CanUndoForTest && view.PanelRectForTest(0) == origin,
+                $"撤销后未还原基线：canUndo={view.CanUndoForTest} rect={view.PanelRectForTest(0)}");
+            Console.WriteLine($"PASS(段): 面板拖拽合成手势链路（capture→moved(offset={offset:F3})→提交撤销栈）离线可用，零位移提交为 no-op，中心命中探针落在面板子树");
+        }
+        finally
+        {
+            owner.Close();
+            SetCursorPos(cursorBefore.X, cursorBefore.Y);   // 归还光标，不污染同机后续采样
+        }
+    }
+
+    private static void RaiseDown(UIElement element) =>
+        element.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent });
+
+    private static void RaiseMove(UIElement element) =>
+        element.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = UIElement.MouseMoveEvent });
+
+    private static void RaiseUp(UIElement element) =>
+        element.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseUpEvent });
+
+    private static bool InSubtree(DependencyObject? hit, DependencyObject ancestor)
+    {
+        for (var node = hit; node != null; node = System.Windows.Media.VisualTreeHelper.GetParent(node))
+            if (ReferenceEquals(node, ancestor)) return true;
+        return false;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
     }
 
     // ── 8. 刷新保草稿（#341）：脏状态（几何草稿 + 撤销栈 + 对白草稿）下走 RefreshAsync，

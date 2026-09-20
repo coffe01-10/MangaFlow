@@ -848,7 +848,7 @@ public sealed partial class WorkflowView : WorkspaceView
         var message = $"用发布版本 V{revision} 覆盖当前草稿？未保存的草稿修改会丢失。";
         var confirm = RestoreConfirmOverride is { } prompt
             ? await prompt(message)
-            : Host != null && MessageBox.Show(Host, message, "恢复版本", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+            : Host != null && new ConfirmDialog(Host, "恢复版本", message, "恢复", danger: true).ShowDialog() == true;
         if (!confirm) return;
         restoring = true;
         RenderVersionList();
@@ -2446,8 +2446,7 @@ public sealed partial class WorkflowView : WorkspaceView
         // 保留在画布上，重新武装防抖等待下一次保存。
         var discard = SaveFailLeaveOverride is { } prompt
             ? await prompt("当前工作流草稿保存失败。留在本页保留草稿稍后重试，或放弃未保存修改离开。")
-            : MessageBox.Show(Host, "当前工作流草稿保存失败。确定放弃未保存的修改并离开吗？\n（选择“否”可留在本页，草稿保留在画布上等待重试）",
-                "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+            : new ConfirmDialog(Host, "离开确认", "当前工作流草稿保存失败。确定放弃未保存的修改并离开吗？\n（选择“取消”可留在本页，草稿保留在画布上等待重试）", "放弃并离开", danger: true).ShowDialog() == true;
         if (!discard)
         {
             ScheduleSave();
