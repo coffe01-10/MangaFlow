@@ -34,6 +34,29 @@ NUI-6 不能据该轮勾选完成。
 验证矩形状态、分类切换/重复选择、模型互斥选择及 DisplayMemberPath；650/1060 DIP
 资产页预览使用模拟数据，仅作为本次样式检查。
 
+## 2026-09-20 NUI-10 RC1 发布工程轮（分支 `goal/nui10-rc1`）
+
+台账：`output/nui10-rc1/matrix.md`（随栈顶 PR #1003 入库）。本轮实测结论：
+
+- **net10 迁移**（`6418b5f1` + 家族修复 `c5d2d581`）：6 文件纯 TFM/路径替换 +
+  global.json 钉 10.0.401。net10 行为差异一处成灾：HttpClient 把已取消请求的底层
+  故障以原始异常浮出（net8 包成 TaskCanceledException），五视图加载链 12 处补
+  CTS 实例捕获 + 双守卫后 `--render` 56 项全绿。Release 0 error（警告 34→26）。
+- **复基线**（同机同口径对照）：G1 N=20 net8 P50=1058.7ms → net10 P50=1198.7ms
+  （均匀右移 ~130ms，归因运行时冷启）；G4 N=20 20/20 OK（dirty P50 464→480ms、
+  save P50 749.5→797ms）；G5 零漂移（20/20 CleanClose+Exited）。达标线均由 lead 定。
+- **种子/取名双缺陷**（`2073b99a`）：种子 draft_graph legacy 形状经 GET 透传后
+  native 全量 PATCH 必 422（保存链瘫痪）→ canonical v2 + 回归测试；AddNode 读
+  `display_name` 而目录暴露 `label` → 新增节点空名必 422 → label 优先。实机节点
+  拖拽保存链恢复（draft_version 3→4→6 两轮取证）。
+- **安装/升级**（P2-5/P3-2）：1.0.0-rc1 安装器 42.1MB（sha256 落台账）六格 PASS，
+  用户数据三阶段逐字节零漂移；0.9.0→1.0.0-rc1 跨版本升级 PASS（0.9.0 为版本元数据
+  等价替身，台账注记）。-Launch 探测 NOT RUN（实机被人工占用，避免弹窗干扰）。
+- **边界（如实）**：工作流连线拖拽复验、G2 三档/600 档、`--render` 收口终跑被实机
+  人工占用阻塞（合成输入停发；非缺陷判据）；真实签名与应用内检查更新维持 AUTH-REQ；
+  多 DPI 单屏环境 BLOCKED。payload 运行时捆绑建议 AUTH-REQ 登记（建议捆绑用户目录级
+  Desktop Runtime，DOTNET_ROOT 机制已实测）。
+
 ## 2026-09-19 NUI-8 发布收口轮（分支 `goal/nui8-release`）
 
 逐格台账：`output/nui8-release/matrix.md`（本轮起随验收工具入仓；离屏 `render-*/`
