@@ -1,151 +1,210 @@
-﻿ControlType.Window|重建本页版式|(666,268) 588x484
-ControlType.Text|重建本页版式|(705,336) 510x36
-ControlType.Text|重建将删除本页全部格子与气泡，并从已确认剧本与原文区间重新映射；已生成候选会因分镜版本过期。这不是视觉拖拽的替代操作。|(705,382) 510x38
-ControlType.Text|本页格数|(705,438) 510x17
-ControlType.Button|3|(705,470) 60x42
-ControlType.Text|3|(730,482) 10x19
-ControlType.Button|4|(773,470) 60x42
-ControlType.Text|4|(798,482) 9x19
-ControlType.Button|5|(840,470) 60x42
-ControlType.Text|5|(865,482) 10x19
-ControlType.Button|6|(908,470) 60x42
-ControlType.Text|6|(933,482) 9x19
-ControlType.Button|7|(975,470) 60x42
-ControlType.Text|7|(1,000,482) 10x19
-ControlType.Button|8|(1,043,470) 60x42
-ControlType.Text|8|(1,068,482) 9x19
-ControlType.Text|版式|(705,527) 510x18
-ControlType.Button|动态错落|(705,560) 120x42
-ControlType.Text|动态错落|(735,572) 60x19
-ControlType.Button|均衡网格|(833,560) 120x42
-ControlType.Text|均衡网格|(863,572) 60x19
-ControlType.Text|当前第 1 页为 4 格。|(705,622) 510x18
-ControlType.Button|取消|(953,660) 112x52
-ControlType.Text|取消|(993,676) 32x20
-ControlType.Button|确认重建|(1,078,659) 137x52
-ControlType.Text|确认重建|(1,114,675) 65x20
-ControlType.Button|折叠侧栏|(169,47) 60x53
-ControlType.Text|☰|(192,63) 14x21
-ControlType.Button|← 项目|(229,47) 99x53
-ControlType.Text|← 项目|(251,63) 54x21
-ControlType.Text|NUI67 并排对照主项目|(348,58) 985x31
-ControlType.Text|● 项目工作区|(1,353,64) 89x19
-ControlType.Button|在工作流中查看|(1,462,47) 162x53
-ControlType.Text|在工作流中查看|(1,486,63) 114x21
-ControlType.Button|项目设置|(1,639,47) 112x53
-ControlType.Text|项目设置|(1,662,63) 65x21
-ControlType.Text|PROJECT / 01|(169,138) 216x17
-ControlType.Text|NUI67 并排对照主项目|(169,170) 216x33
-ControlType.Text|3 章 · 3 页已规划|(169,213) 216x19
-ControlType.List|项目页面导航|(162,259) 231x588
-ControlType.ListItem|原作与修订，已接通|(163,281) 203x60
-ControlType.Text|01|(338,301) 18x19
-ControlType.Text|原作与修订|(208,301) 120x19
-ControlType.ListItem|参考资产，已接通|(163,347) 203x60
-ControlType.Text|02|(338,367) 18x19
-ControlType.Text|参考资产|(208,367) 120x19
-ControlType.ListItem|漫画剧本，已接通|(163,413) 203x60
-ControlType.Text|03|(338,434) 18x19
-ControlType.Text|漫画剧本|(208,434) 120x19
-ControlType.ListItem|分页与分镜，已接通|(163,479) 203x60
-ControlType.Text|04|(338,500) 18x19
-ControlType.Text|分页与分镜|(208,500) 120x19
-ControlType.ListItem|单页生成，已接通|(163,546) 203x60
-ControlType.Text|05|(338,566) 18x19
-ControlType.Text|单页生成|(208,566) 120x19
-ControlType.ListItem|生成素材库，已接通|(163,612) 203x60
-ControlType.Text|06|(338,632) 18x19
-ControlType.Text|生成素材库|(208,632) 120x19
-ControlType.ListItem|任务中心，已接通|(163,678) 203x60
-ControlType.Text|07|(338,699) 18x19
-ControlType.Text|任务中心|(208,699) 120x19
-ControlType.ListItem|流程编排，已接通|(163,744) 203x60
-ControlType.Text|FL|(340,765) 15x19
-ControlType.Text|流程编排|(208,765) 120x19
-ControlType.ListItem|项目设置，已接通|(163,811) 203x60
-ControlType.Text|ST|(338,831) 17x19
-ControlType.Text|项目设置|(208,831) 120x19
-ControlType.Separator||(162,872) 231x2
-ControlType.Button|搜索与切换 · Ctrl+K|(162,885) 231x50
-ControlType.Text|搜索与切换 · Ctrl+K|(184,899) 151x21
-ControlType.Custom||(442,141) 1,334x810
-ControlType.Text|PAGE CAPACITY / 动态分页|(442,141) 1,005x19
-ControlType.Text|内容有多少，页面就有多少|(442,173) 1,005x41
-ControlType.ComboBox|章节选择|(1,477,141) 256x72
-ControlType.Text|3 页|(1,748,167) 28x20
-ControlType.Pane||(442,252) 105x684
-ControlType.Button||(442,252) 105x95
-ControlType.Text|P.001|(472,263) 45x21
-ControlType.Text|4 格|(472,291) 45x20
-ControlType.Text|已采用|(472,316) 45x20
-ControlType.Button||(442,353) 105x95
-ControlType.Text|P.002|(472,365) 45x21
-ControlType.Text|3 格|(472,392) 45x20
-ControlType.Text|已规划|(472,417) 45x20
-ControlType.Button||(442,454) 105x95
-ControlType.Text|P.003|(472,466) 45x21
-ControlType.Text|2 格|(472,493) 45x20
-ControlType.Text|已规划|(472,518) 45x20
-ControlType.Pane||(562,252) 1,214x684
-ControlType.Text|版式已重建 · 当前 V3|(578,275) 1,055x24
-ControlType.Button|专注模式|(1,663,263) 97x48
-ControlType.Text|专注模式|(1,680,277) 60x20
-ControlType.Text|第 1 页 · 0/180 字 · 0/8 气泡|(562,337) 1,042x21
-ControlType.Text|来自漫画剧本：1 个场景 · 3 个情节拍；修改不会删除已有候选。|(562,364) 1,042x20
-ControlType.Button|从本页重新计算|(1,634,337) 142x50
-ControlType.Text|从本页重新计算|(1,652,352) 105x20
-ControlType.Text|2 页缺少剧本与分镜来源|(580,416) 630x23
-ControlType.Text|这是旧版分页数据，不能直接生图。请先到漫画剧本页删除分页，再重新生成剧本并计算分页。|(580,443) 630x20
-ControlType.Button|前往漫画剧本|(1,228,414) 143x50
-ControlType.Text|前往漫画剧本|(1,252,428) 96x21
-ControlType.Button|－|(574,504) 52x48
-ControlType.Text|－|(592,518) 15x20
-ControlType.Text|25%|(632,518) 52x20
-ControlType.Button|＋|(690,504) 52x48
-ControlType.Text|＋|(708,518) 15x20
-ControlType.Button|适配窗口|(748,504) 97x48
-ControlType.Text|适配窗口|(766,518) 60x20
-ControlType.Button|复位|(851,504) 67x48
-ControlType.Text|复位|(869,518) 30x20
-ControlType.Button|吸附|(924,504) 67x48
-ControlType.Text|吸附|(942,518) 30x20
-ControlType.Button|阅读序|(997,504) 82x48
-ControlType.Text|阅读序|(1,015,518) 45x20
-ControlType.Button|出血框|(1,085,504) 82x48
-ControlType.Text|出血框|(1,103,518) 45x20
-ControlType.Button|安全区|(1,173,504) 82x48
-ControlType.Text|安全区|(1,191,518) 45x20
-ControlType.Button|撤销|(1,261,504) 67x48
-ControlType.Text|撤销|(1,279,518) 30x20
-ControlType.Button|重做|(1,334,504) 67x48
-ControlType.Text|重做|(1,352,518) 30x20
-ControlType.Button|页菜单 ▾|(1,407,504) 100x48
-ControlType.Text|页菜单 ▾|(1,425,518) 63x20
-ControlType.Button|保存本页|(1,513,504) 111x48
-ControlType.Text|保存本页|(1,537,517) 64x21
-ControlType.Button|隐藏导演台|(1,630,504) 112x48
-ControlType.Text|隐藏导演台|(1,648,518) 75x20
-ControlType.Text|Tab 切换格子 · 方向键微调（Shift 加速） · 回车打开属性 · Delete 删除气泡|(574,562) 1,190x20
-ControlType.Pane||(562,606) 742x330
-ControlType.Text|💬|(976,686) 19x20
-ControlType.Text|💬|(976,686) 19x20
-ControlType.Text|💬|(976,686) 19x20
-ControlType.Text|格 01|(978,653) 34x19
-ControlType.Text|格 02|(978,782) 34x19
-ControlType.Text|格 03|(871,782) 34x19
-ControlType.ScrollBar||(1,283,606) 21x330
-ControlType.Button||(∞,∞) -∞x-∞
-ControlType.Button||(1,283,904) 21x32
-ControlType.Thumb||(1,283,606) 21x298
-ControlType.Thumb||(1,305,606) 8x330
-ControlType.Pane||(1,314,606) 462x330
-ControlType.Text|P.001|(1,332,624) 427x19
-ControlType.Text|分镜导演台|(1,332,653) 427x36
-ControlType.Text|点击画布中的格子或气泡查看属性。Tab 切换格子，方向键微调，Delete 删除气泡。|(1,314,707) 462x40
-ControlType.Button|隐藏任务中心快捷栏|(1,634,960) 62x42
-ControlType.Text|▾|(1,658,971) 14x20
-ControlType.Text|打开任务中心|(189,971) 90x20
-ControlType.Text|PAGE_GENERATION · 已完成|(297,972) 184x18
-ControlType.Text|共 2 项 · 0 运行 · 0 等待 · 1 失败 · 1 完成|(1,067,972) 552x18
-ControlType.Text|WPF · 本地工作台|(1,641,1,017) 110x18
-ControlType.Text|已就绪 · Ctrl+K 快速切换项目|(169,1,017) 1,472x18
+﻿window=[MangaFlow · 原生工作台] autoId=[] elements=209
+ControlType.Button|id=[SidebarToggle]|name=[折叠侧栏]|en=True|(25,38) 60x53|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[☰]|en=True|(48,54) 14x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[BackToProjects]|name=[← 项目]|en=True|(85,38) 99x53|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[← 项目]|en=True|(107,54) 54x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[TopTitle]|name=[NUI67 并排对照主项目]|en=True|(204,49) 1,273x31|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[● 项目工作区]|en=True|(1,497,55) 89x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[在工作流中查看]|en=True|(1,606,38) 162x53|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[在工作流中查看]|en=True|(1,630,54) 114x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[项目设置]|en=True|(1,783,38) 112x53|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[项目设置]|en=True|(1,806,54) 65x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[PROJECT / 01]|en=True|(25,129) 216x17|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[NUI67 并排对照主项目]|en=True|(25,161) 216x33|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[3 章 · 3 页已规划]|en=True|(25,204) 216x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.List|id=[ProjectSections]|name=[项目页面导航]|en=True|(18,250) 231x606|SelectionPatternIdentifiers.Pattern ScrollPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern ItemContainerPatternIdentifiers.Pattern
+ControlType.ListItem|id=[]|name=[原作与修订，已接通]|en=True|(19,272) 203x60|SelectionItemPatternIdentifiers.Pattern ScrollItemPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionIndex]|name=[01]|en=True|(194,292) 18x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionTitle]|name=[原作与修订]|en=True|(64,292) 120x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ListItem|id=[]|name=[参考资产，已接通]|en=True|(19,338) 203x60|SelectionItemPatternIdentifiers.Pattern ScrollItemPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionIndex]|name=[02]|en=True|(194,358) 18x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionTitle]|name=[参考资产]|en=True|(64,358) 120x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ListItem|id=[]|name=[漫画剧本，已接通]|en=True|(19,404) 203x60|SelectionItemPatternIdentifiers.Pattern ScrollItemPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionIndex]|name=[03]|en=True|(194,425) 18x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionTitle]|name=[漫画剧本]|en=True|(64,425) 120x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ListItem|id=[]|name=[分页与分镜，已接通]|en=True|(19,470) 203x60|SelectionItemPatternIdentifiers.Pattern ScrollItemPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionIndex]|name=[04]|en=True|(194,491) 18x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionTitle]|name=[分页与分镜]|en=True|(64,491) 120x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ListItem|id=[]|name=[单页生成，已接通]|en=True|(19,537) 203x60|SelectionItemPatternIdentifiers.Pattern ScrollItemPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionIndex]|name=[05]|en=True|(194,557) 18x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionTitle]|name=[单页生成]|en=True|(64,557) 120x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ListItem|id=[]|name=[生成素材库，已接通]|en=True|(19,603) 203x60|SelectionItemPatternIdentifiers.Pattern ScrollItemPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionIndex]|name=[06]|en=True|(194,623) 18x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionTitle]|name=[生成素材库]|en=True|(64,623) 120x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ListItem|id=[]|name=[任务中心，已接通]|en=True|(19,669) 203x60|SelectionItemPatternIdentifiers.Pattern ScrollItemPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionIndex]|name=[07]|en=True|(194,690) 18x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionTitle]|name=[任务中心]|en=True|(64,690) 120x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ListItem|id=[]|name=[流程编排，已接通]|en=True|(19,735) 203x60|SelectionItemPatternIdentifiers.Pattern ScrollItemPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionIndex]|name=[FL]|en=True|(196,756) 15x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionTitle]|name=[流程编排]|en=True|(64,756) 120x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ListItem|id=[]|name=[项目设置，已接通]|en=True|(19,802) 203x60|SelectionItemPatternIdentifiers.Pattern ScrollItemPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionIndex]|name=[ST]|en=True|(194,822) 17x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[SectionTitle]|name=[项目设置]|en=True|(64,822) 120x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Separator|id=[]|name=[]|en=False|(18,881) 231x2|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[搜索与切换 · Ctrl+K]|en=True|(18,894) 231x50|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[搜索与切换 · Ctrl+K]|en=True|(40,908) 151x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Custom|id=[]|name=[]|en=True|(298,132) 1,622x829|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[流程编排]|en=True|(318,157) 60x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ComboBox|id=[]|name=[选择工作流]|en=True|(400,146) 288x42|SelectionPatternIdentifiers.Pattern ExpandCollapsePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern ItemContainerPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[导出]|en=True|(1,495,144) 80x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[导出]|en=True|(1,532,155) 30x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[导入]|en=True|(1,576,144) 80x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[导入]|en=True|(1,613,155) 30x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[保存]|en=True|(1,657,144) 80x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[保存]|en=True|(1,694,155) 30x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[校验]|en=True|(1,738,144) 80x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[校验]|en=True|(1,775,155) 30x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[发布]|en=True|(1,819,144) 80x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[发布]|en=True|(1,856,155) 30x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[草稿版本]|en=True|(313,216) 127x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[V6]|en=True|(313,240) 127x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[已发布版本]|en=True|(471,216) 127x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[尚未发布]|en=True|(471,240) 127x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[保存状态]|en=True|(629,216) 127x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[已保存]|en=True|(629,240) 127x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[校验问题]|en=True|(787,216) 127x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[未校验]|en=True|(787,240) 127x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[运行已发布流程]|en=True|(1,749,212) 155x51|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[运行已发布流程]|en=True|(1,785,228) 105x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[NODE LIBRARY]|en=True|(314,285) 198x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[节点库]|en=True|(314,308) 198x24|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[关闭节点库]|en=True|(542,285) 42x43|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[×]|en=True|(557,297) 11x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Pane|id=[]|name=[]|en=True|(299,343) 296x544|ScrollPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[输入]|en=True|(316,370) 243x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,396) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,407) 210x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[读取项目中的章节原文与不可变修订。]|en=True|(328,428) 210x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,487) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,498) 210x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[读取章节中全部已经通过质量检查的页面。]|en=True|(328,519) 210x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,578) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,589) 210x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[读取角色、服装与漫画风格参考资产。]|en=True|(328,610) 210x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[智能处理]|en=True|(316,682) 243x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,707) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,718) 196x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[识别场景、角色、事实与来源区间。]|en=True|(328,739) 196x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,798) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,809) 210x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[逐片段生成完整漫画剧本，不压缩原文。]|en=True|(328,830) 210x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,889) 245x63|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,900) 210x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[动态分页并生成右至左分镜数据。]|en=True|(328,921) 210x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[控制]|en=True|(316,972) 243x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,998) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,1,008) 212x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[按安全 JSON 路径和预定义比较符选择分支。]|en=True|(328,1,030) 212x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,1,089) 245x63|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,1,099) 140x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[合并两个结构化输入。]|en=True|(328,1,121) 140x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[生成与输出]|en=True|(316,1,172) 243x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,1,198) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,1,209) 210x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[显式确认后只生成当前页的一个候选。]|en=True|(328,1,230) 210x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[控制]|en=True|(316,1,302) 243x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,1,327) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,1,338) 196x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[人工确认当前页采用版本后再继续。]|en=True|(328,1,359) 196x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[智能处理]|en=True|(316,1,430) 243x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,1,456) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,1,467) 210x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[检查说话人归属、角色、服装、道具与连续性；文字由人工校对。]|en=True|(328,1,488) 210x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[生成与输出]|en=True|(316,1,560) 243x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,1,585) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,1,596) 210x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[确认当前页面已经通过质量检查并结束单页生产流程。]|en=True|(328,1,617) 210x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,1,676) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,1,687) 210x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[兼容旧版单页流程；新流程请使用单页成品或整章导出。]|en=True|(328,1,708) 210x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[]|en=True|(314,1,767) 245x83|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[]|en=True|(328,1,778) 209x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[全部页面生产通过后输出整章 PNG、PDF、JSON 与素材清单。]|en=True|(328,1,799) 209x40|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ScrollBar|id=[PART_VerticalScrollBar]|name=[]|en=True|(574,343) 21x544|RangeValuePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[PageUp]|name=[]|en=True|(∞,∞) -∞x-∞|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[PageDown]|name=[]|en=True|(574,529) 21x358|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Thumb|id=[]|name=[]|en=True|(574,343) 21x186|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[INSPECTOR]|en=True|(1,579,285) 258x19|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[属性面板]|en=True|(1,579,308) 258x24|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[关闭属性面板]|en=True|(1,867,285) 42x43|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[×]|en=True|(1,882,297) 11x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Pane|id=[]|name=[]|en=True|(1,564,343) 356x400|ScrollPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[从这里开始]|en=True|(1,579,358) 326x25|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[选择节点查看配置]|en=True|(1,579,393) 326x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[拖动端口建立连线]|en=True|(1,579,423) 326x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[校验草稿并修复问题]|en=True|(1,579,453) 326x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[发布不可变版本]|en=True|(1,579,483) 326x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[选择范围后运行]|en=True|(1,579,513) 326x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Pane|id=[]|name=[]|en=True|(1,564,744) 356x45|ScrollPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[发布版本]|en=True|(1,579,754) 56x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[0]|en=True|(1,635,754) 270x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[运行历史]|en=True|(1,579,803) 326x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Pane|id=[]|name=[]|en=True|(1,564,837) 356x50|ScrollPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[尚未运行已发布版本]|en=True|(1,579,852) 326x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[撤销]|en=False|(608,287) 80x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[撤销]|en=False|(645,298) 30x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[重做]|en=False|(689,287) 80x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[重做]|en=False|(726,298) 30x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[自动布局]|en=True|(770,287) 110x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[自动布局]|en=True|(807,298) 60x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[复制]|en=False|(881,287) 80x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[复制]|en=False|(918,298) 30x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[删除]|en=False|(962,287) 80x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[删除]|en=False|(999,298) 30x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[查看全图]|en=True|(1,043,287) 110x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[查看全图]|en=True|(1,080,298) 60x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[−]|en=True|(611,831) 42x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[−]|en=True|(627,842) 11x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[75%]|en=True|(667,844) 31x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[+]|en=True|(710,831) 42x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[+]|en=True|(726,842) 11x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[100%]|en=True|(753,831) 67x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[100%]|en=True|(767,842) 40x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[Ctrl+滚轮缩放 · 空格/中键拖动画布 · 拖空框选]|en=True|(836,844) 285x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[全屏工作区]|en=True|(1,121,831) 102x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[全屏工作区]|en=True|(1,135,842) 75x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Pane|id=[]|name=[]|en=True|(596,339) 967x482|ScrollPatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[DRAFT]|en=True|(832,482) 26x11|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[SOURCE_INPUT]|en=True|(666,482) 166x11|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[原作输入]|en=True|(666,505) 192x18|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[原作  text]|en=True|(810,535) 44x14|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[DRAFT]|en=True|(1,143,458) 26x10|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[SCRIPT]|en=True|(977,458) 166x10|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[剧本解析]|en=True|(977,480) 192x18|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[原作  text]|en=True|(982,510) 43x15|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[剧本  json]|en=True|(1,121,510) 44x15|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[DRAFT]|en=True|(1,115,492) 27x11|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[agent.parse]|en=True|(950,492) 165x11|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[剧情解析]|en=True|(950,515) 192x18|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[原始文本  text]|en=True|(954,545) 63x14|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[结构化剧情  json]|en=True|(1,064,545) 73x14|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[DRAFT]|en=True|(1,138,510) 26x10|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[agent.adapt]|en=True|(972,510) 166x10|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[漫画改编]|en=True|(972,532) 192x18|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[结构化剧情  json]|en=True|(976,562) 74x14|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[漫画剧本  json]|en=True|(1,096,562) 64x14|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ScrollBar|id=[PART_VerticalScrollBar]|name=[]|en=True|(1,541,339) 21x461|RangeValuePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[PageUp]|name=[]|en=True|(∞,∞) -∞x-∞|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[PageDown]|name=[]|en=True|(1,541,521) 21x279|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Thumb|id=[]|name=[]|en=True|(1,541,339) 21x182|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ScrollBar|id=[PART_HorizontalScrollBar]|name=[]|en=True|(596,800) 946x21|RangeValuePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[PageUp]|name=[]|en=True|(∞,∞) -∞x-∞|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[PageDown]|name=[]|en=True|(1,067,800) 475x21|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Thumb|id=[]|name=[]|en=True|(596,800) 471x21|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[运行范围  ]|en=True|(318,912) 68x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.ComboBox|id=[]|name=[运行范围类型]|en=True|(386,902) 138x40|SelectionPatternIdentifiers.Pattern ExpandCollapsePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern ItemContainerPatternIdentifiers.Pattern
+ControlType.ComboBox|id=[]|name=[运行目标]|en=True|(534,902) 212x40|SelectionPatternIdentifiers.Pattern ExpandCollapsePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern ItemContainerPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[尚未运行已发布版本]|en=True|(761,902) 135x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[运行节点]|en=False|(1,523,899) 110x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[运行节点]|en=False|(1,560,910) 60x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[从这里运行]|en=False|(1,641,899) 125x46|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[从这里运行]|en=False|(1,678,912) 75x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[]|name=[运行工作流]|en=True|(1,775,899) 125x46|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[运行工作流]|en=True|(1,812,912) 75x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Button|id=[DockToggle]|name=[隐藏任务中心快捷栏]|en=True|(1,778,969) 62x42|InvokePatternIdentifiers.Pattern SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[▾]|en=True|(1,802,980) 14x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[打开任务中心]|en=True|(45,980) 90x20|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[PAGE_GENERATION · 已完成]|en=True|(153,981) 184x18|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[共 2 项 · 0 运行 · 0 等待 · 1 失败 · 1 完成]|en=True|(1,067,981) 696x18|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[WPF · 本地工作台]|en=True|(1,785,1,026) 110x18|SynchronizedInputPatternIdentifiers.Pattern
+ControlType.Text|id=[]|name=[已就绪 · Ctrl+K 快速切换项目]|en=True|(25,1,026) 1,760x18|SynchronizedInputPatternIdentifiers.Pattern
