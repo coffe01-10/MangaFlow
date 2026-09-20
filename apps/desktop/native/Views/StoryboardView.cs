@@ -1037,7 +1037,8 @@ public sealed partial class StoryboardView : WorkspaceView
     {
         inspector.Children.Clear();
         if (currentPage == null) return;
-        inspector.Children.Add(InspectorHeading($"P.{currentPage.PageNumber:D3}" + (selected == null ? "" : $" / PANEL {selected.ReadingOrder:D2}"), "分镜导演台", null));
+        inspector.Children.Add(InspectorHeading($"P.{currentPage.PageNumber:D3}" + (selected == null ? "" : $" / PANEL {selected.ReadingOrder:D2}"), "分镜导演台",
+            selected == null ? null : Kit.Act("编辑本格", async (_, _) => { if (selected is { } target) await EditPanel(target); }, "Compact")));
         if (selected == null && selectedBubble == null)
         {
             inspector.Children.Add(Kit.Caption("点击画布中的格子或气泡查看属性。Tab 切换格子，方向键微调，Delete 删除气泡。"));
@@ -1715,6 +1716,12 @@ public sealed partial class StoryboardView : WorkspaceView
                     SelectPanel(panels[index]);
                     e.Handled = true;
                 }
+                break;
+            case Key.Return or Key.Enter:
+                // 画布提示文案承诺「回车打开属性」（检查器按钮是同一能力的鼠标
+                // 入口；dc901b01 曾把按钮丢成 null 使编辑对话框整体不可达）。
+                // 气泡选中时 selected 是其所属格，回车同样打开该格属性。
+                if (selected is { } panelToEdit) { _ = EditPanel(panelToEdit); e.Handled = true; }
                 break;
             case Key.Left or Key.Right or Key.Up or Key.Down:
                 if (selectedBubble != null)
