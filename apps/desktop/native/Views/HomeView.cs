@@ -238,6 +238,10 @@ public sealed class HomeView : WorkspaceView
         buttonFactory.SetValue(Button.MarginProperty, new Thickness(0));
         buttonFactory.SetValue(Button.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch);
         buttonFactory.SetBinding(Button.TagProperty, new System.Windows.Data.Binding());
+        // a11y（NUI-8 G3 发现）：UIA Name 之前 fallback 到 ProjectItem 记录转储，
+        // 屏幕阅读器读出内部文本；显式绑项目名给语义名。Button peer 原生支持
+        // InvokePattern（点开项目），Select 不适用（按钮语义，非列表项语义）。
+        buttonFactory.SetBinding(System.Windows.Automation.AutomationProperties.NameProperty, new System.Windows.Data.Binding("Name"));
         buttonFactory.AddHandler(Button.ClickEvent, new RoutedEventHandler((sender, _) =>
         {
             if (sender is Button { Tag: ProjectItem project })

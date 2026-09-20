@@ -18,6 +18,7 @@ internal static class NativeNui8ParityChecks
     {
         var state = new WorkspaceState { Connected = true };
         state.Projects.Add(new ProjectItem("1", "我最讨厌妹妹了", "3 章 · 11 页 · 1 已采用", 0, 0) { PageCount = 11, ChapterCount = 3, SelectedPages = 1 });
+        state.ChangeDashboardPage(0);   // a11y 断言读卡片容器：DashboardProjects 必须先分页填充
         var hero = new HomeView { DataContext = state };
         Layout(hero, 1320, 1000);
         var accent = (Brush)Application.Current.FindResource("Accent");
@@ -49,6 +50,22 @@ internal static class NativeNui8ParityChecks
         Require(count!.ActualWidth > 20, $"NUI-8 D2: project count laid out empty, width {count.ActualWidth}");
         Require(count.TranslatePoint(new Point(count.ActualWidth, 0), hero).X > 1320 * 0.6,
             "NUI-8 D2: project count must sit on the right edge of the section header");
+
+        // a11y（NUI-8 G3 真机发现）：项目卡的 UIA Name 此前 fallback 成 ProjectItem
+        // 记录转储、屏幕阅读器读出内部文本；现在必须是项目名，且 Button peer 原生
+        // 暴露 InvokePattern（UIA 可点开项目）。Select 不适用——卡片是按钮语义。
+        var card = NativeParityChecks.Descendants(hero).OfType<Button>().FirstOrDefault(b => b.Tag is ProjectItem);
+        Require(card != null, "NUI-8 a11y: project card button missing from dashboard");
+        Require(System.Windows.Automation.AutomationProperties.GetName(card!) == "我最讨厌妹妹了",
+            "NUI-8 a11y: project card UIA Name must be the project name, not the ProjectItem record dump");
+        var cardPeer = System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(card!);
+        Require(cardPeer != null
+            && cardPeer.GetPattern(System.Windows.Automation.Peers.PatternInterface.Invoke) != null,
+            "NUI-8 a11y: project card must expose UIA InvokePattern");
+        Require(cardPeer!.GetName() == "我最讨厌妹妹了",
+            "NUI-8 a11y: automation peer name must surface the project name");
+        Require(cardPeer!.GetName() == "我最讨厌妹妹了",
+            "NUI-8 a11y: automation peer name must surface the project name");
 
         // D3：侧栏副标与项目卡副标是两条口径，卡片仍按 web 的「N 页 · N 已采用」。
         Require(state.Projects[0].SidebarSummary == "3 章 · 11 页已规划", "sidebar summary must match web '章 / 页已规划'");
