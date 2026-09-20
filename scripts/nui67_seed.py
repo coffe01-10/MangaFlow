@@ -336,6 +336,10 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
         ]
         pages: list[MangaPage] = []
         for number, panel_count, sb_version, status in page_specs:
+            # 第 1 页带剧本追溯（ranges + beat_ids，形状镜像 content_workflow
+            # 生成路径 :1225-1259），重建版式 409 守卫放行、成功支线可达；
+            # 第 2/3 页保持无追溯，409 路径仍可回归（NUI-10 P4-3）。
+            traced = number == 1
             page = MangaPage(
                 chapter_id=chapter1.id,
                 page_number=number,
@@ -345,7 +349,25 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
                 resolution=Resolution.DRAFT_1K,
                 status=status,
                 scene_ids=[scene.id],
-                source_coverage={"complete": True},
+                beat_ids=[beat.id for beat in beats] if traced else [],
+                source_coverage={
+                    "complete": True,
+                    **(
+                        {
+                            "ranges": [
+                                {
+                                    "segment_id": segment.id,
+                                    "start_offset": segment.start_offset,
+                                    "end_offset": segment.end_offset,
+                                    "text": segment.text,
+                                }
+                                for segment in segments1
+                            ],
+                        }
+                        if traced
+                        else {}
+                    ),
+                },
                 storyboard_version=sb_version,
             )
             session.add(page)
