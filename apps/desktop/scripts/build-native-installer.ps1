@@ -6,7 +6,7 @@
     这样安装后无需设 MANGAFLOW_NATIVE_REPO 也能定位后端。
 #>
 param(
-    [string]$Version = "1.0.0-rc1",
+    [string]$Version = "1.0.0-rc2",
     [string]$Staging = "",
     [string]$OutDir = "",
     [ValidateSet("zlib", "lzma", "bzip2")][string]$Compressor = "zlib",

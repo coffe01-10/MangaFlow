@@ -12,7 +12,7 @@
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Installer,
-    [string]$Version = "1.0.0-rc1",
+    [string]$Version = "1.0.0-rc2",
     [string]$Root = "",
     [switch]$Launch
 )
