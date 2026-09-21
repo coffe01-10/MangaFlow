@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.0-rc2 — 2026-09-21（Release Candidate）
+
+原生流程编排体验更新：画布获得真正的窗口全屏与专注模式，辅助信息集中到统一入口，并补齐横向滚动、主题和文字可读性。Windows x64 安装器已发布到 [GitHub Releases](https://github.com/coffe01-10/MangaFlow/releases/tag/v1.0.0-rc2)。
+
+### Changed
+
+- 新增 `F11` 窗口全屏和 `Ctrl+Shift+Enter` 专注模式；`Esc` 按“取消连线 → 退出全屏 → 退出专注”的顺序恢复状态。
+- 顶部“视图”菜单统一控制节点库、属性面板、版本与保存状态、运行面板和小地图；选择节点时自动打开属性面板。
+- 支持 `Shift+滚轮` 横向移动、普通滚轮纵向移动、`Ctrl+滚轮` 缩放，并修正缩放和节点位置变化后的滚动范围。
+- 流程画布对齐桌面端纸色、墨色与朱红主题，默认缩放改为 100%，增大节点标题和端口文字；窄窗口优化工具栏换行与面板抽屉。
+- 统一项目内“流程编排”入口和运行按钮，减少重复导航与相互竞争的操作入口。
+
+### Verified
+
+- 原生 Release 工作流和侧栏回归通过，覆盖 650/940/1100/1440 DIP、全屏恢复、专注模式、面板恢复、滚轮与缩放、保存、连线、运行和版本切换。
+- `npm run check` 通过：Python 1664 passed / 47 skipped，Vitest 615 passed，ESLint、Ruff、脚本类型检查和 Next.js 生产构建通过。
+- `MangaFlow-Native-1.0.0-rc2-x64.exe` 完成全新安装、覆盖升级、40 秒启动探测、sidecar 健康握手、停止和卸载验收；安装器 SHA-256 为 `7B260A79AAAA2AECC4D2E7FAD6844A1CE74A31C7DAF22948DF35E92D60D9E16E`。
+
+### Known boundaries
+
+- 安装器尚未进行 Authenticode 代码签名；Release 附带 SHA-256 校验文件。
+- 多显示器/高 DPI、真实 Provider/Worker 付费链路和长时间交互式工作流性能仍未作为本轮验收运行。
+
 ## 1.0.0-rc1 — 2026-09-20（Release Candidate）
 
 桌面壳换代发布候选：Windows 原生 WPF 客户端（MangaFlow.Native）取代 Tauri 壳成为唯一桌面形态，配套嵌入式 sidecar 后端与 NSIS 安装器；工具链迁移 .NET 10。

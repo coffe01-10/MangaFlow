@@ -18,10 +18,10 @@ MangaFlow AI is a private, single-user AI manga workbench for novelists and mang
 
 The workbench UI is primarily in Chinese. This repository provides English and Simplified Chinese READMEs, not a fully localized application.
 
-[How it works](#how-it-works) · [Quick start](#quick-start) · [Development and checks](#development-and-checks) · [Documentation](#documentation)
+[How it works](#how-it-works) · [Windows release](#windows-desktop-release) · [Quick start](#quick-start) · [Development and checks](#development-and-checks) · [Documentation](#documentation)
 
 > [!IMPORTANT]
-> Reliability work is ongoing. The main workflow is implemented, but confirmed issues remain in cancellation and job scheduling, workflow saving, and inspection completeness. Do not treat this as a production-stable release. See the [main-branch roadmap](docs/roadmap.md) for impact and priorities.
+> The current Windows build is the `v1.0.0-rc2` release candidate. The main workflow is implemented, but the installer is not code-signed and several real-provider, multi-display/DPI, and long-session acceptance cases remain open. Do not treat it as a production-stable release. See the [main-branch roadmap](docs/roadmap.md) for impact and priorities.
 
 <picture>
   <source media="(max-width: 600px)" srcset="assets/readme/overview-mobile-en.png">
@@ -49,9 +49,25 @@ This is a workflow diagram, not a product screenshot. MangaFlow is not an unatte
 | Plan pages from text | Scripts, Scenes / Beats, dynamic pagination, and storyboards; distinguish on-screen, off-screen, and mentioned characters |
 | Explore versions of the same page | Explicit model selection or routing among verified models; candidate batches, favorites, and one selected version |
 | Review and package the result | Human text proofreading, multimodal visual checks and repair; PNG, PDF, project JSON, and asset-manifest exports |
-| Arrange repeatable creative steps | Editable, publishable, runnable DAG workflows; persisted jobs and human confirmation nodes |
+| Arrange repeatable creative steps | Editable, publishable, runnable DAG workflows; fullscreen and focus modes, collapsible panels, canvas navigation, persisted jobs, and human confirmation nodes |
+| Track model usage and cost | Per-dispatch provider/model ledger, input/output/cache tokens, image counts, versioned price estimates, CSV export, and separately reconciled provider bills |
 
 These are implemented entry points, not a guarantee that every failure path has passed acceptance. A successful cancellation response does not yet guarantee that external calls have stopped, and an inspection summary alone does not prove that a page is ready for delivery. See the [roadmap](docs/roadmap.md) for the confirmed gaps.
+
+## Windows desktop release
+
+[Download MangaFlow Desktop `v1.0.0-rc2` for Windows x64](https://github.com/coffe01-10/MangaFlow/releases/tag/v1.0.0-rc2). The release contains the per-user NSIS installer and a SHA-256 checksum file. It targets the .NET 10 Windows Desktop Runtime and uses the native WPF client; no WebView is required.
+
+The installer supports clean installation and in-place upgrades. Uninstalling the application leaves project data under `%LOCALAPPDATA%\MangaFlow\Native` in place. This candidate is not Authenticode-signed, so Windows may show an unknown-publisher warning; compare the installer against the checksum published with the release before running it.
+
+The workflow editor in `rc2` uses the shared paper, ink, and vermilion theme and starts at 100% zoom. Its presentation controls are available from one **View** menu:
+
+- `F11` toggles window fullscreen; `Esc` restores the previous window state.
+- `Ctrl+Shift+Enter` toggles focus mode and restores the previous panel layout when leaving it.
+- `Shift+wheel` scrolls horizontally, `Ctrl+wheel` zooms, and the normal wheel scrolls vertically.
+- Space + drag or middle-button drag pans the canvas; **Fit workflow** frames the complete graph.
+
+The source-development instructions below remain available for contributors and for running the Web workbench.
 
 ## Quick start
 
@@ -130,6 +146,12 @@ The default setup stores metadata in local SQLite and assets in local directorie
 The repository targets local, single-user use. Default listeners are loopback-only; do not publish the development server to other network interfaces or the public internet. Never commit `.env`, service-account JSON, keys, local databases, or generated media.
 
 Optional Docker Compose services for PostgreSQL and Redis bind to `127.0.0.1` only. Compose Redis uses AUTH (local default `mangaflow-dev`, not a production secret). Set `REDIS_URL=redis://:mangaflow-dev@127.0.0.1:6379/0` when using those containers. Change an existing database password with `ALTER USER`; do not delete user data volumes.
+
+### Usage and cost ledger
+
+The usage window does not count tokens from rendered text or intercept a live token stream. Before each paid provider dispatch, the backend commits a pending audit row. After the call finishes, the adapter records the provider's final `usage` or `usage_metadata` payload; CLI integrations read the final result event. OpenAI-compatible, Gemini/Vertex, cached-input, reasoning-token, and image-count fields are normalized into one ledger while the original payload is retained for diagnosis.
+
+Missing provider usage remains **unknown**, never zero. A failed request can still carry usage when the provider accepted and billed it, and each real retry or key switch receives its own attempt row. The dashboard applies the price version active at dispatch time to produce an estimate; it presents imported provider-bill reconciliation separately and never adds different currencies together. The desktop page loads a database snapshot on entry, filter changes, and refresh, so final token totals normally appear after the call is finalized rather than changing token by token. See the [usage ledger contract](docs/v02-usage-ledger-contract.md) for the data model and boundaries.
 
 ## Development and checks
 

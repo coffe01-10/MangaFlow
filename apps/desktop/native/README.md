@@ -1,8 +1,9 @@
 # MangaFlow 原生 Windows 客户端
 
-WPF / C# 界面，复用 FastAPI API 与 Rust shell-core。当前为迁移中的原生版本，
+WPF / C# 界面，复用 FastAPI API 与 Rust shell-core。当前发布候选为
+[`v1.0.0-rc2`](https://github.com/coffe01-10/MangaFlow/releases/tag/v1.0.0-rc2)，
 不依赖 WebView、Node 或网页渲染。设计及未迁移边界见
-[原生客户端 ADR](../../../../docs/adr/native-windows-client.md)。
+[原生客户端 ADR](../../../docs/adr/native-windows-client.md)。
 
 ## 启动
 
@@ -12,14 +13,14 @@ WPF / C# 界面，复用 FastAPI API 与 Rust shell-core。当前为迁移中的
 powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
 ```
 
-需要 .NET 8 SDK、Rust，以及现有 `.venv-desktop` Python 环境。默认数据目录为
+需要 .NET 10 SDK、Rust，以及现有 `.venv-desktop` Python 环境。默认数据目录为
 `%LOCALAPPDATA%/MangaFlow/Native`，不会自动搬迁旧客户端数据。
 
 发布产物用 `apps/desktop/scripts/build-native-installer.ps1 -Version <x.y.z>` 打
-NSIS 安装器（框架依赖 .NET 8 桌面运行时），静默装/覆盖升级/静默卸载验收见
+NSIS 安装器（框架依赖 .NET 10 桌面运行时），静默装/覆盖升级/静默卸载验收见
 `apps/desktop/scripts/verify-native-installer.ps1`；实测结论与边界记在
-`docs/native-ui-migration.md` 的 NUI-8 收口轮一节。.NET 8 LTS 支持到 2026-11-12，
-升大版本须另开独立 PR 并复跑性能与安装验收。
+`docs/native-ui-migration.md` 的 NUI-10 与 rc2 收口记录。发布版安装器尚未进行
+Authenticode 代码签名，校验值随 GitHub Release 一并提供。
 
 ## 与网页一致的界面
 
@@ -40,8 +41,8 @@ NSIS 安装器（框架依赖 .NET 8 桌面运行时），静默装/覆盖升级
   标题和操作区空间不足时换行，抽屉覆盖整个正文区域并恢复键盘焦点。
 - 新建抽屉的模式卡、等宽矩形清晰度选项、92 DIP 标题栏按网页布局重绘。
 
-完整页面清单与阶段计划见 [原生 UI 迁移清单](../../../../docs/native-ui-migration.md)。
-执行顺序与完成状态同步维护于 [roadmap](../../../../docs/roadmap.md) 的 WPF 原生客户端
+完整页面清单与阶段计划见 [原生 UI 迁移清单](../../../docs/native-ui-migration.md)。
+执行顺序与完成状态同步维护于 [roadmap](../../../docs/roadmap.md) 的 WPF 原生客户端
 队列；入口可导航不表示业务功能已迁移。
 
 界面使用 WPF 原生控件。现有实现覆盖供应商、资产、剧本、分镜、生成与导演、素材库、
