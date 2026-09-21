@@ -1,0 +1,196 @@
+﻿ControlType.Button|折叠侧栏|(34,47) 60x53
+ControlType.Text|☰|(57,63) 14x21
+ControlType.Button|← 项目|(94,47) 99x53
+ControlType.Text|← 项目|(116,63) 54x21
+ControlType.Text|NUI67 并排对照主项目|(213,58) 985x31
+ControlType.Text|● 项目工作区|(1218,64) 89x19
+ControlType.Button|在工作流中查看|(1327,47) 162x53
+ControlType.Text|在工作流中查看|(1351,63) 114x21
+ControlType.Button|项目设置|(1504,47) 112x53
+ControlType.Text|项目设置|(1527,63) 65x21
+ControlType.Text|PROJECT / 01|(34,138) 216x17
+ControlType.Text|NUI67 并排对照主项目|(34,170) 216x33
+ControlType.Text|3 章 · 3 页已规划|(34,213) 216x19
+ControlType.List|项目页面导航|(27,259) 231x588
+ControlType.ListItem|原作与修订，已接通|(28,281) 203x60
+ControlType.Text|01|(203,301) 18x19
+ControlType.Text|原作与修订|(73,301) 120x19
+ControlType.ListItem|参考资产，已接通|(28,347) 203x60
+ControlType.Text|02|(203,367) 18x19
+ControlType.Text|参考资产|(73,367) 120x19
+ControlType.ListItem|漫画剧本，已接通|(28,413) 203x60
+ControlType.Text|03|(203,434) 18x19
+ControlType.Text|漫画剧本|(73,434) 120x19
+ControlType.ListItem|分页与分镜，已接通|(28,479) 203x60
+ControlType.Text|04|(203,500) 18x19
+ControlType.Text|分页与分镜|(73,500) 120x19
+ControlType.ListItem|单页生成，已接通|(28,546) 203x60
+ControlType.Text|05|(203,566) 18x19
+ControlType.Text|单页生成|(73,566) 120x19
+ControlType.ListItem|生成素材库，已接通|(28,612) 203x60
+ControlType.Text|06|(203,632) 18x19
+ControlType.Text|生成素材库|(73,632) 120x19
+ControlType.ListItem|任务中心，已接通|(28,678) 203x60
+ControlType.Text|07|(203,699) 18x19
+ControlType.Text|任务中心|(73,699) 120x19
+ControlType.ListItem|流程编排，已接通|(28,744) 203x60
+ControlType.Text|FL|(205,765) 15x19
+ControlType.Text|流程编排|(73,765) 120x19
+ControlType.ListItem|项目设置，已接通|(28,811) 203x60
+ControlType.Text|ST|(203,831) 17x19
+ControlType.Text|项目设置|(73,831) 120x19
+ControlType.Separator||(27,872) 231x2
+ControlType.Button|搜索与切换 · Ctrl+K|(27,885) 231x50
+ControlType.Text|搜索与切换 · Ctrl+K|(49,899) 151x21
+ControlType.Custom||(307,141) 1334x810
+ControlType.Text|流程编排|(327,166) 60x20
+ControlType.ComboBox|选择工作流|(409,155) 288x42
+ControlType.Button|导出|(1216,153) 80x42
+ControlType.Text|导出|(1253,164) 30x20
+ControlType.Button|导入|(1297,153) 80x42
+ControlType.Text|导入|(1334,164) 30x20
+ControlType.Button|保存|(1378,153) 80x42
+ControlType.Text|保存|(1415,164) 30x20
+ControlType.Button|校验|(1459,153) 80x42
+ControlType.Text|校验|(1496,164) 30x20
+ControlType.Button|发布|(1540,153) 80x42
+ControlType.Text|发布|(1577,164) 30x20
+ControlType.Text|草稿版本|(322,225) 127x20
+ControlType.Text|V1|(322,249) 127x21
+ControlType.Text|已发布版本|(480,225) 127x20
+ControlType.Text|尚未发布|(480,249) 127x21
+ControlType.Text|保存状态|(638,225) 127x20
+ControlType.Text|已保存|(638,249) 127x21
+ControlType.Text|校验问题|(796,225) 127x20
+ControlType.Text|未校验|(796,249) 127x21
+ControlType.Button|运行已发布流程|(1470,221) 155x51
+ControlType.Text|运行已发布流程|(1507,237) 105x20
+ControlType.Text|NODE LIBRARY|(323,294) 198x19
+ControlType.Text|节点库|(323,317) 198x24
+ControlType.Button|关闭节点库|(551,294) 42x43
+ControlType.Text|×|(566,306) 11x20
+ControlType.Pane||(308,352) 296x525
+ControlType.Text|输入|(325,379) 243x20
+ControlType.Button||(323,405) 245x83
+ControlType.Text||(337,416) 210x21
+ControlType.Text|读取项目中的章节原文与不可变修订。|(337,437) 210x40
+ControlType.Button||(323,496) 245x83
+ControlType.Text||(337,507) 210x21
+ControlType.Text|读取章节中全部已经通过质量检查的页面。|(337,528) 210x40
+ControlType.Button||(323,587) 245x83
+ControlType.Text||(337,598) 210x21
+ControlType.Text|读取角色、服装与漫画风格参考资产。|(337,619) 210x40
+ControlType.Text|智能处理|(325,691) 243x20
+ControlType.Button||(323,716) 245x83
+ControlType.Text||(337,727) 196x21
+ControlType.Text|识别场景、角色、事实与来源区间。|(337,748) 196x40
+ControlType.Button||(323,807) 245x83
+ControlType.Text||(337,818) 210x21
+ControlType.Text|逐片段生成完整漫画剧本，不压缩原文。|(337,839) 210x40
+ControlType.Button||(323,898) 245x63
+ControlType.Text||(337,909) 210x21
+ControlType.Text|动态分页并生成右至左分镜数据。|(337,930) 210x20
+ControlType.Text|控制|(325,981) 243x20
+ControlType.Button||(323,1007) 245x83
+ControlType.Text||(337,1017) 212x21
+ControlType.Text|按安全 JSON 路径和预定义比较符选择分支。|(337,1039) 212x40
+ControlType.Button||(323,1098) 245x63
+ControlType.Text||(337,1108) 140x21
+ControlType.Text|合并两个结构化输入。|(337,1130) 140x20
+ControlType.Text|生成与输出|(325,1181) 243x20
+ControlType.Button||(323,1207) 245x83
+ControlType.Text||(337,1218) 210x21
+ControlType.Text|显式确认后只生成当前页的一个候选。|(337,1239) 210x40
+ControlType.Text|控制|(325,1311) 243x20
+ControlType.Button||(323,1336) 245x83
+ControlType.Text||(337,1347) 196x21
+ControlType.Text|人工确认当前页采用版本后再继续。|(337,1368) 196x40
+ControlType.Text|智能处理|(325,1439) 243x20
+ControlType.Button||(323,1465) 245x83
+ControlType.Text||(337,1476) 210x21
+ControlType.Text|检查说话人归属、角色、服装、道具与连续性；文字由人工校对。|(337,1497) 210x40
+ControlType.Text|生成与输出|(325,1569) 243x20
+ControlType.Button||(323,1594) 245x83
+ControlType.Text||(337,1605) 210x21
+ControlType.Text|确认当前页面已经通过质量检查并结束单页生产流程。|(337,1626) 210x40
+ControlType.Button||(323,1685) 245x83
+ControlType.Text||(337,1696) 210x21
+ControlType.Text|兼容旧版单页流程；新流程请使用单页成品或整章导出。|(337,1717) 210x40
+ControlType.Button||(323,1776) 245x83
+ControlType.Text||(337,1787) 209x21
+ControlType.Text|全部页面生产通过后输出整章 PNG、PDF、JSON 与素材清单。|(337,1808) 209x40
+ControlType.ScrollBar||(583,352) 21x525
+ControlType.Button||(Infinity,Infinity) -Infinityx-Infinity
+ControlType.Button||(583,525) 21x352
+ControlType.Thumb||(583,352) 21x173
+ControlType.Text|INSPECTOR|(1300,294) 258x19
+ControlType.Text|属性面板|(1300,317) 258x24
+ControlType.Button|关闭属性面板|(1588,294) 42x43
+ControlType.Text|×|(1603,306) 11x20
+ControlType.Pane||(1285,352) 356x381
+ControlType.Text|从这里开始|(1300,367) 326x25
+ControlType.Text|选择节点查看配置|(1300,402) 326x20
+ControlType.Text|拖动端口建立连线|(1300,432) 326x20
+ControlType.Text|校验草稿并修复问题|(1300,462) 326x20
+ControlType.Text|发布不可变版本|(1300,492) 326x20
+ControlType.Text|选择范围后运行|(1300,522) 326x20
+ControlType.Pane||(1285,734) 356x45
+ControlType.Text|发布版本|(1300,744) 56x20
+ControlType.Text|0|(1356,744) 270x20
+ControlType.Text|运行历史|(1300,793) 326x21
+ControlType.Pane||(1285,827) 356x50
+ControlType.Text|尚未运行已发布版本|(1300,842) 326x20
+ControlType.Button|撤销|(617,296) 80x42
+ControlType.Text|撤销|(654,307) 30x20
+ControlType.Button|重做|(698,296) 80x42
+ControlType.Text|重做|(735,307) 30x20
+ControlType.Button|自动布局|(779,296) 110x42
+ControlType.Text|自动布局|(816,307) 60x20
+ControlType.Button|复制|(890,296) 80x42
+ControlType.Text|复制|(927,307) 30x20
+ControlType.Button|删除|(971,296) 80x42
+ControlType.Text|删除|(1008,307) 30x20
+ControlType.Button|查看全图|(1052,296) 110x42
+ControlType.Text|查看全图|(1089,307) 60x20
+ControlType.Button|−|(620,821) 42x42
+ControlType.Text|−|(636,832) 11x20
+ControlType.Text|75%|(676,834) 31x20
+ControlType.Button|+|(719,821) 42x42
+ControlType.Text|+|(735,832) 11x20
+ControlType.Button|100%|(762,821) 67x42
+ControlType.Text|100%|(776,832) 40x20
+ControlType.Text|Ctrl+滚轮缩放 · 空格/中键拖动画布 · 拖空框选|(845,834) 285x20
+ControlType.Button|全屏工作区|(1130,821) 102x42
+ControlType.Text|全屏工作区|(1144,832) 75x20
+ControlType.Pane||(605,348) 679x463
+ControlType.Text|DRAFT|(854,430) 27x11
+ControlType.Text|SOURCE_INPUT|(689,430) 165x11
+ControlType.Text||(689,453) 192x18
+ControlType.Text|DRAFT|(1079,430) 27x11
+ControlType.Text|SCRIPT|(914,430) 165x11
+ControlType.Text||(914,453) 192x18
+ControlType.ScrollBar||(1263,348) 21x442
+ControlType.Button||(Infinity,Infinity) -Infinityx-Infinity
+ControlType.Button||(1263,515) 21x275
+ControlType.Thumb||(1263,348) 21x167
+ControlType.ScrollBar||(605,790) 658x21
+ControlType.Button||(Infinity,Infinity) -Infinityx-Infinity
+ControlType.Button||(894,790) 369x21
+ControlType.Thumb||(605,790) 289x21
+ControlType.Text|运行范围  |(327,902) 68x20
+ControlType.ComboBox|运行范围类型|(395,892) 138x40
+ControlType.ComboBox|运行目标|(543,892) 212x40
+ControlType.Text|尚未运行已发布版本|(770,892) 135x20
+ControlType.Button|运行节点|(1244,889) 110x42
+ControlType.Text|运行节点|(1281,899) 60x20
+ControlType.Button|从这里运行|(1362,889) 125x46
+ControlType.Text|从这里运行|(1399,902) 75x20
+ControlType.Button|运行工作流|(1496,889) 125x46
+ControlType.Text|运行工作流|(1533,902) 75x20
+ControlType.Button|隐藏任务中心快捷栏|(1499,960) 62x42
+ControlType.Text|▾|(1523,971) 14x20
+ControlType.Text|打开任务中心|(54,971) 90x20
+ControlType.Text|PAGE_GENERATION · 已完成|(162,972) 184x18
+ControlType.Text|共 2 项 · 0 运行 · 0 等待 · 1 失败 · 1 完成|(932,972) 552x18
+ControlType.Text|WPF · 本地工作台|(1506,1017) 110x18
+ControlType.Text|已就绪 · Ctrl+K 快速切换项目|(34,1017) 1472x18

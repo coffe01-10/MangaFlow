@@ -34,6 +34,55 @@ NUI-6 不能据该轮勾选完成。
 验证矩形状态、分类切换/重复选择、模型互斥选择及 DisplayMemberPath；650/1060 DIP
 资产页预览使用模拟数据，仅作为本次样式检查。
 
+## 2026-09-20 NUI-10 RC1 发布工程轮（分支 `goal/nui10-rc1`）
+
+台账：`output/nui10-rc1/matrix.md`（随栈顶 PR #1003 入库）。变更按主题拆 5 个 PR
+（#999 net10 迁移 / #1000 工具与种子接线 / #1001 种子与取名缺陷修复 / #1002 版本统一 /
+#1003 台账与证据）链式合并入 master，base 逐级 retarget、merge commit，2026-09-21 收口。
+本轮实测结论：
+
+- **net10 迁移**（`6418b5f1` + 家族修复 `c5d2d581`）：6 文件纯 TFM/路径替换 +
+  global.json 钉 10.0.401。net10 行为差异一处成灾：HttpClient 把已取消请求的底层
+  故障以原始异常浮出（net8 包成 TaskCanceledException），五视图加载链 12 处补
+  CTS 实例捕获 + 双守卫后 `--render` 56 项全绿。Release 0 error（警告 34→26）。
+- **复基线**（同机同口径对照）：G1 N=20 net8 P50=1058.7ms → net10 P50=1198.7ms
+  （均匀右移 ~130ms，归因运行时冷启）；G4 N=20 20/20 OK（dirty P50 464→480ms、
+  save P50 749.5→797ms）；G5 零漂移（20/20 CleanClose+Exited）。达标线均由 lead 定。
+- **种子/取名双缺陷**（`2073b99a`）：种子 draft_graph legacy 形状经 GET 透传后
+  native 全量 PATCH 必 422（保存链瘫痪）→ canonical v2 + 回归测试；AddNode 读
+  `display_name` 而目录暴露 `label` → 新增节点空名必 422 → label 优先。实机节点
+  拖拽保存链恢复（draft_version 3→4→6 两轮取证）。
+- **安装/升级**（P2-5/P3-2）：1.0.0-rc1 安装器 42.1MB（sha256 落台账）六格 PASS，
+  用户数据三阶段逐字节零漂移；0.9.0→1.0.0-rc1 跨版本升级 PASS（0.9.0 为版本元数据
+  等价替身，台账注记）。-Launch 探测 NOT RUN（实机被人工占用，避免弹窗干扰）。
+- **G2 长列表内存**（P2-4b/P4-5，同口径 CSV 中位数对照 net8）：100→WS P50 272.8MB
+  （net8 258.1）、300→277.4（258.0）、500→270.6（277.9，-1.1%）、600（NUI-9 遗留档
+  补测）→269.1 且 growth -4.0MB；四档 Gen2 全零、realized 节点平台与 net8 一致
+  （虚拟化行为不变）、无爆炸。±7.5% 内方向不一的 P50 差异按方差带登记，不触发
+  虚拟化改造，达标线由 lead 定。
+- **工作流连线拖拽复验 PASS**（P4-3b，net10 实机）：n1 输出端口 → agent.parse 输入
+  端口合成拖拽，draft_version 6→7 + 新边落库；前轮「合成点击失效」系测试脚本
+  坐标系误读（截图像素=物理像素），非应用缺陷。
+- **`--render` 收口终跑 PASS**（P5-4，安静窗）：exit 0、`Native client checks passed:
+  56; WPF navigation and visual checks passed`，对照基线 56 项零漂移；首轮失败于零
+  位移手势断言，取证为实机物理鼠标移动干扰离屏检查（非应用缺陷，两轮互证）。
+- **OLE 拖放工具与拖放上传 PASS**（P4-1/P4-3a，2026-09-21 安静窗实机）：三代工具
+  `scripts/nui10_ole_drag_drop/` 入库（STA 裸 `DoDragDrop` P/Invoke + 独立 SendInput
+  注入线程 + ESC watchdog + 物理像素坐标，README 配使用说明与失败机理）。inject
+  通道驱动 Explorer 真实 DoDragDrop/CF_HDROP 三类实证：Explorer→Explorer 对照移动、
+  **参考图拖放上传**（参考资产页上传区 AllowDrop Drop→UploadAsync：uploads PNG+
+  缩略图与注入 UP 同秒落盘，assets `CHARACTER_REFERENCE` + character_references
+  绑定行次秒落库，UI「1 FILES」）、分镜画布面板拖拽自验（撤销激活、保存本页后
+  panels.bounds/version 持久化）。前两代负面结论根因定性：OLE 拖拽循环同步键态
+  盲区 + 进程 DPI 非感知坐标虚拟化（详见工具 README）。
+- **M9 重建成功支线 / M6 LocalEditWindow 入口实机 PASS**（P4-3/P4-6，nui10-live2）：
+  种子补齐带剧本追溯（ranges/beat/scene）页面数据后「重建本页版式」成功支线通过
+  （角标 4→3、版式版本递进、409 守卫仅出现在未追溯页，设计内）；候选卡「局部修改」
+  打开 LocalEditWindow（8 工具齐、干净关闭），付费预览未触碰（AUTH-REQ 维持）。
+  真实签名与应用内检查更新维持 AUTH-REQ；多 DPI 单屏环境 BLOCKED。payload 运行时
+  捆绑建议 AUTH-REQ 登记（建议捆绑用户目录级 Desktop Runtime，DOTNET_ROOT 机制已
+  实测）。
+
 ## 2026-09-19 NUI-8 发布收口轮（分支 `goal/nui8-release`）
 
 逐格台账：`output/nui8-release/matrix.md`（本轮起随验收工具入仓；离屏 `render-*/`

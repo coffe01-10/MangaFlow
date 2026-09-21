@@ -1,0 +1,6 @@
+23:31:44.085 DIAG: mode=filedrop from=(548, 483) to=(668, 363) steps=30 screen=1536x864
+23:31:44.091 DIAG: OleInitialize hr=0x00000000
+23:31:44.685 DIAG: DOWN at (548, 483)
+23:31:46.298 DIAG: UP at (668, 363)
+23:31:49.526 DIAG: watchdog — session still running after UP, tapping ESC
+23:31:51.165 DIAG: watchdog — stuck session, killing process
