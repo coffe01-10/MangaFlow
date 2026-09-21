@@ -78,14 +78,14 @@ internal static class NativeWorkflowRunChecks
         try
         {
             Require(Name(Field<Canvas>(view, "minimap")) == "工作流小地图", "流程画布缺少小地图");
-            Require(Descendants(view).OfType<Button>().Any(button => Equals(button.Content, "全屏工作区")),
-                "流程画布缺少全屏工作区");
-            Require(Descendants(view).OfType<TextBlock>().Any(text => text.Text.Contains("空格/中键拖动画布")),
+            Require(Descendants(view).OfType<Button>().Any(button => Equals(button.Content, "全屏")),
+                "流程画布缺少全屏入口");
+            Require(Descendants(view).OfType<TextBlock>().Any(text => text.Text.Contains("空格/中键 拖动")),
                 "流程画布缺少空格/中键手势说明");
-            typeof(WorkflowView).GetMethod("ToggleStudioFullscreen", All)!.Invoke(view, null);
+            typeof(WorkflowView).GetMethod("ToggleFocusMode", All)!.Invoke(view, null);
             Require(!Field<bool>(view, "libraryOpen") && !Field<bool>(view, "inspectorOpen"),
-                "全屏工作区应收起节点库和属性面板");
-            typeof(WorkflowView).GetMethod("ToggleStudioFullscreen", All)!.Invoke(view, null);
+                "专注模式应收起节点库和属性面板");
+            typeof(WorkflowView).GetMethod("ToggleFocusMode", All)!.Invoke(view, null);
             var generator = CreateNode(view, "gen-1", "generator.page");
             var agent = CreateNode(view, "agent-1", "agent.parse");
             var condition = CreateNode(view, "cond-1", "control.condition");

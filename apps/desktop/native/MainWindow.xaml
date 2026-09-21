@@ -15,7 +15,7 @@
   </Grid.RowDefinitions>
 
   <!-- Top bar -->
-  <Border Grid.Row="0" Background="{StaticResource Paper}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="20,0">
+  <Border x:Name="ShellTopbar" Grid.Row="0" Background="{StaticResource Paper}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="20,0">
    <Grid>
     <Grid.ColumnDefinitions>
      <ColumnDefinition Width="*"/>
@@ -44,7 +44,7 @@
     </StackPanel>
     <StackPanel x:Name="WorkspaceActions" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
      <TextBlock Text="● 项目工作区" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,16,0"/>
-     <Button Content="在工作流中查看" Style="{StaticResource Outline}" Click="ShowWorkflow" Margin="0,0,12,0"/>
+     <Button x:Name="WorkflowNav" Content="流程编排" Style="{StaticResource Outline}" Click="ShowWorkflow" Margin="0,0,12,0"/>
      <Button Content="项目设置" Style="{StaticResource InkButton}" Click="ShowProjectSettings"/>
     </StackPanel>
     <StackPanel x:Name="SettingsActions" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
@@ -147,7 +147,8 @@
   </Grid>
 
   <!-- Queue dock (web .queue-dock): ink bar, status dot, counts, latest-job actions -->
-  <Border x:Name="QueueDock" Grid.Row="2" Height="48" Background="{StaticResource Ink}" Padding="20,0,64,0"
+  <Grid x:Name="QueueArea" Grid.Row="2">
+  <Border x:Name="QueueDock" Height="48" Background="{StaticResource Ink}" Padding="20,0,64,0"
     Visibility="{Binding DockShown, Converter={StaticResource BoolVisibility}}" Cursor="Hand" MouseLeftButtonDown="OpenJobs"
     AutomationProperties.Name="打开任务中心">
    <DockPanel>
@@ -198,7 +199,7 @@
     </Grid>
    </DockPanel>
   </Border>
-  <Border Grid.Row="2" Background="Transparent" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,10,8"
+  <Border Background="Transparent" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,10,8"
    Visibility="{Binding DockRestoreShown, Converter={StaticResource BoolVisibility}}">
    <StackPanel Orientation="Horizontal">
     <Button x:Name="DockRestore" Content="▴ 任务" Click="ShowDock" MinWidth="76" MinHeight="38" Padding="0"
@@ -208,7 +209,7 @@
      Visibility="{Binding DockWaiting, Converter={StaticResource BoolVisibility}}" IsHitTestVisible="False"/>
    </StackPanel>
   </Border>
-
+  </Grid>
   <!-- Status bar -->
   <Border Grid.Row="3" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="20,4">
    <DockPanel>

@@ -1,0 +1,304 @@
+
+> mangaflow-ai@0.2.0 check
+> npm run check:neutrality && npm run lint && npm run typecheck:scripts && npm run test && npm run test:web && npm run build
+
+
+> mangaflow-ai@0.2.0 check:neutrality
+> powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-provider-neutrality.ps1
+
+
+> mangaflow-ai@0.2.0 lint
+> npm run lint --workspace @mangaflow/web && .venv\Scripts\python.exe -m ruff check apps/api tests
+
+
+> @mangaflow/web@0.2.0 lint
+> eslint .
+
+All checks passed!
+
+> mangaflow-ai@0.2.0 typecheck:scripts
+> tsc -p tsconfig.scripts.json && tsc -p tsconfig.runners.json
+
+
+> mangaflow-ai@0.2.0 test
+> .venv\Scripts\python.exe -m pytest tests
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.3, pytest-8.4.2, pluggy-1.6.0
+rootdir: D:\��ý��\����������
+configfile: pytest.ini
+plugins: anyio-4.15.1, cov-7.1.0
+collected 1711 items
+
+tests\integration\test_archive_serialization.py sssss                    [  0%]
+tests\integration\test_postgres_acceptance.py ssssssssssssssssss         [  1%]
+tests\integration\test_redis_rq_acceptance.py sssssssssssssss            [  2%]
+tests\integration\test_review_migrations.py ss                           [  2%]
+tests\test_adapter_error_classification.py ...........................   [  3%]
+tests\test_adapter_usage_sweep.py ...................................... [  6%]
+..............                                                           [  6%]
+tests\test_antigravity_cli.py .................                          [  7%]
+tests\test_approval_pause_recovery.py .....                              [  8%]
+tests\test_archive_and_pricing_bounds.py ......                          [  8%]
+tests\test_archive_run_cancel.py ......                                  [  8%]
+tests\test_assemble_web_resources.py ..........                          [  9%]
+tests\test_asset_candidate_favorite.py ...                               [  9%]
+tests\test_asset_dedupe_integrity.py ........                            [ 10%]
+tests\test_asset_dedupe_soft_delete.py .....                             [ 10%]
+tests\test_asset_generate_prompt_bounds.py ...                           [ 10%]
+tests\test_asset_generation_redteam_regressions.py ................      [ 11%]
+tests\test_attempt_finalization_upgrade.py .......                       [ 11%]
+tests\test_backup_restore_drill.py ..................................... [ 14%]
+..........                                                               [ 14%]
+tests\test_balance_failure_scoping.py ..                                 [ 14%]
+tests\test_beat_dedupe_bounds.py ....                                    [ 15%]
+tests\test_build_frontend_static_junction.py .......ss..                 [ 15%]
+tests\test_build_frontend_static_structure.py ..                         [ 15%]
+tests\test_candidate_lineage.py .....                                    [ 16%]
+tests\test_candidate_route_guards.py ......                              [ 16%]
+tests\test_capability_acceptance.py ..........                           [ 17%]
+tests\test_capability_bounds.py .....                                    [ 17%]
+tests\test_character_package_project_liveness.py ...                     [ 17%]
+tests\test_character_packages.py ....................................... [ 19%]
+..                                                                       [ 19%]
+tests\test_character_reference_status.py ......                          [ 20%]
+tests\test_cli_capture_and_checksum_sweep.py ...........                 [ 20%]
+tests\test_cli_executable_path_validation.py ............                [ 21%]
+tests\test_cli_executor.py .............s..ss                            [ 22%]
+tests\test_cli_failure_classification.py ............                    [ 23%]
+tests\test_cli_migration.py ..                                           [ 23%]
+tests\test_cli_post_run_classification.py ........                       [ 23%]
+tests\test_cli_process_windows.py s..                                    [ 24%]
+tests\test_cli_redteam_remediation.py ...........                        [ 24%]
+tests\test_cli_stream_decode.py .....                                    [ 25%]
+tests\test_codex_cli.py ...............                                  [ 25%]
+tests\test_condition_branch_skip.py ......                               [ 26%]
+tests\test_connection_verifier.py ........                               [ 26%]
+tests\test_dashboard_ai_overview.py ..............                       [ 27%]
+tests\test_delete_candidate_guards.py .....                              [ 27%]
+tests\test_deleted_candidate_worker.py .......                           [ 28%]
+tests\test_deleted_chapter_guards.py ..                                  [ 28%]
+tests\test_deleted_chapter_worker.py ...                                 [ 28%]
+tests\test_derived_retry_mutex.py ......                                 [ 28%]
+tests\test_desktop_launcher_contracts.py .....                           [ 29%]
+tests\test_desktop_runner_wiring.py .                                    [ 29%]
+tests\test_desktop_script_pins.py .                                      [ 29%]
+tests\test_detach_first_writer.py ..                                     [ 29%]
+tests\test_director_commands.py ...............................          [ 31%]
+tests\test_domain_rules.py ....                                          [ 31%]
+tests\test_e2e_isolation.py ..............................               [ 33%]
+tests\test_export_names.py ...                                           [ 33%]
+tests\test_export_node_idempotency.py ....                               [ 33%]
+tests\test_fake_channel_cleanup.py ...                                   [ 33%]
+tests\test_first_page_production.py ........                             [ 34%]
+tests\test_full_acceptance.py .                                          [ 34%]
+tests\test_grok_build_cli.py ................                            [ 35%]
+tests\test_hot_path_indexes.py ..                                        [ 35%]
+tests\test_import_text_bounds.py ....                                    [ 35%]
+tests\test_input_validation_hardening.py ............................... [ 37%]
+............                                                             [ 38%]
+tests\test_inspect_and_parse_guards.py ...............................   [ 39%]
+tests\test_inspect_exit_recovery.py ....                                 [ 40%]
+tests\test_inspect_integrity.py ...                                      [ 40%]
+tests\test_inspect_page_drift.py ...                                     [ 40%]
+tests\test_inspection_worker_bounds.py ..                                [ 40%]
+tests\test_integration_harness.py ...................................... [ 42%]
+..............................                                           [ 44%]
+tests\test_job_retry_status_guard.py ......                              [ 45%]
+tests\test_lease_reclaim_fence.py ...........                            [ 45%]
+tests\test_library_pagination.py .......                                 [ 46%]
+tests\test_local_wall_clock.py ........                                  [ 46%]
+tests\test_local_worker.py ............................................. [ 49%]
+                                                                         [ 49%]
+tests\test_migration_parity.py ...                                       [ 49%]
+tests\test_migrations.py .........................                       [ 50%]
+tests\test_model_call_audit.py ..............                            [ 51%]
+tests\test_model_cost_estimates.py .........                             [ 52%]
+tests\test_model_visibility.py ........                                  [ 52%]
+tests\test_multi_image_guard.py ...                                      [ 52%]
+tests\test_multi_provider_platform.py .................................. [ 54%]
+.....                                                                    [ 55%]
+tests\test_mvp_workflow.py ..........................                    [ 56%]
+tests\test_nui67_seed_export_download.py ...                             [ 56%]
+tests\test_offline_provider_fixture.py ...                               [ 56%]
+tests\test_ordinal_concurrency.py ..........................             [ 58%]
+tests\test_outfit_teardown_claims.py ....                                [ 58%]
+tests\test_page_readiness.py .....                                       [ 58%]
+tests\test_page_reference_binding_order.py ..                            [ 59%]
+tests\test_patch_null_guards.py ..........                               [ 59%]
+tests\test_patch_version_atomicity.py ..........                         [ 60%]
+tests\test_phase2_runner_contract.py ....                                [ 60%]
+tests\test_plan_chapter_pages_concurrency.py .....                       [ 60%]
+tests\test_platform_contracts.py ....                                    [ 61%]
+tests\test_pr6_regressions.py ..........                                 [ 61%]
+tests\test_project_scoping.py .......................................... [ 64%]
+........................................................................ [ 68%]
+....                                                                     [ 68%]
+tests\test_project_summary.py ....                                       [ 68%]
+tests\test_projects_api.py .............                                 [ 69%]
+tests\test_provider_audit_codes.py ...........                           [ 70%]
+tests\test_provider_audit_wiring.py ...........                          [ 70%]
+tests\test_provider_contracts.py ........                                [ 71%]
+tests\test_provider_metadata_bounds.py ......                            [ 71%]
+tests\test_provider_neutrality_gate.py ........                          [ 72%]
+tests\test_pytest_collection_gate.py .                                   [ 72%]
+tests\test_quality_gates.py ......                                       [ 72%]
+tests\test_reconcile_failure_isolation.py ......                         [ 72%]
+tests\test_redteam_script_integrity.py ...................               [ 73%]
+tests\test_repair_upscale_guards.py .....                                [ 74%]
+tests\test_retry_after_bounds.py ...........                             [ 74%]
+tests\test_retry_arbitration_bounds.py ....                              [ 75%]
+tests\test_retry_claim_race.py ..                                        [ 75%]
+tests\test_retry_inspect_mutex.py ...........                            [ 75%]
+tests\test_retry_revival_compensation.py .....                           [ 76%]
+tests\test_retry_run_sibling_guard.py .                                  [ 76%]
+tests\test_routes_storage_sweep.py ............................          [ 77%]
+tests\test_rq_pending_recovery.py ....                                   [ 78%]
+tests\test_run_create_reconcile_isolation.py ..                          [ 78%]
+tests\test_run_creation_guard.py ........                                [ 78%]
+tests\test_run_failure_sweep.py .............                            [ 79%]
+tests\test_runtime_lease_geometry.py ........                            [ 79%]
+tests\test_scene_assets.py ......................                        [ 81%]
+tests\test_scene_version_cas.py ....                                     [ 81%]
+tests\test_script_storyboard_editing.py ........                         [ 81%]
+tests\test_security_config.py ....                                       [ 82%]
+tests\test_selected_candidate_route_lock.py ...                          [ 82%]
+tests\test_selection_recheck_version.py ..                               [ 82%]
+tests\test_settings_cross_field.py ......                                [ 82%]
+tests\test_shell_core_bridge.py s                                        [ 82%]
+tests\test_shell_core_source_pins.py ..                                  [ 82%]
+tests\test_source_parse_retry_mutex.py ..                                [ 83%]
+tests\test_stabilization.py ...........                                  [ 83%]
+tests\test_start_dev_ps1_contracts.py .....                              [ 83%]
+tests\test_start_native_guard.py ..                                      [ 84%]
+tests\test_storage_sweeps.py ..............                              [ 84%]
+tests\test_story_parse_character_merge.py .                              [ 84%]
+tests\test_story_parse_checkpoint.py ..                                  [ 85%]
+tests\test_storyboard_fence_atomicity.py ..                              [ 85%]
+tests\test_storyboard_layout_contract.py ..........................      [ 86%]
+tests\test_style_analyze_idempotency.py ..                               [ 86%]
+tests\test_style_job_guards.py ........                                  [ 87%]
+tests\test_style_palette.py ..                                           [ 87%]
+tests\test_thinking_budget_propagation.py ....                           [ 87%]
+tests\test_upload_limits.py .......                                      [ 88%]
+tests\test_upload_name_safety.py ....                                    [ 88%]
+tests\test_usage_ledger.py ..........                                    [ 88%]
+tests\test_usage_magnitude_bounds.py ....                                [ 89%]
+tests\test_vertex_adapter.py ....                                        [ 89%]
+tests\test_vertex_health_and_settings.py ................                [ 90%]
+tests\test_windows_worker_recovery.py ......                             [ 90%]
+tests\test_worker_error_sanitized.py .                                   [ 90%]
+tests\test_worker_handlers_sweep.py .........................            [ 92%]
+tests\test_worker_lost_sweep.py ....                                     [ 92%]
+tests\test_worker_preflight_terminal_errors.py .....                     [ 92%]
+tests\test_workflow_definitions.py ...................                   [ 93%]
+tests\test_workflow_engine_facade.py ............                        [ 94%]
+tests\test_workflow_issue798.py ....                                     [ 94%]
+tests\test_workflow_node_preconditions.py ...                            [ 94%]
+tests\test_workflow_race_guards.py .....                                 [ 95%]
+tests\test_workflow_reconcile_guards.py ..                               [ 95%]
+tests\test_workflow_retry_pinning.py ..........                          [ 95%]
+tests\test_workflow_route_manifest.py ....                               [ 96%]
+tests\test_workflow_validation_sweep.py ................................ [ 98%]
+..................................                                       [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\��ý��\����������\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\��ý��\����������\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/test_cli_migration.py: 7 warnings
+tests/test_hot_path_indexes.py: 3 warnings
+tests/test_migration_parity.py: 3 warnings
+tests/test_migrations.py: 79 warnings
+tests/test_scene_assets.py: 10 warnings
+tests/test_usage_ledger.py: 3 warnings
+  D:\��ý��\����������\.venv\Lib\site-packages\alembic\config.py:612: DeprecationWarning: No path_separator found in configuration; falling back to legacy splitting on spaces, commas, and colons for prepend_sys_path.  Consider adding path_separator=os to Alembic config.
+    util.warn_deprecated(
+
+tests/test_cli_migration.py: 50 warnings
+tests/test_migrations.py: 425 warnings
+tests/test_scene_assets.py: 50 warnings
+tests/test_usage_ledger.py: 25 warnings
+  D:\��ý��\����������\apps\api\migrations\versions\20260904_29_drop_legacy_page_version_constraint.py:208: SADeprecationWarning: The Column.copy() method is deprecated and will be removed in a future release. (deprecated since: 1.4)
+    column.copy() if hasattr(column, "copy") else column
+
+tests/test_migrations.py: 90 warnings
+  D:\��ý��\����������\.venv\Lib\site-packages\sqlalchemy\engine\default.py:949: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.executemany(statement, parameters)
+
+tests/test_migrations.py: 18 warnings
+  D:\��ý��\����������\.venv\Lib\site-packages\sqlalchemy\engine\default.py:952: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========= 1664 passed, 47 skipped, 765 warnings in 465.09s (0:07:45) ==========
+
+> mangaflow-ai@0.2.0 test:web
+> npm run test --workspace @mangaflow/web
+
+
+> @mangaflow/web@0.2.0 test
+> vitest run
+
+
+ RUN  v4.1.10 D:/自媒体/漫画工作流/apps/web
+
+Not implemented: navigation to another Document
+Not implemented: navigation to another Document
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+
+ Test Files  56 passed (56)
+      Tests  615 passed (615)
+   Start at  12:48:14
+   Duration  50.46s (transform 21.61s, setup 99.15s, import 44.78s, tests 98.79s, environment 467.87s)
+
+
+> mangaflow-ai@0.2.0 build
+> npm run build --workspace @mangaflow/web
+
+
+> @mangaflow/web@0.2.0 build
+> next build
+
+▲ Next.js 16.3.3 (Turbopack)
+✓ Running next.config.ts took 539ms
+- Experiments (use with caution):
+  · optimizePackageImports
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 6.6s
+  Running TypeScript ...
+  Finished TypeScript in 14.9s ...
+  Collecting page data using 14 workers ...
+  Generating static pages using 14 workers (0/7) ...
+  Generating static pages using 14 workers (1/7) 
+  Generating static pages using 14 workers (3/7) 
+  Generating static pages using 14 workers (5/7) 
+✓ Generating static pages using 14 workers (7/7) in 761ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ƒ /_not-found
+├ ƒ /help
+├ ƒ /projects/[id]
+├ ƒ /projects/[id]/[section]
+├ ƒ /projects/[id]/assets
+├ ƒ /projects/[id]/assets/[view]
+├ ƒ /projects/[id]/settings
+├ ƒ /projects/[id]/workflow
+├ ƒ /settings
+├ ƒ /settings/usage
+└ ƒ /workflow
+
+
+ƒ Proxy (Middleware)
+
+ƒ  (Dynamic)  server-rendered on demand
+

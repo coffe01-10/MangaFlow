@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Net.Http;
 using System.IO;
 using System.Text.Json;
@@ -15,7 +15,7 @@ using MangaFlow.Native.Services;
 namespace MangaFlow.Native.Views;
 
 /// <summary>
-/// NUI-4: workflow DAG studio. Nodes drag on a dark canvas with bezier edges;
+/// Workflow DAG studio. Nodes drag on a themed canvas with bezier edges;
 /// drafts autosave debounced (800ms) with optimistic version, runs poll at 3s.
 /// </summary>
 public sealed partial class WorkflowView : WorkspaceView
@@ -29,12 +29,12 @@ public sealed partial class WorkflowView : WorkspaceView
     private const double PortRowTop = 70;
     private const double PortRowStep = 25;
     private readonly ComboBox workflowSelector = Selector("选择工作流", 250);
-    private readonly Canvas canvas = new() { Background = new SolidColorBrush(Color.FromRgb(0x17, 0x1A, 0x18)) };
+    private readonly Canvas canvas = new() { Background = FlowResource("Paper") };
     private readonly ScrollViewer canvasScroll = new();
     private readonly StackPanel library = new();
     private readonly StackPanel inspector = new();
     private readonly StackPanel runMonitor = new();
-    private readonly TextBlock statusLine = new() { Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)) };
+    private readonly TextBlock statusLine = new() { Foreground = FlowResource("Ink") };
     private readonly ComboBox scopeType = Selector("运行范围类型", 110);
     // PAGE 范围的所属章节；CHAPTER 范围隐藏。此前 PAGE 恒取 chapters[0]，
     // 多章项目无法对第 2+ 章的页面发起单页流程（对齐 web pageChapterId）。
@@ -79,7 +79,7 @@ public sealed partial class WorkflowView : WorkspaceView
     private System.Timers.Timer? autosave;
     private int generation;
     private bool dragging;
-    private double scale = 0.75;
+    private double scale = 1;
     private System.Windows.Shapes.Path? pendingWire;   // 连线拖拽中的虚线预览
     private Action? cancelWire;                        // Escape 取消进行中的连线拖拽
     private readonly StackPanel runHistory = new();    // 属性面板下方的运行历史列表（轮询刷新不重建属性面板）
@@ -105,15 +105,15 @@ public sealed partial class WorkflowView : WorkspaceView
     public WorkflowView()
     {
         BuildStudio();
-        canvas.PreviewMouseWheel += (sender, e) =>
+        canvasScroll.PreviewMouseWheel += (_, e) =>
         {
-            if (Keyboard.Modifiers == ModifierKeys.Control)
-            {
-                scale = Math.Clamp(scale * (e.Delta > 0 ? 1.1 : 1 / 1.1), 0.2, 1.6);
-                ApplyView();
-                e.Handled = true;
-            }
+            if (HandleCanvasWheel(e.Delta, Keyboard.Modifiers)) e.Handled = true;
         };
+        canvasScroll.ScrollChanged += (_, e) =>
+        {
+            if (e.ViewportWidthChange != 0 || e.ViewportHeightChange != 0) ApplyView();
+        };
+        PreviewKeyDown += OnStudioKeyDown;
         // 键盘纪律：Delete/Backspace/Escape 只在画布持有键盘焦点时生效。属性面板的
         // TextBox 不在画布视觉树下，输入时事件不会路由到画布，不会误删（对齐 web
         // 的 deleteKeyCode 只作用于 React Flow 选区）。
@@ -158,7 +158,7 @@ public sealed partial class WorkflowView : WorkspaceView
         boxOrigin = e.GetPosition(canvas);
         boxSelect = new System.Windows.Shapes.Rectangle
         {
-            Stroke = new SolidColorBrush(Color.FromRgb(0xE7, 0xE2, 0xD7)),
+            Stroke = FlowResource("AccentInk"),
             StrokeThickness = 1,
             Fill = new SolidColorBrush(Color.FromArgb(40, 0xE7, 0xE2, 0xD7)),
         };
@@ -249,9 +249,9 @@ public sealed partial class WorkflowView : WorkspaceView
     {
         var bar = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(0xEF, 0xED, 0xE5)),
+            Background = FlowResource("Paper"),
             Padding = new Thickness(16, 10, 16, 10),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x38, 0x3D, 0x39)),
+            BorderBrush = FlowResource("Line"),
             BorderThickness = new Thickness(0, 0, 0, 1),
         };
         var actions = new WrapPanel();
@@ -260,11 +260,18 @@ public sealed partial class WorkflowView : WorkspaceView
         actions.Children.Add(FlowAction("保存", async (_, _) => await SaveNowAsync(), "Compact", light: true));
         actions.Children.Add(FlowAction("校验", async (_, _) => await ValidateAsync(), "Compact", light: true));
         actions.Children.Add(FlowAction("发布", async (_, _) => await PublishAsync(), "CompactInk", light: true));
+        actions.Children.Add(BuildViewMenu());
+        focusButton = FlowAction("专注模式", (_, _) => ToggleFocusMode());
+        focusButton.ToolTip = "收起导航和辅助面板 · Ctrl+Shift+Enter；Esc 恢复";
+        actions.Children.Add(focusButton);
+        fullscreenButton = FlowAction("全屏", (_, _) => ToggleStudioFullscreen());
+        fullscreenButton.ToolTip = "全屏显示流程编排 · F11；Esc 退出";
+        actions.Children.Add(fullscreenButton);
         workflowSelector.Style = (Style)Application.Current.FindResource(typeof(ComboBox));
         workflowSelector.Width = 230; workflowSelector.MinHeight = 34; workflowSelector.Height = 34;
         var title = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
         title.Children.Add(new TextBlock { Text = "流程编排", Foreground = new SolidColorBrush(Color.FromRgb(154, 73, 58)),
-            FontSize = 12, Margin = new Thickness(0, 0, 18, 0), VerticalAlignment = VerticalAlignment.Center });
+            FontSize = 16, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 18, 0), VerticalAlignment = VerticalAlignment.Center });
         title.Children.Add(workflowSelector);
         bar.Child = new PageHeading(title, actions);
         workflowSelector.SelectionChanged += async (_, _) =>
@@ -314,8 +321,8 @@ public sealed partial class WorkflowView : WorkspaceView
     {
         var bar = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(0x11, 0x13, 0x11)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x38, 0x3D, 0x39)),
+            Background = FlowResource("PaperDeep"),
+            BorderBrush = FlowResource("Line"),
             BorderThickness = new Thickness(0, 1, 0, 0),
             Padding = new Thickness(16, 9, 16, 9),
         };
@@ -345,7 +352,7 @@ public sealed partial class WorkflowView : WorkspaceView
             await LoadPageTargetsAsync();
         };
         var scopeRow = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
-        var label = new TextBlock { Text = "运行范围  ", VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)), FontSize = 12 };
+        var label = new TextBlock { Text = "运行范围  ", VerticalAlignment = VerticalAlignment.Center, Foreground = FlowResource("Ink"), FontSize = 12 };
         scopeRow.Children.Add(label);
         scopeRow.Children.Add(scopeType);
         scopeRow.Children.Add(scopeChapter);
@@ -669,8 +676,8 @@ public sealed partial class WorkflowView : WorkspaceView
                 var label = new TextBlock
                 {
                     Text = category switch { "INPUT" => "输入", "AGENT" => "智能处理", "CONTROL" => "控制", "OUTPUT" => "生成与输出", _ => category },
-                    FontSize = 11, FontWeight = FontWeights.Bold, Margin = new Thickness(2, 10, 0, 4),
-                    Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                    FontSize = 12, FontWeight = FontWeights.Bold, Margin = new Thickness(2, 10, 0, 4),
+                    Foreground = FlowResource("Muted"),
                 };
                 library.Children.Add(label);
             }
@@ -680,18 +687,19 @@ public sealed partial class WorkflowView : WorkspaceView
                 {
                     Children =
                     {
-                        new TextBlock { Text = type.Text("display_name"), FontWeight = FontWeights.Bold, FontSize = 13, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)), TextWrapping = TextWrapping.Wrap },
-                        new TextBlock { Text = type.Text("description"), FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), TextWrapping = TextWrapping.Wrap },
+                        new TextBlock { Text = type.Text("display_name"), FontWeight = FontWeights.Bold, FontSize = 13, Foreground = FlowResource("Ink"), TextWrapping = TextWrapping.Wrap },
+                        new TextBlock { Text = type.Text("description"), FontSize = 12, Foreground = FlowResource("Muted"), TextWrapping = TextWrapping.Wrap },
                     },
                 },
                 HorizontalContentAlignment = HorizontalAlignment.Left,
-                Background = new SolidColorBrush(Color.FromRgb(0x24, 0x2A, 0x27)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x52, 0x60, 0x5A)),
-                Foreground = Brushes.White,
+                Background = FlowResource("Surface"),
+                BorderBrush = FlowResource("LineDark"),
+                Foreground = FlowResource("Ink"),
                 Margin = new Thickness(0, 0, 0, 6),
                 Padding = new Thickness(10, 8, 10, 8),
             };
             button.Style = (Style)FindResource("FlowButton");
+            button.ContentTemplate = null;
             button.Click += (_, _) => AddNode(type);
             library.Children.Add(button);
         }
@@ -810,15 +818,15 @@ public sealed partial class WorkflowView : WorkspaceView
         var header = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
         header.Children.Add(new TextBlock
         {
-            Text = "发布版本", FontSize = 11,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+            Text = "发布版本", FontSize = 12,
+            Foreground = FlowResource("Muted"),
             VerticalAlignment = VerticalAlignment.Center,
         });
         var count = new TextBlock
         {
             Text = versionsFailed ? "读取失败" : publishedVersions.Count.ToString(),
             FontSize = 12, FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+            Foreground = FlowResource("Ink"),
         };
         DockPanel.SetDock(count, Dock.Right);
         header.Children.Add(count);
@@ -828,7 +836,7 @@ public sealed partial class WorkflowView : WorkspaceView
             versionList.Children.Add(new TextBlock
             {
                 Text = "发布版本列表读取失败，请稍后重试",
-                Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                Foreground = FlowResource("Muted"),
                 FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6),
             });
             var retry = FlowAction("重试", async (_, _) =>
@@ -854,8 +862,8 @@ public sealed partial class WorkflowView : WorkspaceView
             if (time.Length > 0)
                 versionList.Children.Add(new TextBlock
                 {
-                    Text = time, FontSize = 10, Margin = new Thickness(0, 2, 0, 0),
-                    Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                    Text = time, FontSize = 12, Margin = new Thickness(0, 2, 0, 0),
+                    Foreground = FlowResource("Muted"),
                 });
         }
     }
@@ -971,7 +979,7 @@ public sealed partial class WorkflowView : WorkspaceView
             var hint = new TextBlock
             {
                 Text = "画布为空。从左侧节点库添加节点，或创建工作流时选择模板。",
-                Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                Foreground = FlowResource("Muted"),
                 FontSize = 13,
             };
             Canvas.SetLeft(hint, 40);
@@ -1031,27 +1039,14 @@ public sealed partial class WorkflowView : WorkspaceView
         canvasScroll.ScrollToVerticalOffset(Math.Max(0, y * scale - canvasScroll.ViewportHeight / 2));
     }
 
-    private void ToggleStudioFullscreen()
-    {
-        studioFullscreen = !studioFullscreen;
-        if (studioFullscreen)
-        {
-            libraryOpen = false;
-            inspectorOpen = false;
-        }
-        else
-        {
-            libraryOpen = inspectorOpen = true;
-        }
-        UpdateSidePanes();
-    }
-
     private void ApplyView()
     {
-        canvas.RenderTransform = new ScaleTransform(scale, scale);
+        canvas.LayoutTransform = new ScaleTransform(scale, scale);
         zoomLabel.Text = $"{scale:P0}";
-        canvas.Width = Math.Max(1200, nodes.Count * 285 / Math.Max(0.2, scale));
-        canvas.Height = Math.Max(700, 700 / Math.Max(0.2, scale));
+        canvas.Width = Math.Max(Math.Max(1200, canvasScroll.ViewportWidth / scale),
+            nodes.Select(n => n.Position.X + NodeWidth + 160).DefaultIfEmpty(1200).Max());
+        canvas.Height = Math.Max(Math.Max(700, canvasScroll.ViewportHeight / scale),
+            nodes.Select(n => n.Position.Y + Math.Max(140, n.Element.ActualHeight) + 160).DefaultIfEmpty(700).Max());
     }
 
     private void FitView()
@@ -1096,6 +1091,7 @@ public sealed partial class WorkflowView : WorkspaceView
         foreach (var other in nodes) other.SetSelected(selectedNodes.Contains(other));
         ClearEdgeSelection();
         RenderInspector();
+        if (selected != null && !focusMode) ToggleInspector(true);
         RefreshCanvasButtons();
     }
 
@@ -1142,9 +1138,7 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private static void ApplyEdgeSelection(System.Windows.Shapes.Path curve, bool isSelected)
     {
-        curve.Stroke = new SolidColorBrush(isSelected
-            ? Color.FromRgb(0xE7, 0xE2, 0xD7)   // 与节点选中描边同色，视觉语义一致
-            : Color.FromRgb(0x77, 0x84, 0x7C));
+        curve.Stroke = isSelected ? FlowResource("AccentInk") : FlowResource("Muted");
         curve.StrokeThickness = isSelected ? 3 : 2;
     }
 
@@ -1176,7 +1170,7 @@ public sealed partial class WorkflowView : WorkspaceView
         dragging = true;
         MouseEventHandler moved = (_, me) =>
         {
-            // GetPosition(canvas) already inverse-applies the canvas RenderTransform,
+            // GetPosition(canvas) already inverse-applies the canvas LayoutTransform,
             // so the delta is in unscaled node coordinates — dividing by scale again
             // would make the node trail the cursor at zoom != 1.
             var current = me.GetPosition(canvas);
@@ -1198,6 +1192,7 @@ public sealed partial class WorkflowView : WorkspaceView
             Mouse.RemoveLostMouseCaptureHandler(element, lost);
             if (committed || node.Position == nodeOrigin) return;
             committed = true;
+            ApplyView();
             PushHistory(Snapshot("拖动节点"));
             ScheduleSave();
         }
@@ -1899,7 +1894,7 @@ public sealed partial class WorkflowView : WorkspaceView
                 runMonitor.Children.Add(new TextBlock
                 {
                     Text = "尚未运行已发布版本",
-                    Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), FontSize = 12,
+                    Foreground = FlowResource("Muted"), FontSize = 12,
                     VerticalAlignment = VerticalAlignment.Center,
                 });
                 RenderRunHistory();
@@ -1911,7 +1906,7 @@ public sealed partial class WorkflowView : WorkspaceView
             var summary = new TextBlock
             {
                 Text = $"运行 {Labels.Map(Labels.WorkflowRunStatus, latestRun.Text("status"))} · {done}/{nodeRuns.Count}",
-                Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)), FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
+                Foreground = FlowResource("Ink"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
             };
             runMonitor.Children.Add(summary);
             foreach (var node in nodes)
@@ -2007,7 +2002,7 @@ public sealed partial class WorkflowView : WorkspaceView
             {
                 Text = isGenerator ? "单页生成等待选择模型" : "采用候选后继续",
                 FontWeight = FontWeights.Bold, FontSize = 12,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+                Foreground = FlowResource("Ink"),
                 VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0),
             });
             Button approve = null!;
@@ -2110,7 +2105,7 @@ public sealed partial class WorkflowView : WorkspaceView
             runHistory.Children.Add(new TextBlock
             {
                 Text = "尚未运行已发布版本",
-                Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), FontSize = 12,
+                Foreground = FlowResource("Muted"), FontSize = 12,
             });
             return;
         }
@@ -2123,7 +2118,7 @@ public sealed partial class WorkflowView : WorkspaceView
             runHistory.Children.Add(new TextBlock
             {
                 Text = $"{Labels.Map(Labels.WorkflowRunStatus, run.Text("status"))} · {ScopeLabel(run)} · {done}/{nodeRuns.Count} · {time}",
-                Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+                Foreground = FlowResource("Ink"),
                 FontSize = 12, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
             });
         }
@@ -2174,7 +2169,7 @@ public sealed partial class WorkflowView : WorkspaceView
             inspectorHeading.Text = "属性面板";
             inspector.Children.Add(new TextBlock
             {
-                Text = "从这里开始", Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+                Text = "从这里开始", Foreground = FlowResource("Ink"),
                 FontWeight = FontWeights.Bold, FontSize = 15,
             });
             foreach (var step in new[]
@@ -2183,7 +2178,7 @@ public sealed partial class WorkflowView : WorkspaceView
                      })
                 inspector.Children.Add(new TextBlock
                 {
-                    Text = step, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                    Text = step, Foreground = FlowResource("Muted"),
                     FontSize = 12, Margin = new Thickness(0, 8, 0, 0),
                 });
             return;
@@ -2200,7 +2195,7 @@ public sealed partial class WorkflowView : WorkspaceView
         inspector.Children.Add(DarkLabel("节点名称"));
         inspector.Children.Add(name);
         inspector.Children.Add(DarkLabel("节点类型"));
-        inspector.Children.Add(new TextBlock { Text = node.Type, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 12 });
+        inspector.Children.Add(new TextBlock { Text = node.Type, Foreground = FlowResource("Muted"), FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 12 });
 
         // generator.page：图片模型在审批时必须显式选择（网页检查器为只读说明 + 建议清晰度）
         if (node.Type == "generator.page")
@@ -2342,7 +2337,7 @@ public sealed partial class WorkflowView : WorkspaceView
         var locked = new CheckBox
         {
             Content = "锁定", IsChecked = config.Flag("locked"), Margin = new Thickness(0, 12, 0, 0),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+            Foreground = FlowResource("Ink"),
         };
         System.Windows.Automation.AutomationProperties.SetName(locked, "锁定");
         locked.Checked += (_, _) => { node.SetConfig("locked", true); ScheduleSave(); };
@@ -2350,7 +2345,7 @@ public sealed partial class WorkflowView : WorkspaceView
         var requiresApproval = new CheckBox
         {
             Content = "需要审批", IsChecked = config.Flag("requires_approval"), Margin = new Thickness(0, 6, 0, 0),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+            Foreground = FlowResource("Ink"),
         };
         System.Windows.Automation.AutomationProperties.SetName(requiresApproval, "需要审批");
         requiresApproval.Checked += (_, _) => { node.SetConfig("requires_approval", true); ScheduleSave(); };
@@ -2428,8 +2423,8 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private static TextBlock DarkLabel(string text) => new()
     {
-        Text = text, FontSize = 11, FontWeight = FontWeights.Bold,
-        Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), Margin = new Thickness(0, 12, 0, 4),
+        Text = text, FontSize = 12, FontWeight = FontWeights.Bold,
+        Foreground = FlowResource("Muted"), Margin = new Thickness(0, 12, 0, 4),
     };
 
     public override void PollTick()
@@ -2635,15 +2630,15 @@ public sealed partial class WorkflowView : WorkspaceView
             var color = ToneColor(tone);
             var header = new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(0x22, 0x00, 0x00, 0x00)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x3C, 0x46, 0x41)),
+                Background = FlowResource("Paper"),
+                BorderBrush = FlowResource("Line"),
                 BorderThickness = new Thickness(0, 0, 0, 1),
                 Padding = new Thickness(9, 4, 9, 4),
                 Child = new DockPanel(),
             };
             statusBadge = new TextBlock
             {
-                Text = "DRAFT", FontSize = 10, Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0xA3, 0x9D)),
+                Text = "DRAFT", FontSize = 12, Foreground = FlowResource("Muted"),
                 FontFamily = (FontFamily)Application.Current.FindResource("Mono"),
             };
             var headerDock = (DockPanel)header.Child;
@@ -2651,13 +2646,13 @@ public sealed partial class WorkflowView : WorkspaceView
             headerDock.Children.Add(statusBadge);
             headerDock.Children.Add(new TextBlock
             {
-                Text = Type, FontSize = 10, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                Text = Type, FontSize = 12, Foreground = FlowResource("Muted"),
                 FontFamily = (FontFamily)Application.Current.FindResource("Mono"),
             });
             var title = new TextBlock
             {
-                Text = Name, FontSize = 13.5, FontWeight = FontWeights.Bold,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+                Text = Name, FontSize = 16, FontWeight = FontWeights.Bold,
+                Foreground = FlowResource("Ink"),
                 FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
                 Margin = new Thickness(9, 8, 9, 8), TextWrapping = TextWrapping.Wrap,
             };
@@ -2699,8 +2694,8 @@ public sealed partial class WorkflowView : WorkspaceView
             content.Children.Add(header);
             content.Children.Add(title);
             content.Children.Add(ports);
-            Element.Background = new SolidColorBrush(Color.FromRgb(0x24, 0x2A, 0x27));
-            Element.BorderBrush = new SolidColorBrush(Color.FromRgb(0x52, 0x60, 0x5A));
+            Element.Background = FlowResource("Surface");
+            Element.BorderBrush = FlowResource("LineDark");
             Element.BorderThickness = new Thickness(1);
             Element.Child = content;
             var topBar = new Border
@@ -2715,8 +2710,8 @@ public sealed partial class WorkflowView : WorkspaceView
         public void SetSelected(bool isSelected)
         {
             Element.BorderBrush = isSelected
-                ? new SolidColorBrush(Color.FromRgb(0xE7, 0xE2, 0xD7))
-                : new SolidColorBrush(Color.FromRgb(0x52, 0x60, 0x5A));
+                ? FlowResource("AccentInk")
+                : FlowResource("LineDark");
             Element.BorderThickness = isSelected ? new Thickness(2) : new Thickness(1);
         }
 
@@ -2734,13 +2729,14 @@ public sealed partial class WorkflowView : WorkspaceView
             {
                 Width = 10, Height = 10,
                 Fill = new SolidColorBrush(PortColor(port.DataType)),
-                Stroke = new SolidColorBrush(Color.FromRgb(0x16, 0x19, 0x17)), StrokeThickness = 1,
+                Stroke = FlowResource("Surface"), StrokeThickness = 1,
                 VerticalAlignment = VerticalAlignment.Center,
             };
             var text = new TextBlock
             {
-                Text = $"{label}  {port.DataType}", FontSize = 10,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                Text = label, ToolTip = $"{label} · {port.DataType}", FontSize = 12,
+                MaxWidth = 86, TextTrimming = TextTrimming.CharacterEllipsis,
+                Foreground = FlowResource("Muted"),
                 VerticalAlignment = VerticalAlignment.Center,
             };
             StackPanel content;

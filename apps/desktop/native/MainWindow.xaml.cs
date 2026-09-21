@@ -691,6 +691,7 @@ public partial class MainWindow : Window
         GlobalActions.Visibility = workspace || page == "settings-global" ? Visibility.Collapsed : Visibility.Visible;
         SettingsActions.Visibility = page == "settings-global" ? Visibility.Visible : Visibility.Collapsed;
         WorkspaceActions.Visibility = workspace ? Visibility.Visible : Visibility.Collapsed;
+        WorkflowNav.Visibility = workspace && page != "workflow" ? Visibility.Visible : Visibility.Collapsed;
         BackToProjects.Visibility = workspace ? Visibility.Visible : Visibility.Collapsed;
         BrandKicker.Visibility = workspace ? Visibility.Collapsed : Visibility.Visible;
         TopbarRow.Height = new GridLength(workspace ? 58 : 74);
@@ -700,7 +701,8 @@ public partial class MainWindow : Window
         SidebarFooter.Visibility = preferences.SidebarCollapsed ? Visibility.Collapsed : Visibility.Visible;
         state.IsWorkspace = workspace;
         state.SidebarCollapsed = preferences.SidebarCollapsed;
-        ContentHost.Margin = page is "source" or "assets" ? new Thickness(16, 16, 16, 0) : workspace ? new Thickness(24, 24, 0, 0) : new Thickness(0);
+        ContentHost.Margin = page == "workflow" ? new Thickness(0) : page is "source" or "assets" ? new Thickness(16, 16, 16, 0) : workspace ? new Thickness(24, 24, 0, 0) : new Thickness(0);
+        if (workflowFocused || workflowFullscreen) ApplyWorkflowChrome();
     }
 
     private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e) { }
@@ -708,6 +710,11 @@ public partial class MainWindow : Window
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
         if (e.IsRepeat || closing) return;
+        if (ContentHost.Content is WorkflowView workflow && workflow.HandlePresentationKey(e.Key, Keyboard.Modifiers))
+        {
+            e.Handled = true;
+            return;
+        }
         if (Keyboard.Modifiers == ModifierKeys.Control)
         {
             switch (e.Key)
@@ -770,6 +777,7 @@ public partial class MainWindow : Window
         if (closing) return;
         if (activeView != null && !await activeView.ConfirmLeaveAsync()) return;
         closing = true;
+        SetWorkflowPresentation(false, false);
         IsEnabled = false;
         poll.Stop();
         dockPoll.Stop();

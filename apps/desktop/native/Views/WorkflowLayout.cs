@@ -10,21 +10,20 @@ public sealed partial class WorkflowView
 {
     private readonly Grid studioBody = new();
     private FrameworkElement libraryPane = null!, inspectorPane = null!;
-    private bool libraryOpen = true, inspectorOpen = true, compactStudio;
-    private Button libraryToggle = null!, inspectorToggle = null!;
+    private bool libraryOpen = true, inspectorOpen, compactStudio;
     private Button undoButton = null!, redoButton = null!, copyButton = null!;
     private Button runNodeButton = null!, runFromButton = null!, retryCreateButton = null!;
     private readonly TextBlock draftValue = MetricValue("—"), publishedValue = MetricValue("—"),
         saveValue = MetricValue("正在读取"), validationValue = MetricValue("未校验");
-    private readonly TextBlock zoomLabel = new() { Text = "75%", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 10, 0) };
+    private readonly TextBlock zoomLabel = new() { Text = "100%", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 10, 0) };
     private readonly TextBlock inspectorHeading = MetricValue("属性面板");
-    private static Brush FlowBrush(string hex) => (Brush)new BrushConverter().ConvertFromString(hex)!;
-    private static TextBlock MetricValue(string text) => new() { Text = text, FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = FlowBrush("#e9e6dd"), TextWrapping = TextWrapping.Wrap };
+    private static Brush FlowResource(string key) => (Brush)Application.Current.FindResource(key);
+    private static TextBlock MetricValue(string text) => new() { Text = text, FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = FlowResource("Ink"), TextWrapping = TextWrapping.Wrap };
 
     private void BuildStudio()
     {
         Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/MangaFlow.Native;component/Views/WorkflowTheme.xaml", UriKind.Relative) });
-        Background = FlowBrush("#1a1d1b"); Foreground = FlowBrush("#e9e6dd");
+        Background = FlowResource("Paper"); Foreground = FlowResource("Ink");
         var root = new Grid { Background = Background };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -52,11 +51,11 @@ public sealed partial class WorkflowView
         };
         var versionsPane = new Border
         {
-            BorderBrush = FlowBrush("#383d39"), BorderThickness = new Thickness(0, 1, 0, 0), Child = versionsScroll,
+            BorderBrush = FlowResource("Line"), BorderThickness = new Thickness(0, 1, 0, 0), Child = versionsScroll,
         };
         Grid.SetRow(versionsPane, 1); inspectorDock.Children.Add(versionsPane);
         var history = new DockPanel();
-        var historyLabel = new Border { BorderBrush = FlowBrush("#383d39"), BorderThickness = new Thickness(0, 1, 0, 1),
+        var historyLabel = new Border { BorderBrush = FlowResource("Line"), BorderThickness = new Thickness(0, 1, 0, 1),
             Padding = new Thickness(12, 10, 12, 10), Child = MetricValue("运行历史") };
         DockPanel.SetDock(historyLabel, Dock.Top); history.Children.Add(historyLabel);
         history.Children.Add(new ScrollViewer { Content = runHistory, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(12), MaxHeight = 112 });
@@ -64,41 +63,40 @@ public sealed partial class WorkflowView
         inspectorPane = SidePane("INSPECTOR", inspectorHeading, inspectorDock, () => ToggleInspector(false), scroll: false);
         Grid.SetColumn(inspectorPane, 2); studioBody.Children.Add(inspectorPane);
 
-        var center = new DockPanel { Background = FlowBrush("#1a1d1b"), ClipToBounds = true };
+        var center = new DockPanel { Background = FlowResource("Paper"), ClipToBounds = true };
         var tools = BuildCanvasTools(); DockPanel.SetDock(tools, Dock.Top); center.Children.Add(tools);
         var zoom = new WrapPanel { Margin = new Thickness(12, 8, 12, 8) };
         zoom.Children.Add(FlowAction("−", (_, _) => ZoomCanvas(1 / 1.1)));
         zoom.Children.Add(zoomLabel);
         zoom.Children.Add(FlowAction("+", (_, _) => ZoomCanvas(1.1)));
         zoom.Children.Add(FlowAction("100%", (_, _) => { scale = 1; ApplyView(); }));
-        var help = new TextBlock { Text = "Ctrl+滚轮缩放 · 空格/中键拖动画布 · 拖空框选", FontSize = 11, Foreground = FlowBrush("#a4ada7"),
+        var help = new TextBlock { Text = "Shift+滚轮 横移 · Ctrl+滚轮 缩放 · 空格/中键 拖动", FontSize = 12, Foreground = FlowResource("Muted"),
             VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextWrapping = TextWrapping.Wrap };
         zoom.Children.Add(help);
-        zoom.Children.Add(FlowAction("全屏工作区", (_, _) => ToggleStudioFullscreen()));
         DockPanel.SetDock(zoom, Dock.Bottom); center.Children.Add(zoom);
         canvas.Background = CanvasDots();
-        canvasScroll.Content = canvas; canvasScroll.Background = FlowBrush("#1a1d1b");
+        canvasScroll.Content = canvas; canvasScroll.Background = FlowResource("Paper");
         canvasScroll.VerticalScrollBarVisibility = canvasScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
         var canvasHost = new Grid();
         canvasHost.Children.Add(canvasScroll);
-        minimap.Background = FlowBrush("#1a1d1b");
+        minimap.Background = FlowResource("Paper");
         minimap.ClipToBounds = true;
         System.Windows.Automation.AutomationProperties.SetName(minimap, "工作流小地图");
         minimap.MouseLeftButtonDown += OnMinimapNavigate;
-        var minimapHost = new Border
+        minimapHost = new Border
         {
             Width = 176, Height = 118, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(0, 0, 12, 12), BorderBrush = FlowBrush("#383d39"), BorderThickness = new Thickness(1),
-            Background = FlowBrush("#171a18"), Child = minimap, Padding = new Thickness(4),
+            Margin = new Thickness(0, 0, 12, 12), BorderBrush = FlowResource("Line"), BorderThickness = new Thickness(1),
+            Background = FlowResource("Paper"), Child = minimap, Padding = new Thickness(4),
         };
         canvasHost.Children.Add(minimapHost);
         center.Children.Add(canvasHost); Grid.SetColumn(center, 1); studioBody.Children.Add(center);
-        var runner = BuildRunner(); Grid.SetRow(runner, 3); root.Children.Add(runner);
+        runnerPane = BuildRunner(); Grid.SetRow(runnerPane, 3); root.Children.Add(runnerPane);
         Content = root;
         SizeChanged += (_, e) =>
         {
             bool next = e.NewSize.Width < 980;
-            if (next != compactStudio) { compactStudio = next; libraryOpen = inspectorOpen = !next; }
+            if (next != compactStudio) { compactStudio = next; UpdateSidePanes(); }
             UpdateSidePanes();
         };
         UpdateSidePanes(); RefreshCanvasButtons();
@@ -106,36 +104,35 @@ public sealed partial class WorkflowView
 
     private FrameworkElement SidePane(string caption, TextBlock heading, UIElement content, Action close, bool scroll = true)
     {
-        var dock = new DockPanel { Background = FlowBrush("#202421") };
+        var dock = new DockPanel { Background = FlowResource("Surface") };
         var labels = new StackPanel();
-        labels.Children.Add(new TextBlock { Text = caption, FontSize = 10, Foreground = FlowBrush("#a4ada7") });
-        heading.FontFamily = (FontFamily)Application.Current.FindResource("Serif");
+        heading.FontSize = 15;
         heading.Margin = new Thickness(0, 3, 0, 0); labels.Children.Add(heading);
         var closeButton = FlowAction("×", (_, _) => close());
         System.Windows.Automation.AutomationProperties.SetName(closeButton, caption == "INSPECTOR" ? "关闭属性面板" : "关闭节点库");
         closeButton.BorderThickness = new Thickness(0);
-        var header = new Border { BorderBrush = FlowBrush("#383d39"), BorderThickness = new Thickness(0, 0, 0, 1),
+        var header = new Border { BorderBrush = FlowResource("Line"), BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(12, 8, 8, 8), Child = new PageHeading(labels, closeButton) };
         DockPanel.SetDock(header, Dock.Top); dock.Children.Add(header);
         dock.Children.Add(scroll ? new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(12) } : content);
-        return new Border { Background = FlowBrush("#202421"), BorderBrush = FlowBrush("#383d39"),
+        return new Border { Background = FlowResource("Surface"), BorderBrush = FlowResource("Line"),
             BorderThickness = new Thickness(1, 0, 1, 0), Child = dock };
     }
 
     private FrameworkElement BuildFlowStatus()
     {
-        var metrics = new WrapPanel();
+        var metrics = statusMetrics;
         foreach (var (label, value) in new[] { ("草稿版本", draftValue), ("已发布版本", publishedValue), ("保存状态", saveValue), ("校验问题", validationValue) })
         {
             var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            stack.Children.Add(new TextBlock { Text = label, FontSize = 11, Foreground = FlowBrush("#9aa39d") });
+            stack.Children.Add(new TextBlock { Text = label, FontSize = 12, Foreground = FlowResource("Muted") });
             value.Margin = new Thickness(0, 3, 0, 0); stack.Children.Add(value);
             metrics.Children.Add(new Border { Width = 126, MinHeight = 44, Padding = new Thickness(12, 2, 12, 2),
-                BorderBrush = FlowBrush("#383d39"), BorderThickness = new Thickness(0, 0, 1, 0), Child = stack });
+                BorderBrush = FlowResource("Line"), BorderThickness = new Thickness(0, 0, 1, 0), Child = stack });
         }
         var stackAll = new StackPanel();
-        stackAll.Children.Add(new PageHeading(metrics, FlowAction("运行已发布流程", async (_, _) => await RunAsync([], []), "CompactInk")));
-        statusLine.FontSize = 11; statusLine.TextWrapping = TextWrapping.Wrap; statusLine.Margin = new Thickness(12, 6, 12, 0);
+        stackAll.Children.Add(metrics);
+        statusLine.FontSize = 13; statusLine.TextWrapping = TextWrapping.Wrap; statusLine.Margin = new Thickness(12, 6, 12, 0);
         var noticeStyle = new Style(typeof(TextBlock));
         var hidden = new DataTrigger { Binding = new Binding("Text") { RelativeSource = RelativeSource.Self }, Value = "" };
         hidden.Setters.Add(new Setter(VisibilityProperty, Visibility.Collapsed)); noticeStyle.Triggers.Add(hidden); statusLine.Style = noticeStyle;
@@ -144,31 +141,32 @@ public sealed partial class WorkflowView
         retryCreateButton.Margin = new Thickness(12, 6, 0, 0);
         retryCreateButton.Visibility = Visibility.Collapsed;
         stackAll.Children.Add(retryCreateButton);
-        return new Border { Child = stackAll, Background = FlowBrush("#171a18"), BorderBrush = FlowBrush("#383d39"),
+        return new Border { Child = stackAll, Background = FlowResource("Paper"), BorderBrush = FlowResource("Line"),
             BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(0, 6, 12, 6) };
     }
 
     private FrameworkElement BuildCanvasTools()
     {
         var bar = new WrapPanel { Margin = new Thickness(10, 10, 10, 4) };
-        libraryToggle = FlowAction("节点库", (_, _) => ToggleLibrary(true));
-        inspectorToggle = FlowAction("属性", (_, _) => ToggleInspector(true));
         undoButton = FlowAction("撤销", (_, _) => Undo()); redoButton = FlowAction("重做", (_, _) => Redo());
         copyButton = FlowAction("复制", (_, _) => DuplicateSelected());
         removeButton = FlowAction("删除", (_, _) => DeleteSelection());
-        foreach (var button in new[] { libraryToggle, undoButton, redoButton, FlowAction("自动布局", (_, _) => AutoLayout()),
-            copyButton, removeButton, FlowAction("查看全图", (_, _) => FitView()), inspectorToggle })
+        foreach (var button in new[] { undoButton, redoButton, FlowAction("自动布局", (_, _) => AutoLayout()),
+            copyButton, removeButton, FlowAction("查看全图", (_, _) => FitView()) })
             bar.Children.Add(button);
         return bar;
     }
 
-    private void ToggleLibrary(bool open) { libraryOpen = open; if (compactStudio && open) inspectorOpen = false; UpdateSidePanes(); }
-    private void ToggleInspector(bool open) { inspectorOpen = open; if (compactStudio && open) libraryOpen = false; UpdateSidePanes(); }
+    private bool IsLibraryVisible => libraryOpen && (!compactStudio || compactPane == "library");
+    private bool IsInspectorVisible => inspectorOpen && (!compactStudio || compactPane == "inspector");
+    private string? compactPane;
+    private void ToggleLibrary(bool open) { libraryOpen = open; if (compactStudio) compactPane = open ? "library" : null; UpdateSidePanes(); }
+    private void ToggleInspector(bool open) { inspectorOpen = open; if (compactStudio) compactPane = open ? "inspector" : null; UpdateSidePanes(); }
     private void UpdateSidePanes()
     {
         studioBody.ColumnDefinitions[0].Width = new GridLength(!compactStudio && libraryOpen ? 238 : 0);
         studioBody.ColumnDefinitions[2].Width = new GridLength(!compactStudio && inspectorOpen ? 286 : 0);
-        foreach (var (pane, open, left) in new[] { (libraryPane, libraryOpen, true), (inspectorPane, inspectorOpen, false) })
+        foreach (var (pane, open, left) in new[] { (libraryPane, IsLibraryVisible, true), (inspectorPane, IsInspectorVisible, false) })
         {
             pane.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
             Grid.SetColumn(pane, compactStudio ? 0 : left ? 0 : 2); Grid.SetColumnSpan(pane, compactStudio ? 3 : 1);
@@ -176,8 +174,6 @@ public sealed partial class WorkflowView
             pane.HorizontalAlignment = compactStudio ? left ? HorizontalAlignment.Left : HorizontalAlignment.Right : HorizontalAlignment.Stretch;
             Panel.SetZIndex(pane, compactStudio ? 3 : 0);
         }
-        libraryToggle.Visibility = libraryOpen ? Visibility.Collapsed : Visibility.Visible;
-        inspectorToggle.Visibility = inspectorOpen ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void RefreshCanvasButtons()
@@ -193,8 +189,8 @@ public sealed partial class WorkflowView
     private static Brush CanvasDots()
     {
         var group = new DrawingGroup();
-        group.Children.Add(new GeometryDrawing(FlowBrush("#1a1d1b"), null, new RectangleGeometry(new Rect(0, 0, 24, 24))));
-        group.Children.Add(new GeometryDrawing(FlowBrush("#39423c"), null, new EllipseGeometry(new Point(12, 12), 1, 1)));
+        group.Children.Add(new GeometryDrawing(FlowResource("Paper"), null, new RectangleGeometry(new Rect(0, 0, 24, 24))));
+        group.Children.Add(new GeometryDrawing(FlowResource("Line"), null, new EllipseGeometry(new Point(12, 12), 1, 1)));
         var brush = new DrawingBrush(group) { TileMode = TileMode.Tile, ViewportUnits = BrushMappingMode.Absolute, Viewport = new Rect(0, 0, 24, 24) };
         brush.Freeze(); return brush;
     }
@@ -205,13 +201,13 @@ public sealed partial class WorkflowView
         button.ContentTemplate = FlowIcon(text);
         if (light)
         {
-            button.Foreground = FlowBrush("#171815"); button.BorderBrush = FlowBrush("#cbc6b9");
-            button.Background = FlowBrush("#efede5");
+            button.Foreground = FlowResource("Ink"); button.BorderBrush = FlowResource("Line");
+            button.Background = FlowResource("Paper");
         }
         if (style == "CompactInk")
         {
-            button.Background = FlowBrush(light ? "#171815" : "#e8e4da");
-            button.Foreground = FlowBrush(light ? "#ffffff" : "#151714");
+            button.Background = FlowResource("Ink");
+            button.Foreground = FlowResource("Surface");
         }
         button.Click += handler; return button;
     }

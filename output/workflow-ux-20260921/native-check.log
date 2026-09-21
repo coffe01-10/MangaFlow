@@ -1,0 +1,9 @@
+PASS: workflow 1440/1100/940/650 layouts, themed fields, focus restoration, view menu, Shift-wheel, scaled scroll extent, contextual actions, zoom, copy/undo/redo, draft save, and failed-save gating (A01).
+Offscreen WPF + HTTP fixtures. Live API/Worker/provider, physical pointer drag, high DPI and frame timing NOT RUN.
+PASS: workflow fullscreen window state, focused shell, Escape, restored navigation preferences and leave cleanup.
+PASS: workflow navigation flushes an armed autosave debounce exactly once
+PASS: workflow connection rules (data_type match / no self-loop / duplicate port pair / deterministic edge id) enforced end to end
+PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract, stale approval model alias gating, PAGE scope chapter picker (B02), FAILED run retry (B04), default templates (B03), version restore (B01)
+PASS: #427 乱序完成的两次工作流载入——画布/workflowId/version 保持一致（画布显示最后请求的工作流）
+PASS: #427 A→B→C 切换（离场 flush 挂起在途）——没有发出 (graph, id) 配错的 PATCH，离场编辑照常落盘
+PASS: #427 Activate 恰好发起一次工作流载入

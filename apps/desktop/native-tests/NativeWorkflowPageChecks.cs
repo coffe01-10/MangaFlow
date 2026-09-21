@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Input;
 using System.Windows.Threading;
 using MangaFlow.Native;
 using MangaFlow.Native.Controls;
@@ -46,6 +47,7 @@ internal static class NativeWorkflowPageChecks
                 Project = new("layout", "我最讨厌妹妹了", "", 0, 0),
                 NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
             await Until(() => Field<string>(view, "canvasWorkflowId") == "wf-layout" && Field<int>(view, "runsLoading") == 0);
+            Require(Field<double>(view, "scale") == 1, "workflow opens at readable 100% zoom");
             foreach (int width in new[] { 1440, 1100, 940, 650 })
             {
                 Layout(view, width, 900);
@@ -56,7 +58,7 @@ internal static class NativeWorkflowPageChecks
                 Require(Field<FrameworkElement>(view, "libraryPane").Visibility == (width < 980 ? Visibility.Collapsed : Visibility.Visible), "compact sidebars start closed");
                 Render(view, width, 900, Path.Combine(output, $"native-workflow-{width}.png"));
             }
-            Click(Field<Button>(view, "libraryToggle")); Layout(view, 650, 900);
+            Call(view, "ToggleLibrary", true); Layout(view, 650, 900);
             Require(Field<FrameworkElement>(view, "libraryPane").Visibility == Visibility.Visible, "library drawer opens");
             Render(view, 650, 900, Path.Combine(output, "native-workflow-library-drawer.png"));
             Call(view, "ToggleInspector", true); Layout(view, 650, 900);
@@ -67,7 +69,7 @@ internal static class NativeWorkflowPageChecks
             Require(Field<Button>(view, "copyButton").IsEnabled && Field<Button>(view, "runNodeButton").IsEnabled, "node selection enables contextual commands");
             var inspector = Field<StackPanel>(view, "inspector");
             var name = Desc(inspector).OfType<TextBox>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "节点名称");
-            Require(((SolidColorBrush)name.Background).Color == Color.FromRgb(0x19, 0x1d, 0x1a), "inspector still uses a light editor");
+            Require(Equals(name.Background, Application.Current.FindResource("Surface")), "inspector follows the application surface theme");
             name.Text = "角色一致性与剧本解析";
             Call(view, "ToggleInspector", false); Call(view, "ToggleInspector", true); Layout(view, 1440, 1000);
             Require(ReferenceEquals(name, Desc(inspector).OfType<TextBox>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "节点名称")), "drawer toggle rebuilt editing controls");
@@ -88,6 +90,7 @@ internal static class NativeWorkflowPageChecks
             Click(Field<Button>(view, "redoButton")); Require(nodes.Count == originalCount + 1, "redo failed to restore copied node");
             Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "100%")));
             Require(Math.Abs(Field<double>(view, "scale") - 1) < 0.001, "100% zoom control does not change canvas");
+            VerifyPresentation(view, output);
             await view.ConfirmLeaveAsync();
             Require(fixture.Patches > 0 && JsonSerializer.Deserialize<JsonElement>(fixture.Saved).GetProperty("draft_graph")
                 .GetProperty("nodes").EnumerateArray().Any(n => n.GetProperty("name").GetString() == "角色一致性与剧本解析"),
@@ -133,7 +136,7 @@ internal static class NativeWorkflowPageChecks
             view.SaveFailLeaveOverride = null;
             fixture.FailPatch = null;
 
-            Console.WriteLine("PASS: workflow 1440/1100/940/650 layouts, responsive drawers, preserved editor, dark fields, contextual actions, zoom, copy/undo/redo, draft save, repeated node loading, and failed-save gating of publish/validate/switch/leave with 409 version sync (A01).");
+            Console.WriteLine("PASS: workflow 1440/1100/940/650 layouts, themed fields, focus restoration, view menu, Shift-wheel, scaled scroll extent, contextual actions, zoom, copy/undo/redo, draft save, and failed-save gating (A01).");
             Console.WriteLine("Offscreen WPF + HTTP fixtures. Live API/Worker/provider, physical pointer drag, high DPI and frame timing NOT RUN.");
         }
         finally
@@ -144,6 +147,62 @@ internal static class NativeWorkflowPageChecks
             await view.ConfirmLeaveAsync();
             view.Deactivate();
         }
+        NativeWorkflowShellChecks.Run(output);
+    }
+    private static void VerifyPresentation(WorkflowView view, string output)
+    {
+        Layout(view, 1440, 900);
+        var viewport = Field<ScrollViewer>(view, "canvasScroll");
+        viewport.ScrollToHorizontalOffset(180); viewport.ScrollToVerticalOffset(90); Layout(view, 1440, 900);
+        var x = viewport.HorizontalOffset; var y = viewport.VerticalOffset;
+        Require(view.HandleCanvasWheel(-120, ModifierKeys.Shift), "Shift-wheel must be handled");
+        Layout(view, 1440, 900);
+        Require(viewport.HorizontalOffset > x && viewport.VerticalOffset == y, "Shift-wheel pans only horizontally");
+        Require(!view.HandleCanvasWheel(-120, ModifierKeys.None), "ordinary wheel remains vertical scrolling");
+        var extent = viewport.ExtentWidth;
+        Require(view.HandleCanvasWheel(120, ModifierKeys.Control), "Ctrl-wheel zoom is handled");
+        Layout(view, 1440, 900);
+        Require(Field<double>(view, "scale") > 1 && viewport.ExtentWidth > extent, "scroll extent follows zoom");
+        Call(view, "ZoomCanvas", 1 / 1.1);
+        Call(view, "Select", Field<System.Collections.IList>(view, "nodes")[2]!);
+        Call(view, "ToggleLibrary", false); Call(view, "ToggleInspector", true);
+        Layout(view, 1440, 900);
+        var inspector = Field<StackPanel>(view, "inspector");
+        var editor = Desc(inspector).OfType<TextBox>().First();
+        var oldHeight = viewport.ActualHeight;
+        Click(Field<Button>(view, "focusButton")); Layout(view, 1440, 900);
+        Require(Field<FrameworkElement>(view, "libraryPane").Visibility == Visibility.Collapsed
+            && Field<FrameworkElement>(view, "inspectorPane").Visibility == Visibility.Collapsed
+            && Field<FrameworkElement>(view, "runnerPane").Visibility == Visibility.Collapsed, "focus removes auxiliary panels");
+        Require(viewport.ActualHeight > oldHeight && viewport.ActualWidth > 1400, "focus returns room to canvas");
+        var notice = Field<TextBlock>(view, "statusLine");
+        var previousNotice = notice.Text;
+        notice.Text = "保存失败，请重试"; Layout(view, 1440, 900);
+        Require(notice.Visibility == Visibility.Visible && notice.ActualHeight > 0, "focus must not hide save failure notices");
+        notice.Text = previousNotice;
+        Render(view, 1440, 900, Path.Combine(output, "native-workflow-focus.png"));
+        Layout(view, 650, 900); Layout(view, 1440, 900);
+        Require(Field<FrameworkElement>(view, "libraryPane").Visibility == Visibility.Collapsed, "resizing cannot reopen focused panes");
+        Require(view.HandlePresentationKey(Key.F11, ModifierKeys.None), "F11 enters fullscreen");
+        Require(Equals(Field<Button>(view, "fullscreenButton").Content, "退出全屏"), "fullscreen has an explicit exit");
+        var wireField = typeof(WorkflowView).GetField("cancelWire", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var cancelled = false;
+        wireField.SetValue(view, (Action)(() => { cancelled = true; wireField.SetValue(view, null); }));
+        Require(view.HandlePresentationKey(Key.Escape, ModifierKeys.None) && cancelled && Field<bool>(view, "studioFullscreen"),
+            "Escape cancels a pending wire before leaving fullscreen");
+        Require(view.HandlePresentationKey(Key.Escape, ModifierKeys.None) && Field<bool>(view, "focusMode"), "Escape leaves fullscreen before focus");
+        Require(view.HandlePresentationKey(Key.Escape, ModifierKeys.None), "Escape leaves focus");
+        Layout(view, 1440, 900);
+        Require(Field<FrameworkElement>(view, "libraryPane").Visibility == Visibility.Collapsed
+            && Field<FrameworkElement>(view, "inspectorPane").Visibility == Visibility.Visible, "focus restores asymmetric panel choices");
+        Require(ReferenceEquals(editor, Desc(inspector).OfType<TextBox>().First()), "focus preserves editing control and unsaved text");
+        var menuButton = Desc(view).OfType<Button>().Single(b => Equals(b.Content, "视图 ▾"));
+        Click(menuButton);
+        var mapItem = menuButton.ContextMenu.Items.OfType<MenuItem>().Single(m => Equals(m.Header, "小地图"));
+        mapItem.IsChecked = false; mapItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        Require(Field<FrameworkElement>(view, "minimapHost").Visibility == Visibility.Collapsed, "view menu hides minimap");
+        menuButton.ContextMenu.IsOpen = false;
+        Require(!Desc(view).OfType<Button>().Any(b => Equals(b.Content, "运行已发布流程")), "run has a single entry point");
     }
     private static void Call(object target, string name, params object[] args) => target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, args);
     private static void Fits(Panel panel)
