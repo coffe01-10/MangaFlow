@@ -536,15 +536,42 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
         )
 
         # --- 工作流:草稿图(定义自带 draft_graph,draft 状态无需 version 行) ---
+        # P4-3b: draft_graph 必须是 API 的 canonical v2 形状（WorkflowGraph:
+        # name 必填、端口显式、边用 source_node/source_port/target_node/
+        # target_port）。旧形状 {label,params}/{source,target} 写库后 GET 原样
+        # 透传（GET 不归一化），native 加载后节点无名字无端口，且任何编辑触发的
+        # 全量 PATCH 都会 422（name min_length=1），保存链整体瘫痪。
         session.add(
             WorkflowDefinition(
                 project_id=main.id, name=f"{DATASET_TAG} 默认流程", description="验收用两节点流程",
                 draft_graph={
+                    "schema_version": 2,
                     "nodes": [
-                        {"id": "n1", "type": "SOURCE_INPUT", "label": "原作输入", "position": {"x": 80, "y": 80}, "params": {}},
-                        {"id": "n2", "type": "SCRIPT", "label": "剧本解析", "position": {"x": 320, "y": 80}, "params": {}},
+                        {
+                            "id": "n1", "type": "SOURCE_INPUT", "name": "原作输入",
+                            "position": {"x": 80, "y": 80}, "config": {},
+                            "inputs": [],
+                            "outputs": [
+                                {"id": "source", "label": "原作", "data_type": "text", "required": False}
+                            ],
+                        },
+                        {
+                            "id": "n2", "type": "SCRIPT", "name": "剧本解析",
+                            "position": {"x": 320, "y": 80}, "config": {},
+                            "inputs": [
+                                {"id": "source", "label": "原作", "data_type": "text", "required": False}
+                            ],
+                            "outputs": [
+                                {"id": "script", "label": "剧本", "data_type": "json", "required": False}
+                            ],
+                        },
                     ],
-                    "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+                    "edges": [
+                        {
+                            "id": "e1", "source_node": "n1", "source_port": "source",
+                            "target_node": "n2", "target_port": "source",
+                        }
+                    ],
                 },
                 draft_version=1,
             )
