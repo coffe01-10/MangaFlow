@@ -36,7 +36,10 @@ NUI-6 不能据该轮勾选完成。
 
 ## 2026-09-20 NUI-10 RC1 发布工程轮（分支 `goal/nui10-rc1`）
 
-台账：`output/nui10-rc1/matrix.md`（随栈顶 PR #1003 入库）。本轮实测结论：
+台账：`output/nui10-rc1/matrix.md`（随栈顶 PR #1003 入库）。变更按主题拆 5 个 PR
+（#999 net10 迁移 / #1000 工具与种子接线 / #1001 种子与取名缺陷修复 / #1002 版本统一 /
+#1003 台账与证据）链式合并入 master，base 逐级 retarget、merge commit，2026-09-21 收口。
+本轮实测结论：
 
 - **net10 迁移**（`6418b5f1` + 家族修复 `c5d2d581`）：6 文件纯 TFM/路径替换 +
   global.json 钉 10.0.401。net10 行为差异一处成灾：HttpClient 把已取消请求的底层
