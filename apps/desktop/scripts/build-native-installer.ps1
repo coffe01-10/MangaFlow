@@ -31,7 +31,7 @@ function Copy-Tree($source, $target, $excludeDirs) {
     if ($code -ge 8) { throw "robocopy 失败（$code）：$source -> $target" }
 }
 
-$nativeOut = Join-Path $repo "apps\desktop\native\bin\Release\net8.0-windows"
+$nativeOut = Join-Path $repo "apps\desktop\native\bin\Release\net10.0-windows"
 if (-not (Test-Path -LiteralPath (Join-Path $nativeOut "MangaFlow.Native.exe"))) {
     throw "客户端未构建：先 dotnet build apps/desktop/native -c Release"
 }

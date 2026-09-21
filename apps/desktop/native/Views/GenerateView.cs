@@ -112,9 +112,10 @@ public sealed partial class GenerateView : WorkspaceView
         }
         base.Activate(context);
         referencesLoaded = false;
+        // token 捕获在 try 外：catch 的作用域守卫（net10 迟到失败窗口）也要看到它。
+        var token = lifetime.Token;
         try
         {
-            var token = lifetime.Token;
             var chapterTask = Api.SendAsync($"projects/{ProjectId}/chapters", cancellation: token);
             var modelTask = Api.SendAsync("models", cancellation: token);
             var characterTask = Api.SendAsync($"projects/{ProjectId}/characters", cancellation: token);
@@ -170,6 +171,9 @@ public sealed partial class GenerateView : WorkspaceView
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            // 作用域守卫（net10 迟到失败窗口）：token 是本次激活发起时捕获的——
+            // Deactivate 之后恒为取消态，旧项目的迟到失败不得画进新项目。
+            if (token.IsCancellationRequested) return;
             body.Children.Clear();
             body.Children.Add(Kit.Caption($"页面列表读取失败：{error.Message}"));
         }

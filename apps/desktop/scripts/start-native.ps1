@@ -86,7 +86,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Native host build failed.' }
     & dotnet build $nativeProject -c Release --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Native UI build failed.' }
-    $nativeOutput = Join-Path $nativeRepo 'apps/desktop/native/bin/Release/net8.0-windows'
+    $nativeOutput = Join-Path $nativeRepo 'apps/desktop/native/bin/Release/net10.0-windows'
     # The WPF client loads the host from ITS output directory first (NativeBackend),
     # so a failed or partial copy here would silently run a stale host. Build and
     # copy are already fail-closed; the hash comparison additionally rejects a

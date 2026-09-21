@@ -366,13 +366,16 @@ public sealed partial class WorkflowView : WorkspaceView
     public override async void Activate(WorkspaceContext context)
     {
         base.Activate(context);
+        // 作用域守卫（net10 迟到失败窗口，StoryboardView.Activate 同款）：跨项目
+        // 切换续新 CTS 后，上一轮激活的迟到失败不得画进新项目。
+        var requestLifetime = lifetime;
         try
         {
             var typesTask = Api.SendAsync("workflow-node-types", cancellation: lifetime.Token);
             var workflowsTask = Api.SendAsync($"projects/{ProjectId}/workflows", cancellation: lifetime.Token);
             var chaptersTask = Api.SendAsync($"projects/{ProjectId}/chapters", cancellation: lifetime.Token);
             await Task.WhenAll(typesTask, workflowsTask, chaptersTask);
-            if (lifetime.Token.IsCancellationRequested) return;
+            if (lifetime.Token.IsCancellationRequested || !ReferenceEquals(requestLifetime, lifetime)) return;
             nodeTypes = (await typesTask).EnumerateArray().ToList();
             workflows = (await workflowsTask).EnumerateArray().ToList();
             chapters = (await chaptersTask).EnumerateArray().Select(ChapterItem.From).ToList();
@@ -405,6 +408,7 @@ public sealed partial class WorkflowView : WorkspaceView
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (!ReferenceEquals(requestLifetime, lifetime) || lifetime.Token.IsCancellationRequested) return;
             statusLine.Text = $"无法载入项目工作流：{error.Message}";
         }
     }
@@ -580,6 +584,8 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private async Task LoadPageTargetsAsync()
     {
+        // 作用域守卫：跨项目切换空档里旧激活的页目标迟到失败不写状态条。
+        var requestLifetime = lifetime;
         try
         {
             var chapterId = (scopeChapter.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
@@ -589,7 +595,8 @@ public sealed partial class WorkflowView : WorkspaceView
             scopePages = [];
             if (chapterId.Length == 0) return;
             var rows = await Api.SendAsync($"chapters/{chapterId}/pages", cancellation: lifetime.Token);
-            if (load != scopeLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            if (load != scopeLoadVersion || lifetime.Token.IsCancellationRequested
+                || !ReferenceEquals(requestLifetime, lifetime)) return;
             if ((scopeType.SelectedItem as ComboBoxItem)?.Tag as string != "PAGE") return;
             if ((scopeChapter.SelectedItem as ComboBoxItem)?.Tag as string != chapterId) return;
             scopePages = rows.EnumerateArray().Select(PageItem.From).ToList();
@@ -601,6 +608,7 @@ public sealed partial class WorkflowView : WorkspaceView
         catch (Exception error) when (error is not OperationCanceledException)
         {
             if ((scopeChapter.SelectedItem as ComboBoxItem)?.Tag as string != pageChapterId) return;
+            if (!ReferenceEquals(requestLifetime, lifetime) || lifetime.Token.IsCancellationRequested) return;
             scopeTarget.SelectedItem = null;
             statusLine.Text = $"运行范围读取失败：{error.Message}";
         }
@@ -610,10 +618,12 @@ public sealed partial class WorkflowView : WorkspaceView
     // 检查器下拉退化为 auto 选项、审批选不到模型，不阻断工作流载入。
     private async Task LoadModelsAsync()
     {
+        // 作用域守卫：跨项目切换空档里旧激活的模型目录迟到失败不写状态条。
+        var requestLifetime = lifetime;
         try
         {
             var rows = await Api.SendAsync("models", cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
+            if (lifetime.Token.IsCancellationRequested || !ReferenceEquals(requestLifetime, lifetime)) return;
             textModels = rows.EnumerateArray()
                 .Where(m => m.Text("model_type") == "TEXT" && HasOperation(m, "structured_text")).ToList();
             imageModels = rows.EnumerateArray()
@@ -622,6 +632,7 @@ public sealed partial class WorkflowView : WorkspaceView
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (!ReferenceEquals(requestLifetime, lifetime) || lifetime.Token.IsCancellationRequested) return;
             textModels = [];
             imageModels = [];
             statusLine.Text = $"模型目录读取失败：{error.Message.Split('\n')[0]}";
@@ -697,10 +708,13 @@ public sealed partial class WorkflowView : WorkspaceView
         publishedVersions = [];
         versionsFailed = false;
         RenderVersionList();
+        // 作用域守卫（net10 迟到失败窗口）：跨项目切换空档里的旧激活失败不写状态条。
+        var requestLifetime = lifetime;
         try
         {
             var loaded = await Api.SendAsync($"workflows/{requestedId}", cancellation: lifetime.Token);
-            if (requestVersion != workflowLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            if (requestVersion != workflowLoadVersion || lifetime.Token.IsCancellationRequested
+                || !ReferenceEquals(requestLifetime, lifetime)) return;
             // 提交块：画布归属、当前选择、版本号与 current 同组落地（都在 UI 线程，
             // 中间无 await），三者永不描述不同的工作流。
             CommitLoadedWorkflow(loaded, requestedId);
@@ -710,6 +724,7 @@ public sealed partial class WorkflowView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (!ReferenceEquals(requestLifetime, lifetime) || lifetime.Token.IsCancellationRequested) return;
             // 载入失败时画布仍是旧工作流的图（canvasWorkflowId 未动）。调用方在
             // await 之前已把 workflowId/选择器拨到新工作流：不回滚的话防抖回调的
             // 身份检查（armed == workflowId == canvasWorkflowId）从此恒假，画布上
@@ -763,10 +778,12 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private async Task LoadVersionsAsync(string workflow, int requestVersion)
     {
+        var requestLifetime = lifetime;
         try
         {
             var rows = await Api.SendAsync($"workflows/{workflow}/versions", cancellation: lifetime.Token);
-            if (requestVersion != workflowLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            if (requestVersion != workflowLoadVersion || lifetime.Token.IsCancellationRequested
+                || !ReferenceEquals(requestLifetime, lifetime)) return;
             if (workflow != canvasWorkflowId) return;
             publishedVersions = rows.ValueKind == JsonValueKind.Array ? rows.EnumerateArray().ToList() : [];
             versionsFailed = false;
@@ -776,7 +793,8 @@ public sealed partial class WorkflowView : WorkspaceView
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            if (requestVersion != workflowLoadVersion || workflow != canvasWorkflowId) return;
+            if (requestVersion != workflowLoadVersion || workflow != canvasWorkflowId
+                || !ReferenceEquals(requestLifetime, lifetime) || lifetime.Token.IsCancellationRequested) return;
             publishedVersions = [];
             versionsFailed = true;
             RenderVersionList();

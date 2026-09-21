@@ -83,11 +83,14 @@ public sealed partial class ProjectSettingsView : WorkspaceView
         body.Children.Add(SettingsHero());
         var spinner = new Spinner { Size = 20, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 18, 0, 0) };
         body.Children.Add(spinner);
+        // 作用域守卫（net10 迟到失败窗口）：钉住发起时的 CTS 实例——跨项目切换
+        // 续新 CTS 后，旧项目设置的迟到失败/数据都不得画进新项目。
+        var requestLifetime = lifetime;
         try
         {
             var loaded = await Api.SendAsync($"projects/{ProjectId}", cancellation: lifetime.Token);
             var models = await Api.SendAsync("models", cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
+            if (lifetime.Token.IsCancellationRequested || !ReferenceEquals(requestLifetime, lifetime)) return;
             project = loaded;
             version = loaded.Number("version");
             textModels = models.EnumerateArray()
@@ -101,6 +104,7 @@ public sealed partial class ProjectSettingsView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (!ReferenceEquals(requestLifetime, lifetime) || lifetime.Token.IsCancellationRequested) return;
             body.Children.Clear();
             projectTitle.Text = "项目设置";
             body.Children.Add(SettingsHero());

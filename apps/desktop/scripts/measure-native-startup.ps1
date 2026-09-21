@@ -9,7 +9,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
-$exe = Join-Path $repo 'apps/desktop/native/bin/Release/net8.0-windows/MangaFlow.Native.exe'
+$exe = Join-Path $repo 'apps/desktop/native/bin/Release/net10.0-windows/MangaFlow.Native.exe'
 $dataRoot = Join-Path $env:TEMP ("mangaflow-perf-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
 $results = @()
