@@ -681,13 +681,16 @@ public sealed partial class WorkflowView : WorkspaceView
                 };
                 library.Children.Add(label);
             }
+            // 节点目录的展示名字段是 label（node_type_catalog）；display_name 是历史键，
+            // 缺失时库列表只剩描述，与 AddNode（2073b99a）同一处坑。
+            var displayName = type.Text("label", type.Text("display_name"));
             var button = new Button
             {
                 Content = new StackPanel
                 {
                     Children =
                     {
-                        new TextBlock { Text = type.Text("display_name"), FontWeight = FontWeights.Bold, FontSize = 13, Foreground = FlowResource("Ink"), TextWrapping = TextWrapping.Wrap },
+                        new TextBlock { Text = displayName, FontWeight = FontWeights.Bold, FontSize = 13, Foreground = FlowResource("Ink"), TextWrapping = TextWrapping.Wrap },
                         new TextBlock { Text = type.Text("description"), FontSize = 12, Foreground = FlowResource("Muted"), TextWrapping = TextWrapping.Wrap },
                     },
                 },
@@ -999,12 +1002,20 @@ public sealed partial class WorkflowView : WorkspaceView
         var minX = nodes.Min(n => n.Position.X);
         var maxX = nodes.Max(n => n.Position.X + NodeWidth);
         var minY = nodes.Min(n => n.Position.Y);
-        var maxY = nodes.Max(n => n.Position.Y + 140);
+        // 色块只画在节点左上角（高 ≤6px）：若按节点完整高度（+140）取包络再
+        // 居中，色块会整体偏高、底部留出一大块（实机验收指出的残余偏差）。
+        // 按色块实际覆盖范围（节点顶部坐标）取包络，视觉上才真正居中。
+        // FitView 的同款包络含节点高度——那边要装下整张卡片，是正确的。
+        var maxY = nodes.Max(n => n.Position.Y);
         var spanX = Math.Max(200, maxX - minX);
         var spanY = Math.Max(200, maxY - minY);
         var sx = (minimap.Width - 8) / spanX;
         var sy = (minimap.Height - 8) / spanY;
         var s = Math.Min(sx, sy);
+        // 等比缩放后短轴方向必有留白：不平移到居中，宽流程图会整条挤在左上
+        // 角，小地图大半空白。OnMinimapNavigate 的反算必须用同一个原点。
+        var ox = Math.Max(4, (minimap.Width - (maxX - minX) * s) / 2);
+        var oy = Math.Max(4, (minimap.Height - (maxY - minY) * s) / 2);
         foreach (var node in nodes)
         {
             var tone = node.Type.StartsWith("source.") ? Color.FromRgb(0x39, 0x7B, 0x68)
@@ -1018,12 +1029,14 @@ public sealed partial class WorkflowView : WorkspaceView
                 Height = Math.Max(3, 18 * s),
                 Fill = new SolidColorBrush(tone),
             };
-            Canvas.SetLeft(dot, 4 + (node.Position.X - minX) * s);
-            Canvas.SetTop(dot, 4 + (node.Position.Y - minY) * s);
+            Canvas.SetLeft(dot, ox + (node.Position.X - minX) * s);
+            Canvas.SetTop(dot, oy + (node.Position.Y - minY) * s);
             minimap.Children.Add(dot);
         }
-        miniOriginX = minX;
-        miniOriginY = minY;
+        // 反算式 x = miniOriginX + (point.X - 4) / s：代回可得 flow x = minX + (point.X - ox) / s，
+        // 恰为色块摆放的正向映射，保证点击色块本身即居中该节点。
+        miniOriginX = minX + (4 - ox) / s;
+        miniOriginY = minY + (4 - oy) / s;
         miniScale = s;
     }
 
@@ -1180,6 +1193,8 @@ public sealed partial class WorkflowView : WorkspaceView
             Canvas.SetLeft(node.Element, x);
             Canvas.SetTop(node.Element, y);
             RedrawEdgesFor(node);
+            // 拖动只改 Position，不重建画布：小地图不同步就会一直显示旧位置。
+            RenderMinimap();
         };
         MouseButtonEventHandler up = null!;
         MouseEventHandler lost = null!;

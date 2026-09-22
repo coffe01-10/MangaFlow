@@ -49,6 +49,7 @@ internal static class NativeWorkflowRunChecks
         {
             InspectorShapeChecks();
             ConfigWriteBackChecks();
+            MinimapGeometryChecks();
             await RunsAndApprovalChecks();
             await StaleApprovalModelChecks();
             await DuplicateAutosaveChecks();
@@ -286,7 +287,7 @@ internal static class NativeWorkflowRunChecks
                 return Task.FromResult(Response(runsJson));
             }
             if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
-                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+                """[{"type":"agent.parse","label":"解析","category":"AGENT","description":"识别场景与角色。","inputs":[],"outputs":[]}]"""));
             if (path.EndsWith("/projects/p1/workflows"))
                 return Task.FromResult(Response("""[{"id":"wf-1","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]"""));
             if (path.EndsWith("/projects/p1/chapters"))
@@ -313,6 +314,11 @@ internal static class NativeWorkflowRunChecks
 
             // 空历史：与网页页脚同文案。
             Require(HistoryText(view).Contains("尚未运行已发布版本"), "空运行历史缺少提示文案");
+
+            // 节点库回归：目录只发 label（真实 node_type_catalog 无 display_name 键），
+            // 库条目必须显示节点名称而不是只剩描述（2073b99a 在 AddNode 修过同一处坑）。
+            Require(Descendants(view).OfType<TextBlock>().Any(text => text.Text == "解析"),
+                "节点库条目缺少节点名称");
 
             // 首轮数据：两条审批行（generator.page 选模型；control.approval 前往采用）。
             runsJson = waitingJson;
@@ -425,7 +431,7 @@ internal static class NativeWorkflowRunChecks
                 return Task.FromResult(Response(runsJson));
             }
             if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
-                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+                """[{"type":"agent.parse","label":"解析","category":"AGENT","description":"识别场景与角色。","inputs":[],"outputs":[]}]"""));
             if (path.EndsWith("/projects/p1/workflows"))
                 return Task.FromResult(Response("""[{"id":"wf-st","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]"""));
             if (path.EndsWith("/projects/p1/chapters"))
@@ -706,7 +712,7 @@ internal static class NativeWorkflowRunChecks
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
-                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+                """[{"type":"agent.parse","label":"解析","category":"AGENT","description":"识别场景与角色。","inputs":[],"outputs":[]}]"""));
             if (path.EndsWith("/projects/p1/workflows"))
                 return Task.FromResult(Response("""[{"id":"wf-1","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]"""));
             if (path.EndsWith("/projects/p1/chapters"))
@@ -809,7 +815,7 @@ internal static class NativeWorkflowRunChecks
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
-                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+                """[{"type":"agent.parse","label":"解析","category":"AGENT","description":"识别场景与角色。","inputs":[],"outputs":[]}]"""));
             if (path.EndsWith("/projects/p1/workflows"))
                 return Task.FromResult(Response("""[{"id":"wf-1","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]"""));
             if (path.EndsWith("/projects/p1/chapters"))
@@ -885,7 +891,7 @@ internal static class NativeWorkflowRunChecks
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
-                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+                """[{"type":"agent.parse","label":"解析","category":"AGENT","description":"识别场景与角色。","inputs":[],"outputs":[]}]"""));
             if (path.EndsWith("/projects/p1/chapters") || path.EndsWith("/models") || path.EndsWith("/runs") || path.EndsWith("/versions"))
                 return Task.FromResult(Response("[]"));
             if (path.EndsWith("/projects/p1/workflows") && request.Method == HttpMethod.Get)
@@ -973,7 +979,7 @@ internal static class NativeWorkflowRunChecks
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
-                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+                """[{"type":"agent.parse","label":"解析","category":"AGENT","description":"识别场景与角色。","inputs":[],"outputs":[]}]"""));
             if (request.Method == HttpMethod.Patch)
                 return Task.FromResult(Response("""{"id":"wf-1","name":"流程","version":10,"draft_version":5,"draft_graph":{"nodes":[],"edges":[]}}"""));
             if (path.EndsWith("/projects/p1/workflows"))
@@ -1162,7 +1168,7 @@ internal static class NativeWorkflowRunChecks
                 return Task.FromResult(Response("""{"id":"wf-rc","name":"流程","version":10,"draft_version":5,"draft_graph":{"nodes":[],"edges":[]}}"""));
             }
             if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
-                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+                """[{"type":"agent.parse","label":"解析","category":"AGENT","description":"识别场景与角色。","inputs":[],"outputs":[]}]"""));
             if (path.EndsWith("/projects/p1/workflows"))
                 return Task.FromResult(Response("""[{"id":"wf-rc","name":"流程"}]"""));
             if (path.EndsWith("/projects/p1/chapters") || path.EndsWith("/models") || path.EndsWith("/runs"))
@@ -1240,7 +1246,7 @@ internal static class NativeWorkflowRunChecks
             if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-lf2"))
                 return Task.FromResult(Response("""{"id":"wf-lf2","name":"乙流程","version":4,"draft_version":2,"draft_graph":{"nodes":[],"edges":[]}}"""));
             if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
-                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+                """[{"type":"agent.parse","label":"解析","category":"AGENT","description":"识别场景与角色。","inputs":[],"outputs":[]}]"""));
             if (path.EndsWith("/projects/p1/workflows"))
                 return Task.FromResult(Response("""[{"id":"wf-lf1","name":"甲流程"},{"id":"wf-lf2","name":"乙流程"}]"""));
             if (path.EndsWith("/projects/p1/chapters") || path.EndsWith("/models") || path.EndsWith("/runs"))
@@ -1384,6 +1390,81 @@ internal static class NativeWorkflowRunChecks
         ((JsonElement)node.GetType().GetProperty("ConfigElement")!.GetValue(node)!).Element("condition").Text("path");
 
     // ── 反射/断言辅助（沿用 NativeWorkflowConnectionChecks 的零网络模式） ──
+
+    // ── 小地图回归（用户截图缺陷）：宽流程图此前整条钉在左上角（s=min(sx,sy)
+    // 后短轴留白不居中），且拖动只改 Position 从不重渲染小地图。本检查钉住
+    // 几何契约：短轴居中、OnMinimapNavigate 反算与渲染同原点、位置变化即跟随。
+    // 拖动处理器（closure）内的 RenderMinimap 接线本身无法离屏模拟——
+    // 与套件既有边界一致（physical pointer drag NOT RUN）。
+    private static void MinimapGeometryChecks()
+    {
+        var view = new WorkflowView();
+        try
+        {
+            var a = CreateNode(view, "map-1", "source.chapter");
+            var b = CreateNode(view, "map-2", "agent.parse");
+            var c = CreateNode(view, "map-3", "output.page");
+            var minimap = Field<System.Windows.Controls.Canvas>(view, "minimap");
+            var nodeWidth = Convert.ToDouble(typeof(WorkflowView).GetField("NodeWidth", All)!.GetValue(null)!);
+            var render = () => typeof(WorkflowView).GetMethod("RenderMinimap", All)!.Invoke(view, null);
+            var positions = new (double X, double Y)[] { (0, 0), (800, 20), (1600, 60) };
+
+            SetPositions([a, b, c], positions);
+            render();
+            var dots = minimap.Children.OfType<System.Windows.Shapes.Rectangle>().ToList();
+            Require(dots.Count == 3, "小地图应每个节点渲染一个色块");
+            var s = Field<double>(view, "miniScale");
+            var (originX, originY) = MiniOrigin(positions, nodeWidth, minimap.Width, minimap.Height, s);
+            Require(originY > 30, "宽流程图在小地图中应垂直居中，而不是贴着顶边留白大半");
+            Require(Math.Abs(Canvas.GetTop(dots[0]) - (originY + positions[0].Y * s)) <= 0.5,
+                "小地图色块纵向位置与居中原点不一致");
+            Require(Math.Abs(Canvas.GetLeft(dots[2]) - (originX + positions[2].X * s)) <= 0.5,
+                "小地图色块横向位置与原点不一致");
+
+            // OnMinimapNavigate 的 x = miniOrigin + (point - 4) / s 必须与渲染同原点：
+            // 反算色块自身坐标应精确还原节点 flow 坐标，点击色块即居中该节点。
+            var navX = Field<double>(view, "miniOriginX") + (Canvas.GetLeft(dots[1]) - 4) / s;
+            var navY = Field<double>(view, "miniOriginY") + (Canvas.GetTop(dots[1]) - 4) / s;
+            Require(Math.Abs(navX - positions[1].X) <= 0.5 && Math.Abs(navY - positions[1].Y) <= 0.5,
+                "小地图点击导航的反算原点与渲染不一致，点击会跳到错误位置");
+
+            // 位置变化后重渲染必须跟随（拖动实时刷新的数据基础）。
+            positions[2] = (400, 500);
+            SetPositions([a, b, c], positions);
+            render();
+            dots = minimap.Children.OfType<System.Windows.Shapes.Rectangle>().ToList();
+            s = Field<double>(view, "miniScale");
+            (originX, originY) = MiniOrigin(positions, nodeWidth, minimap.Width, minimap.Height, s);
+            Require(Math.Abs(Canvas.GetLeft(dots[2]) - (originX + 400 * s)) <= 0.5
+                && Math.Abs(Canvas.GetTop(dots[2]) - (originY + 500 * s)) <= 0.5,
+                "节点位置变化后小地图未跟随重渲染");
+        }
+        catch (Exception error)
+        {
+            Console.WriteLine("FAIL: workflow minimap geometry: " + error.Message);
+            throw;
+        }
+        Console.WriteLine("PASS: workflow minimap letterbox centering, click-nav origin parity, live re-render");
+    }
+
+    // 与 WorkflowView.RenderMinimap 同一公式：正向摆放原点（含最小 4px 内边距）。
+    // 包络按节点顶部坐标（色块只画在左上角，不含节点高度）。
+    private static (double X, double Y) MiniOrigin(
+        (double X, double Y)[] positions, double nodeWidth, double width, double height, double s)
+    {
+        var maxX = positions.Max(p => p.X + nodeWidth);
+        var maxY = positions.Max(p => p.Y);
+        var minX = positions.Min(p => p.X);
+        var minY = positions.Min(p => p.Y);
+        return (Math.Max(4, (width - (maxX - minX) * s) / 2),
+                Math.Max(4, (height - (maxY - minY) * s) / 2));
+    }
+
+    private static void SetPositions(object[] nodes, (double X, double Y)[] positions)
+    {
+        for (var index = 0; index < nodes.Length; index++)
+            nodes[index].GetType().GetField("Position", All)!.SetValue(nodes[index], positions[index]);
+    }
 
     private static object CreateNode(WorkflowView view, string id, string type)
     {
