@@ -974,10 +974,22 @@ export interface WorkflowGraphEdge {
   target_port: string;
 }
 
+export interface WorkflowGroup {
+  id: string;
+  name: string;
+  color: string;
+  notes: string;
+  node_ids: string[];
+  collapsed: boolean;
+}
+
 export interface WorkflowGraph {
   schema_version: 2;
   nodes: WorkflowGraphNode[];
   edges: WorkflowGraphEdge[];
+  groups?: WorkflowGroup[];
+  run_mode?: "single" | "batch";
+  entry_node_ids?: string[];
 }
 
 export interface WorkflowDefinition {
@@ -1029,6 +1041,7 @@ export interface WorkflowNodeType {
 }
 
 export interface WorkflowNodeRun {
+  total_tokens?: number | null;
   id: string;
   workflow_run_id: string;
   node_id: string;
@@ -2070,6 +2083,7 @@ export const api = {
     }),
   selectedPagePngUrl: (pageId: string) => publicUrl(`/api/v1/pages/${pageId}/export.png`),
   workflowNodeTypes: () => request<WorkflowNodeType[]>("/workflow-node-types"),
+  workflowTemplate: (kind: "check" | "batch") => request<WorkflowGraph>(`/workflow-templates/${kind}`),
   workflows: (projectId: string) => request<WorkflowDefinition[]>(`/projects/${projectId}/workflows`),
   createWorkflow: (projectId: string, name = "默认漫画工作流", template: "manga_default" | "chapter_export" | "blank" = "manga_default") =>
     request<WorkflowDefinition>(`/projects/${projectId}/workflows`, {

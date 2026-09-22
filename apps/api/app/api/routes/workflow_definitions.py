@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select, update
@@ -27,8 +28,11 @@ from app.services.workflow_engine import (
     retry_run,
     validate_graph,
 )
+from app.services.workflow_presentation import run_read
+from app.services.workflow_templates import studio_template
 from app.workflow_schemas import (
     WorkflowCreate,
+    WorkflowGraph,
     WorkflowImportRequest,
     WorkflowNodeApproveRequest,
     WorkflowNodeTypeRead,
@@ -42,6 +46,11 @@ from app.workflow_schemas import (
 )
 
 router = APIRouter()
+
+
+@router.get("/workflow-templates/{kind}", response_model=WorkflowGraph)
+def read_template(kind: Literal["check", "batch"]) -> dict:
+    return studio_template(kind)
 
 
 def _project(db: Session, project_id: str) -> Project:
@@ -334,7 +343,7 @@ def restore_version(
 @router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunRead])
 def list_runs(
     workflow_id: str, db: Session = Depends(get_db), project_id: str | None = None
-) -> list[WorkflowRun]:
+) -> list[WorkflowRunRead]:
     _workflow(db, workflow_id, project_id)
     runs = list(
         db.scalars(
@@ -343,7 +352,7 @@ def list_runs(
             .order_by(WorkflowRun.created_at.desc())
         )
     )
-    return [get_run(db, item.id) for item in runs]
+    return [run_read(db, get_run(db, item.id)) for item in runs]
 
 
 @router.post(
@@ -375,9 +384,9 @@ def start_run(
 @router.get("/workflow-runs/{run_id}", response_model=WorkflowRunRead)
 def read_run(
     run_id: str, db: Session = Depends(get_db), project_id: str | None = None
-) -> WorkflowRun:
+) -> WorkflowRunRead:
     _run(db, run_id, project_id)
-    return reconcile_run(db, run_id)
+    return run_read(db, reconcile_run(db, run_id))
 
 
 @router.post("/workflow-runs/{run_id}/cancel", response_model=WorkflowRunRead)

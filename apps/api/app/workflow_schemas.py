@@ -62,10 +62,22 @@ class WorkflowEdgeDefinition(BaseModel):
     target_port: str = Field(min_length=1, max_length=80)
 
 
+class WorkflowGroup(BaseModel):
+    id: str = Field(min_length=1, max_length=120, pattern=r"^[a-zA-Z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=160)
+    color: str = Field(default="#397b68", pattern=r"^#[0-9a-fA-F]{6}$")
+    notes: str = Field(default="", max_length=20_000)
+    node_ids: list[str] = Field(min_length=1, max_length=1000)
+    collapsed: bool = False
+
+
 class WorkflowGraph(BaseModel):
     schema_version: int = Field(default=2, ge=2, le=2)
     nodes: list[WorkflowNodeDefinition] = Field(default_factory=list, max_length=1000)
     edges: list[WorkflowEdgeDefinition] = Field(default_factory=list, max_length=5000)
+    groups: list[WorkflowGroup] = Field(default_factory=list, max_length=1000)
+    run_mode: Literal["single", "batch"] = "single"
+    entry_node_ids: list[str] = Field(default_factory=list, max_length=1000)
 
     @model_validator(mode="after")
     def unique_ids(self) -> "WorkflowGraph":
@@ -75,6 +87,14 @@ class WorkflowGraph(BaseModel):
             raise ValueError("工作流节点 ID 不能重复")
         if len(edge_ids) != len(set(edge_ids)):
             raise ValueError("工作流连线 ID 不能重复")
+        group_ids = [group.id for group in self.groups]
+        if len(group_ids) != len(set(group_ids)) or set(group_ids) & set(node_ids):
+            raise ValueError("分组 ID 不能重复或与节点 ID 相同")
+        members = [node_id for group in self.groups for node_id in group.node_ids]
+        if len(members) != len(set(members)) or not set(members) <= set(node_ids):
+            raise ValueError("分组成员必须存在，且每个节点只能属于一个分组")
+        if not set(self.entry_node_ids) <= set(node_ids):
+            raise ValueError("模板入口节点必须存在")
         return self
 
 
@@ -192,6 +212,7 @@ class WorkflowNodeRunRead(BaseModel):
     finished_at: datetime | None
     error_code: str | None
     error_message: str | None
+    total_tokens: int | None = None
 
 
 class WorkflowRunRead(BaseModel):

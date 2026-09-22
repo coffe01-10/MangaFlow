@@ -14,7 +14,6 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
-  type Node,
   type NodeChange,
   type NodeProps,
   type ReactFlowInstance,
@@ -29,6 +28,7 @@ import {
   type WorkflowDefinition,
   type WorkflowGraph,
   type WorkflowGraphNode,
+  type WorkflowGroup,
   type WorkflowNodeRun,
   type WorkflowNodeType,
   type WorkflowRun,
@@ -61,32 +61,18 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { ChangeEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./workflow-studio.module.css";
 import { ClampedNumberInput } from "./clamped-number-input";
+import { WorkflowDialog } from "./workflow-dialog";
+import { COLLECT_COMMANDS, OPEN_COMMANDS, type StudioCommand } from "./command-palette";
+import {
+  arrangeNodes, cleanGroups, duplicateNodes, elapsed, groupBounds, insertNode, matchingPorts,
+  projectGroups, readLocalList, resolveHandle,
+  type Arrangement, type InsertContext, type SavedTemplate, type StudioNode, type StudioNodeData, type StudioEdge,
+} from "@/lib/workflow-editor";
 
-type StudioNodeData = {
-  graphNode: WorkflowGraphNode;
-  runStatus?: string;
-};
-type StudioNode = Node<StudioNodeData, "mangaNode">;
-type StudioEdge = Edge<{ sourcePort: string; targetPort: string }>;
-type Snapshot = { nodes: StudioNode[]; edges: StudioEdge[] };
-
-const EMPTY_CONFIG: WorkflowGraphNode["config"] = {
-  model_alias: null,
-  prompt_template: "",
-  system_instruction: "",
-  temperature: 0.2,
-  timeout_seconds: 900,
-  max_attempts: 3,
-  concurrency: 1,
-  resolution: null,
-  locked: false,
-  notes: "",
-  condition: {},
-  requires_approval: false,
-};
+type Snapshot = { nodes: StudioNode[]; edges: StudioEdge[]; groups: WorkflowGroup[] };
 
 const categoryLabel: Record<string, string> = {
   INPUT: "输入",
@@ -115,14 +101,14 @@ function nodeTone(type: string) {
 const MangaNode = memo(function MangaNode({ data, selected }: NodeProps<StudioNode>) {
   const node = data.graphNode;
   return (
-    <article className={`${styles.node} ${styles[nodeTone(node.type)]} ${selected ? styles.selected : ""}`}>
+    <article data-run-status={data.runStatus} className={`${styles.node} ${styles[nodeTone(node.type)]} ${selected ? styles.selected : ""}`}>
       <header><span>{node.type}</span><i>{data.runStatus ? statusLabel[data.runStatus] ?? data.runStatus : "DRAFT"}</i></header>
       <strong>{node.name}</strong>
       <div className={styles.ports}>
         <div>
           {node.inputs.map((port, index) => (
             <label key={port.id} style={{ top: 64 + index * 25 }}>
-              <Handle type="target" id={port.id} position={Position.Left} className={`${styles.handle} ${styles[port.data_type]}`} />
+              <Handle type="target" id={port.id} position={Position.Left} style={{ top: 80 + index * 38 }} className={`${styles.handle} ${styles[port.data_type]}`} />
               <span>{port.label}<small>{port.data_type}</small></span>
             </label>
           ))}
@@ -131,16 +117,30 @@ const MangaNode = memo(function MangaNode({ data, selected }: NodeProps<StudioNo
           {node.outputs.map((port, index) => (
             <label key={port.id} style={{ top: 64 + index * 25 }}>
               <span>{port.label}<small>{port.data_type}</small></span>
-              <Handle type="source" id={port.id} position={Position.Right} className={`${styles.handle} ${styles[port.data_type]}`} />
+              <Handle type="source" id={port.id} position={Position.Right} style={{ top: 80 + index * 38 }} className={`${styles.handle} ${styles[port.data_type]}`} />
             </label>
           ))}
         </div>
       </div>
+      {data.run && <div className={styles.nodeMetrics}><span>{elapsed(data.run)}</span><span>{data.run.total_tokens == null ? "Token —" : `${data.run.total_tokens.toLocaleString()} Token`}</span><small>{Object.keys(data.run.output_refs).filter((key) => !["job_id", "node_type"].includes(key)).length} 项结果 · 点击查看</small></div>}
     </article>
   );
 });
 
-const nodeTypes = { mangaNode: MangaNode };
+const GroupToggleContext = createContext<(id: string) => void>(() => {});
+const FlowGroup = memo(function FlowGroup({ data, selected }: NodeProps<StudioNode>) {
+  const group = data.group!;
+  const toggle = useContext(GroupToggleContext);
+  return <section className={`${styles.flowGroup} ${selected || data.membersSelected ? styles.selected : ""}`} style={{ borderColor: group.color }} data-collapsed={group.collapsed} data-run-status={data.runStatus}>
+    <header style={{ borderColor: group.color }}><strong>{group.name}</strong><button className="nodrag nopan" onClick={() => toggle(group.id)} aria-label={`${group.collapsed ? "展开" : "折叠"}分组 ${group.name}`}>{group.collapsed ? "+" : "−"}</button></header>
+    <p>{group.node_ids.length} 个节点{data.runStatus ? ` · ${statusLabel[data.runStatus] ?? data.runStatus}` : ""}</p>
+    {group.collapsed && <div className={styles.groupPorts}>{(["inputs", "outputs"] as const).map((direction) => <div key={direction}>{data.graphNode[direction].map((port, index) => <label key={port.id}>
+      <Handle type={direction === "inputs" ? "target" : "source"} id={port.id} position={direction === "inputs" ? Position.Left : Position.Right} style={{ top: 100 + index * 40 }} />
+      <span title={port.label}>{port.label}</span>
+    </label>)}</div>)}</div>}
+  </section>;
+});
+const nodeTypes = { mangaNode: MangaNode, flowGroup: FlowGroup };
 
 function graphNodes(graph: WorkflowGraph, runs: WorkflowNodeRun[] = []): StudioNode[] {
   const statuses = new Map(runs.map((run) => [run.node_id, run.status]));
@@ -216,6 +216,22 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [nodes, setNodes] = useState<StudioNode[]>([]);
   const [edges, setEdges] = useState<StudioEdge[]>([]);
+  const [groups, setGroups] = useState<WorkflowGroup[]>([]);
+  const groupsRef = useRef(groups);
+  const [runMode, setRunMode] = useState<"single" | "batch">("single");
+  const runModeRef = useRef(runMode);
+  const [picker, setPicker] = useState<InsertContext | null>(null);
+  const [nodeSearch, setNodeSearch] = useState("");
+  const [category, setCategory] = useState("ALL");
+  const [favorites, setFavorites] = useState<string[]>([]);
+  const [recent, setRecent] = useState<string[]>([]);
+  const [templateDialog, setTemplateDialog] = useState(false);
+  const [templateName, setTemplateName] = useState("");
+  const [templates, setTemplates] = useState<SavedTemplate[]>([]);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [batchPageIds, setBatchPageIds] = useState<string[]>([]);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [followRun, setFollowRun] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -270,6 +286,8 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
 
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { edgesRef.current = edges; }, [edges]);
+  useEffect(() => { groupsRef.current = groups; }, [groups]);
+  useEffect(() => { runModeRef.current = runMode; }, [runMode]);
   useEffect(() => { workflowRef.current = activeWorkflow; }, [activeWorkflow]);
 
   // #545 item 2：Promise.all 在「单页成功、整章失败」时整体拒绝——已建成的
@@ -347,6 +365,10 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     workflowRef.current = activeWorkflow;
     setNodes(graphNodes(activeWorkflow.draft_graph));
     setEdges(graphEdges(activeWorkflow.draft_graph));
+    setGroups(activeWorkflow.draft_graph.groups ?? []);
+    setRunMode(activeWorkflow.draft_graph.run_mode ?? "single");
+    setBatchPageIds([]);
+    setPicker(null);
     setPast([]);
     setFuture([]);
     setValidation([]);
@@ -370,6 +392,17 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   }, [activeWorkflow]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setFavorites(readLocalList<string>("mangaflow.node-favorites").filter((value) => typeof value === "string"));
+      setRecent(readLocalList<string>("mangaflow.node-recent").filter((value) => typeof value === "string"));
+      setTemplates(readLocalList<SavedTemplate>("mangaflow.workflow-templates").filter((value) => value && typeof value.name === "string" && value.graph?.schema_version === 2 && Array.isArray(value.graph.nodes) && Array.isArray(value.graph.edges)));
+      const requested = new URLSearchParams(window.location.search).get("workflow");
+      if (requested) setActiveId(requested);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
     const raw = window.localStorage.getItem("mangaflow.workflow.v1");
     if (!raw) return;
     try {
@@ -383,6 +416,9 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
 
   const buildGraph = useCallback((): WorkflowGraph => ({
     schema_version: 2,
+    groups: cleanGroups(groupsRef.current, nodesRef.current),
+    run_mode: runModeRef.current,
+    entry_node_ids: (workflowRef.current?.draft_graph.entry_node_ids ?? []).filter((id) => nodesRef.current.some((node) => node.id === id)),
     nodes: nodesRef.current.map((node) => ({ ...node.data.graphNode, position: node.position })),
     edges: edgesRef.current.map((edge) => ({
       id: edge.id,
@@ -465,13 +501,14 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     ? textModels.filter((model) => model.operations.includes("multimodal_analysis"))
     : textModels;
   const record = useCallback(() => {
+    const snapshot = { nodes: nodesRef.current, edges: edgesRef.current, groups: groupsRef.current };
     setPast((items) => {
       // deleteKeyCode 删除会先后触发 onNodesChange/onEdgesChange 的 remove，
       // 两次回调之间 refs 尚未随渲染更新，快照引用相同：跳过重复项，避免
       // 撤销栈出现需要按两次才生效的空步。
       const last = items[items.length - 1];
-      if (last && last.nodes === nodesRef.current && last.edges === edgesRef.current) return items;
-      return [...items.slice(-39), { nodes: nodesRef.current, edges: edgesRef.current }];
+      if (last && last.nodes === snapshot.nodes && last.edges === snapshot.edges && last.groups === snapshot.groups) return items;
+      return [...items.slice(-39), snapshot];
     });
     setFuture([]);
   }, []);
@@ -483,7 +520,29 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     // 快照（refs 此刻仍是旧状态），否则键盘删除不可撤销，且残留的 future 会在
     // 重做时用删除前的整图覆盖当前 nodes/edges。
     if (changes.some((change) => change.type === "remove")) record();
-    setNodes((items) => applyNodeChanges(changes, items));
+    const groupChanges = changes.filter((change) => "id" in change && groupsRef.current.some((group) => group.id === change.id));
+    const movedMembers = new Set(groupChanges.flatMap((change) => change.type === "position" && change.position
+      ? groupsRef.current.find((group) => group.id === change.id)!.node_ids : []));
+    const plainChanges = changes.filter((change) => !groupChanges.includes(change) && !(change.type === "position" && movedMembers.has(change.id)));
+    let next = applyNodeChanges(plainChanges, nodesRef.current);
+    for (const change of groupChanges) {
+      if (!("id" in change)) continue;
+      const group = groupsRef.current.find((item) => item.id === change.id)!;
+      if (change.type === "position" && change.position) {
+        const bounds = groupBounds(group, nodesRef.current);
+        const dx = change.position.x - bounds.x, dy = change.position.y - bounds.y;
+        next = next.map((node) => group.node_ids.includes(node.id) ? { ...node, position: { x: node.position.x + dx, y: node.position.y + dy } } : node);
+      }
+      if (change.type === "select") next = next.map((node) => group.node_ids.includes(node.id) ? { ...node, selected: change.selected } : node);
+      if (change.type === "remove") next = next.filter((node) => !group.node_ids.includes(node.id));
+    }
+    nodesRef.current = next;
+    setNodes(next);
+    if (changes.some((change) => change.type === "remove")) {
+      const ids = new Set(next.map((node) => node.id));
+      setEdges((items) => items.filter((edge) => ids.has(edge.source) && ids.has(edge.target)));
+      setGroups((items) => cleanGroups(items, next));
+    }
     if (!moving && changes.some((change) => change.type === "position" || change.type === "remove")) scheduleSave();
   }, [record, scheduleSave]);
 
@@ -494,12 +553,17 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   }, [record, scheduleSave]);
 
   const validConnection = useCallback((connection: Edge | Connection) => {
-    const source = nodesRef.current.find((node) => node.id === connection.source)?.data.graphNode.outputs.find((port) => port.id === connection.sourceHandle);
-    const target = nodesRef.current.find((node) => node.id === connection.target)?.data.graphNode.inputs.find((port) => port.id === connection.targetHandle);
-    return Boolean(source && target && source.data_type === target.data_type && connection.source !== connection.target);
+    const from = resolveHandle(connection.source, connection.sourceHandle, groupsRef.current);
+    const to = resolveHandle(connection.target, connection.targetHandle, groupsRef.current);
+    const source = nodesRef.current.find((node) => node.id === from.nodeId)?.data.graphNode.outputs.find((port) => port.id === from.handle);
+    const target = nodesRef.current.find((node) => node.id === to.nodeId)?.data.graphNode.inputs.find((port) => port.id === to.handle);
+    return Boolean(source && target && source.data_type === target.data_type && from.nodeId !== to.nodeId);
   }, []);
 
-  const connect = useCallback((connection: Connection) => {
+  const connect = useCallback((raw: Connection) => {
+    const source = resolveHandle(raw.source, raw.sourceHandle, groupsRef.current);
+    const target = resolveHandle(raw.target, raw.targetHandle, groupsRef.current);
+    const connection = { source: source.nodeId, sourceHandle: source.handle, target: target.nodeId, targetHandle: target.handle };
     if (!validConnection(connection) || !connection.sourceHandle || !connection.targetHandle) return;
     // 确定性边 id 意味着同一端口对连两次会产生两条同 id 的边:React key
     // 冲突,且按 id 删除会一次移除两条。连接前先按端口对判重。
@@ -517,25 +581,101 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   }, [record, scheduleSave, validConnection]);
 
   function addNode(type: WorkflowNodeType) {
+    const context = picker ?? { position: flowInstance.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) ?? { x: 320, y: 120 } };
+    const result = insertNode(type, context, nodesRef.current, edgesRef.current);
+    if (!result) { setNotice("端口类型不兼容或原连线已被删除，请重新选择"); return; }
     record();
-    const id = `${type.type.replaceAll(".", "-")}-${crypto.randomUUID().slice(0, 8)}`;
-    const graphNode: WorkflowGraphNode = {
-      id,
-      type: type.type,
-      name: type.label,
-      position: { x: 320 + nodes.length * 24, y: 120 + nodes.length * 18 },
-      inputs: type.inputs,
-      outputs: type.outputs,
-      config: {
-        ...EMPTY_CONFIG,
-        model_alias: type.type.startsWith("agent.") || type.type.startsWith("quality.") || type.type.startsWith("director.") ? "auto" : null,
-        resolution: type.type === "generator.page" ? "1K" : null,
-        requires_approval: ["generator.page", "control.approval"].includes(type.type),
-      },
-    };
-    setNodes((items) => [...items, { id, type: "mangaNode", position: graphNode.position, data: { graphNode } }]);
-    setSelectedId(id);
+    setNodes(result.nodes); setEdges(result.edges); setSelectedId(result.node.id);
+    const next = [type.type, ...recent.filter((item) => item !== type.type)].slice(0, 8);
+    setRecent(next); storePreference("mangaflow.node-recent", next);
+    setPicker(null); setInspectorOpen(true); scheduleSave();
+  }
+
+  function storePreference(key: string, value: unknown) {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+    catch { setNotice("浏览器存储不可用，设置仅在本次会话生效"); return false; }
+  }
+
+  function openPicker(context?: InsertContext) {
+    setNodeSearch(""); setCategory("ALL");
+    setPicker(context ?? { position: flowInstance.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) ?? { x: 320, y: 120 } });
+  }
+
+  const selectedIds = new Set(nodes.filter((node) => node.selected).map((node) => node.id));
+  if (!selectedIds.size && selectedId && nodes.some((node) => node.id === selectedId)) selectedIds.add(selectedId);
+  const selectedGroup = groups.find((group) => group.id === selectedId);
+
+  function updateGroup(id: string, patch: Partial<WorkflowGroup>) {
+    record();
+    setGroups((items) => items.map((group) => group.id === id ? { ...group, ...patch } : group));
     scheduleSave();
+  }
+
+  function createGroup() {
+    if (!selectedIds.size) return;
+    record();
+    const id = `group-${crypto.randomUUID()}`;
+    setGroups((items) => [...items.map((group) => ({ ...group, node_ids: group.node_ids.filter((member) => !selectedIds.has(member)) })).filter((group) => group.node_ids.length),
+      { id, name: "新分组", color: "#397b68", notes: "", node_ids: [...selectedIds], collapsed: false }]);
+    setSelectedId(id); setInspectorOpen(true); scheduleSave();
+  }
+
+  function arrange(mode: Arrangement) {
+    record(); setNodes((items) => arrangeNodes(items, selectedIds, mode)); scheduleSave();
+  }
+
+  async function switchWorkflow(id: string) {
+    if (batchBusy) { setNotice("批量提交中，请稍候切换"); return false; }
+    if (draftSaver.current?.isDirty() && !await saveNow()) { setNotice("当前工作流保存失败，请重试后切换"); return false; }
+    initializedId.current = null; setActiveId(id); return true;
+  }
+
+  async function createFromTemplate(kind: "manga_default" | "chapter_export" | "blank" | "check" | "batch" | SavedTemplate) {
+    if (templateBusy) return;
+    const name = templateName.trim();
+    if (!name) { setNotice("请填写新工作流名称"); return; }
+    setTemplateBusy(true);
+    try {
+      if (draftSaver.current?.isDirty() && !await saveNow()) throw new Error("请先保存当前工作流");
+      let created: WorkflowDefinition;
+      if (typeof kind === "object") created = await api.importWorkflow(projectId, { name, graph: kind.graph });
+      else if (kind === "check" || kind === "batch") {
+        const graph = await api.workflowTemplate(kind);
+        created = await api.importWorkflow(projectId, { name, graph });
+      } else created = await api.createWorkflow(projectId, name, kind);
+      queryClient.setQueryData<WorkflowDefinition[]>(["workflows", projectId], (items = []) => [...items, created]);
+      initializedId.current = null; setActiveId(created.id); setTemplateDialog(false);
+    } catch (error) { setNotice(error instanceof Error ? error.message : "创建失败"); }
+    finally { setTemplateBusy(false); }
+  }
+
+  function saveTemplate() {
+    const name = templateName.trim();
+    if (!name) { setNotice("请填写模板名称"); return; }
+    const template = { id: crypto.randomUUID(), name, graph: structuredClone(buildGraph()) };
+    const next = [...templates, template];
+    if (storePreference("mangaflow.workflow-templates", next)) { setTemplates(next); setNotice("模板已保存到当前浏览器，可跨项目使用"); }
+  }
+
+  async function startBatch() {
+    if (!activeWorkflow || batchBusy) return;
+    const ids = batchPageIds.filter((id) => pages.data?.some((page) => page.id === id));
+    if (!ids.length) { setNotice("请勾选本次批量运行的页面"); return; }
+    setBatchBusy(true);
+    const failures: string[] = [];
+    const failedIds: string[] = [];
+    let count = 0;
+    for (const id of ids) {
+      try {
+        const published = versions.data?.find((version) => version.id === activeWorkflow.published_version_id);
+        if (!published) throw new Error("请先发布并载入版本");
+        const run = await api.startWorkflowRun(activeWorkflow.id, { scope_type: "PAGE", scope_id: id, start_node_ids: published.graph.entry_node_ids ?? [], stop_node_ids: [] });
+        setCurrentRun(run); count++;
+      } catch (error) { failedIds.push(id); failures.push(`${id}: ${error instanceof Error ? error.message : "失败"}`); }
+    }
+    await runs.refetch(); setBatchBusy(false);
+    setNotice(`已启动 ${count} 个页面流程${failures.length ? `；${failures.length} 个失败：${failures.join("；")}` : "，请在运行列表中逐页确认模型与结果"}`);
+    setBatchPageIds(failedIds);
   }
 
   function updateSelected(patch: Partial<WorkflowGraphNode>, config?: Partial<WorkflowGraphNode["config"]>) {
@@ -549,41 +689,44 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   }
 
   function deleteSelected() {
-    if (!selectedId) return;
+    if (!selectedIds.size) return;
     record();
-    setNodes((items) => items.filter((node) => node.id !== selectedId));
-    setEdges((items) => items.filter((edge) => edge.source !== selectedId && edge.target !== selectedId));
+    const next = nodes.filter((node) => !selectedIds.has(node.id));
+    setNodes(next); setGroups(cleanGroups(groups, next));
+    setEdges((items) => items.filter((edge) => !selectedIds.has(edge.source) && !selectedIds.has(edge.target)));
     setSelectedId(null);
     scheduleSave();
   }
 
   function duplicateSelected() {
-    if (!selected) return;
+    if (!selectedIds.size) return;
     record();
-    const id = `${selected.data.graphNode.type.replaceAll(".", "-")}-${crypto.randomUUID().slice(0, 8)}`;
-    const graphNode = { ...selected.data.graphNode, id, name: `${selected.data.graphNode.name} 副本`, position: { x: selected.position.x + 44, y: selected.position.y + 44 } };
-    setNodes((items) => [...items, { id, type: "mangaNode", position: graphNode.position, data: { graphNode } }]);
-    setSelectedId(id);
+    const result = duplicateNodes(nodes, edges, selectedIds);
+    setNodes(result.nodes); setEdges(result.edges);
+    setGroups((items) => [...items, ...items.filter((group) => group.node_ids.every((id) => selectedIds.has(id))).map((group) => ({ ...group, id: `group-${crypto.randomUUID()}`, name: `${group.name} 副本`, node_ids: group.node_ids.map((id) => result.mapping.get(id)!) }))]);
+    setSelectedId(result.copies[0]?.id ?? null);
     scheduleSave();
   }
 
   function undo() {
     const snapshot = past.at(-1);
     if (!snapshot) return;
-    setFuture((items) => [{ nodes, edges }, ...items]);
+    setFuture((items) => [{ nodes, edges, groups }, ...items]);
     setPast((items) => items.slice(0, -1));
     setNodes(snapshot.nodes);
     setEdges(snapshot.edges);
+    setGroups(snapshot.groups);
     scheduleSave();
   }
 
   function redo() {
     const snapshot = future[0];
     if (!snapshot) return;
-    setPast((items) => [...items, { nodes, edges }]);
+    setPast((items) => [...items, { nodes, edges, groups }]);
     setFuture((items) => items.slice(1));
     setNodes(snapshot.nodes);
     setEdges(snapshot.edges);
+    setGroups(snapshot.groups);
     scheduleSave();
   }
 
@@ -624,12 +767,13 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const startRun = useMutation({
     mutationFn: (range: "FULL" | "NODE" | "FROM") => {
       if (!activeWorkflow || !effectiveScopeId) throw new Error("请先选择章节或页面运行范围");
-      const selectedIds = selectedId ? [selectedId] : [];
+      const rangeIds = selectedGroup ? selectedGroup.node_ids : selectedId ? [selectedId] : [];
+      const published = versions.data?.find((version) => version.id === activeWorkflow.published_version_id);
       return api.startWorkflowRun(activeWorkflow.id, {
         scope_type: scopeType,
         scope_id: effectiveScopeId,
-        start_node_ids: range === "FULL" ? [] : selectedIds,
-        stop_node_ids: range === "NODE" ? selectedIds : [],
+        start_node_ids: range === "FULL" ? published?.graph.entry_node_ids ?? [] : rangeIds,
+        stop_node_ids: range === "NODE" ? rangeIds : [],
       });
     },
     onSuccess: (run) => { setCurrentRun(run); void runs.refetch(); },
@@ -665,6 +809,8 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       // 一样。先落画布，refetch 只负责刷新侧栏版本等衍生数据。
       setNodes(graphNodes(restored.draft_graph));
       setEdges(graphEdges(restored.draft_graph));
+      setGroups(restored.draft_graph.groups ?? []);
+      setRunMode(restored.draft_graph.run_mode ?? "single");
       setPast([]);
       setFuture([]);
       setValidation([]);
@@ -784,9 +930,59 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const selectedNodeRun = displayedRun?.node_runs.find((item) => item.node_id === selectedId) ?? null;
   const renderedNodes = useMemo(() => {
     if (!displayedRun) return nodes;
-    const statuses = new Map(displayedRun.node_runs.map((item) => [item.node_id, item.status]));
-    return nodes.map((node) => ({ ...node, data: { ...node.data, runStatus: statuses.get(node.id) } }));
+    const nodeRuns = new Map(displayedRun.node_runs.map((item) => [item.node_id, item]));
+    return nodes.map((node) => ({ ...node, data: { ...node.data, runStatus: nodeRuns.get(node.id)?.status, run: nodeRuns.get(node.id) } }));
   }, [displayedRun, nodes]);
+  const projected = useMemo(() => {
+    const running = new Set(displayedRun?.node_runs.filter((item) => item.status === "RUNNING").map((item) => item.node_id));
+    const result = projectGroups(renderedNodes, edges.map((edge) => ({ ...edge, animated: running.has(edge.target), className: running.has(edge.target) ? styles.activeEdge : undefined })), groups);
+    return result;
+  }, [renderedNodes, edges, groups, displayedRun]);
+  const toggleGroup = useCallback((id: string) => {
+    record(); setGroups((items) => items.map((group) => group.id === id ? { ...group, collapsed: !group.collapsed } : group)); scheduleSave();
+  }, [record, scheduleSave]);
+  const pickerItems = (catalog.data ?? []).filter((item) =>
+    `${item.label} ${item.type} ${item.description}`.toLowerCase().includes(nodeSearch.toLowerCase())
+    && (category === "ALL" || category === item.category || (category === "FAVORITES" && favorites.includes(item.type)) || (category === "RECENT" && recent.includes(item.type)))
+    && (!picker || matchingPorts(item, picker, nodes).compatible))
+    .sort((a, b) => category === "RECENT" ? recent.indexOf(a.type) - recent.indexOf(b.type) : 0);
+
+  useEffect(() => {
+    const focusNode = (id: string) => {
+      setGroups((items) => items.map((group) => group.node_ids.includes(id) ? { ...group, collapsed: false } : group));
+      setNodes((items) => items.map((node) => ({ ...node, selected: node.id === id })));
+      setSelectedId(id); setInspectorOpen(true); scheduleSave();
+      const node = nodes.find((item) => item.id === id);
+      if (node) void flowInstance.current?.setCenter(node.position.x + 112, node.position.y + 80, { zoom: 1, duration: 250 });
+    };
+    const collect = (event: Event) => {
+      const commands = (event as CustomEvent<StudioCommand[]>).detail;
+      commands.push(
+        { id: "add-node", label: "添加节点", section: "操作", run: () => openPicker() },
+        { id: "run-flow", label: "运行已发布流程", section: "操作", disabled: startRun.isPending || !effectiveScopeId, run: () => startRun.mutate("FULL") },
+        { id: "publish-flow", label: "发布工作流", section: "操作", disabled: publish.isPending, run: () => publish.mutate() },
+        { id: "versions", label: "查看版本", section: "操作", run: () => { setInspectorOpen(true); window.setTimeout(() => document.getElementById("workflow-versions")?.scrollIntoView({ block: "nearest" }), 0); } },
+        { id: "templates", label: "新建流程 / 保存为模板", section: "操作", run: () => { setTemplateName(activeWorkflow?.name ?? "新流程"); setTemplateDialog(true); } },
+        ...nodes.map((node) => ({ id: `node-${node.id}`, label: node.data.graphNode.name, section: "画布节点", run: () => focusNode(node.id) })),
+        ...(workflows.data ?? []).map((workflow) => ({ id: `workflow-${workflow.id}`, label: workflow.name, section: "工作流", run: () => { void switchWorkflow(workflow.id); } })),
+      );
+    };
+    const key = (event: KeyboardEvent) => {
+      if ((event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable=true], dialog")) || document.querySelector("dialog[open]")) return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const action = event.key.toLowerCase();
+      if (!["a", "d", "g", "z", "y"].includes(action)) return;
+      event.preventDefault();
+      if (action === "a") setNodes((items) => items.map((node) => ({ ...node, selected: true })));
+      if (action === "d") duplicateSelected();
+      if (action === "g") createGroup();
+      if (action === "z") { if (event.shiftKey) redo(); else undo(); }
+      if (action === "y") redo();
+    };
+    window.addEventListener(COLLECT_COMMANDS, collect);
+    window.addEventListener("keydown", key);
+    return () => { window.removeEventListener(COLLECT_COMMANDS, collect); window.removeEventListener("keydown", key); };
+  });
 
   // Follow-the-run camera: re-center only when the run or focus node actually
   // changes. runs.data gets a new identity on every 3s poll, so keying the
@@ -794,19 +990,21 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   // whole run; dragging must also freeze the camera.
   const cameraTargetRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!followRun) return;
     const targetRun = displayedRun?.node_runs.find((item) => item.status === "RUNNING")
       ?? displayedRun?.node_runs.find((item) => !["COMPLETED", "SKIPPED"].includes(item.status));
     const cameraKey = `${displayedRun?.id ?? "none"}:${targetRun?.node_id ?? "none"}`;
     if (cameraKey === cameraTargetRef.current) return;
     cameraTargetRef.current = cameraKey;
-    const target = nodesRef.current.find((node) => node.id === targetRun?.node_id)
+    const group = groups.find((item) => item.collapsed && item.node_ids.includes(targetRun?.node_id ?? ""));
+    const target = (group ? { position: groupBounds(group, nodesRef.current) } : nodesRef.current.find((node) => node.id === targetRun?.node_id))
       ?? nodesRef.current[0];
     if (!target || !flowInstance.current || dragging.current) return;
     void flowInstance.current.setCenter(target.position.x + 112, target.position.y + 60, {
       zoom: 0.75,
       duration: 350,
     });
-  }, [activeWorkflow?.id, displayedRun]);
+  }, [activeWorkflow?.id, displayedRun, followRun, groups]);
 
   if (workflows.isError) {
     return (
@@ -857,6 +1055,8 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
           setActiveId(next);
         }}><option value={activeWorkflow.id}>{activeWorkflow.name}</option>{workflows.data?.filter((item) => item.id !== activeWorkflow.id).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><ChevronDown size={14} /></div>
         <div className={styles.topActions}>
+          <button onClick={() => window.dispatchEvent(new Event(OPEN_COMMANDS))} title="搜索页面、节点和操作">命令 <kbd>Ctrl K</kbd></button>
+          <button onClick={() => { setTemplateName(`${activeWorkflow.name} 模板`); setTemplateDialog(true); }}><Plus size={14} />新建 / 模板</button>
           <button onClick={() => downloadJson(`${activeWorkflow.name}.json`, { schema: "mangaflow.workflow.v2", name: activeWorkflow.name, description: activeWorkflow.description, graph: buildGraph() })}><Download size={14} />导出</button>
           <label><Upload size={14} />导入<input type="file" accept="application/json,.json" onChange={importFile} /></label>
           <button onClick={() => void saveNow()}><Save size={14} />保存</button>
@@ -880,7 +1080,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
               <button type="button" onClick={() => void catalog.refetch()}>重试</button>
             </div>
           ) : (
-            <div className={styles.libraryScroll}>{groupedCatalog.map(([category, items]) => <section key={category}><span>{categoryLabel[category] ?? category}</span>{items.map((item) => <button key={item.type} onClick={() => addNode(item)}><Plus size={13} /><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</section>)}</div>
+            <div className={styles.libraryScroll}><button onClick={() => openPicker()} className={styles.librarySearch}>搜索节点 · 最近 / 收藏</button>{groupedCatalog.map(([category, items]) => <section key={category}><span>{categoryLabel[category] ?? category}</span>{items.map((item) => <button key={item.type} onClick={() => addNode(item)}><Plus size={13} /><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</section>)}</div>
           )}
         </aside>
 
@@ -888,23 +1088,48 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
           <div className={styles.canvasToolbar}>
             {!libraryOpen ? <button onClick={() => setLibraryOpen(true)}><Plus size={14} />节点库</button> : null}
             <button disabled={!past.length} onClick={undo}><Undo2 size={14} />撤销</button><button disabled={!future.length} onClick={redo}><Redo2 size={14} />重做</button>
-            <button onClick={autoLayout}><LayoutGrid size={14} />自动布局</button><button disabled={!selected} onClick={duplicateSelected}><Copy size={14} />复制</button><button disabled={!selected} onClick={deleteSelected}><Trash2 size={14} />删除</button>
+            <button onClick={autoLayout}><LayoutGrid size={14} />自动布局</button><button disabled={!selectedIds.size} onClick={duplicateSelected}><Copy size={14} />复制</button><button disabled={!selectedIds.size} onClick={deleteSelected}><Trash2 size={14} />删除</button>
+            <button disabled={!selectedIds.size} onClick={createGroup}>分组</button>
+            <button onClick={() => openPicker()}><Plus size={14} />添加</button>
             <button onClick={() => void flowInstance.current?.fitView({ padding: 0.15, duration: 300 })}><LayoutGrid size={14} />查看全图</button>
             {!inspectorOpen ? <button onClick={() => setInspectorOpen(true)}><BoxSelect size={14} />属性</button> : null}
           </div>
-          <ReactFlow<StudioNode, StudioEdge>
-            nodes={renderedNodes}
-            edges={edges}
+          {selectedIds.size > 1 && <div className={styles.selectionBar} aria-label="批量工具"><strong>已选 {selectedIds.size}</strong>{([['left', '左对齐'], ['right', '右对齐'], ['top', '上对齐'], ['bottom', '下对齐'], ['horizontal', '水平等距'], ['vertical', '垂直等距']] as const).map(([mode, label]) => <button key={mode} disabled={['horizontal', 'vertical'].includes(mode) && selectedIds.size < 3} onClick={() => arrange(mode)}>{label}</button>)}</div>}
+          <div className={styles.canvasHint}>拖拽框选 · Shift / Ctrl 多选 · 双击连线插入节点</div>
+          <GroupToggleContext.Provider value={toggleGroup}><ReactFlow<StudioNode, StudioEdge>
+            nodes={projected.nodes}
+            edges={projected.edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={connect}
+            onConnectEnd={(event, state) => {
+              if (state.isValid || !state.fromNode || !state.fromHandle || state.toNode) return;
+              const target = event.target as HTMLElement;
+              if (!target.closest?.(".react-flow__pane")) return;
+              const point = "changedTouches" in event ? event.changedTouches[0] : event;
+              const port = resolveHandle(state.fromNode.id, state.fromHandle.id, groupsRef.current);
+              const position = flowInstance.current?.screenToFlowPosition({ x: point.clientX, y: point.clientY });
+              if (position) openPicker({ position, [state.fromHandle.type === "source" ? "source" : "target"]: port });
+            }}
+            onEdgeDoubleClick={(event, edge) => {
+              event.preventDefault();
+              const actual = edgesRef.current.find((item) => item.id === edge.id);
+              if (!actual) return;
+              openPicker({ position: flowInstance.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }) ?? { x: 0, y: 0 }, edgeId: actual.id,
+                source: { nodeId: actual.source, handle: actual.sourceHandle! }, target: { nodeId: actual.target, handle: actual.targetHandle! } });
+            }}
             isValidConnection={validConnection}
             onNodeDragStart={record}
+            onSelectionDragStart={record}
             onNodeDragStop={() => { dragging.current = false; scheduleSave(); }}
+            onSelectionDragStop={() => { dragging.current = false; scheduleSave(); }}
+            onNodeClick={(_, node) => { setSelectedId(node.id); setInspectorOpen(true); }}
             onSelectionChange={({ nodes: selectedNodes }) => setSelectedId(selectedNodes.at(-1)?.id ?? null)}
             selectionOnDrag
-            multiSelectionKeyCode={["Meta", "Control"]}
+            multiSelectionKeyCode={["Meta", "Control", "Shift"]}
+            panOnDrag={[1, 2]}
+            selectionKeyCode={null}
             deleteKeyCode={["Backspace", "Delete"]}
             defaultViewport={{ x: 80, y: 70, zoom: 0.75 }}
             onInit={(instance) => { flowInstance.current = instance; }}
@@ -922,13 +1147,26 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="#4c514e" />
             <MiniMap ariaLabel="工作流小地图" pannable zoomable className={styles.minimap} nodeColor={(node) => ({ input: "#397b68", control: "#b77c26", output: "#b94735", quality: "#7862a4", agent: "#326b91" })[nodeTone((node.data as StudioNodeData).graphNode.type)]} />
             <Controls showInteractive={false} />
-          </ReactFlow>
+          </ReactFlow></GroupToggleContext.Provider>
           {validation.length ? <div className={styles.validation}><CircleAlert size={15} /><div>{validation.map((message, index) => <span key={`${index}-${message}`}>{message}</span>)}</div><button aria-label="清除校验提示" onClick={() => setValidation([])}><X size={13} /></button></div> : null}
         </section>
 
         <aside className={styles.inspector}>
           <header><div><span>INSPECTOR</span><strong>属性面板</strong></div><button aria-label="关闭属性面板" onClick={() => setInspectorOpen(false)}><X size={14} /></button></header>
-          {selected ? <div key={selected.id} className={styles.inspectorForm}>
+          {selectedGroup ? <div className={styles.inspectorForm}>
+            <label>分组名称<input maxLength={160} value={selectedGroup.name} onChange={(event) => updateGroup(selectedGroup.id, { name: event.target.value || "新分组" })} /></label>
+            <label>分组颜色<input type="color" value={selectedGroup.color} onChange={(event) => updateGroup(selectedGroup.id, { color: event.target.value })} /></label>
+            <label>分组备注<textarea value={selectedGroup.notes} onChange={(event) => updateGroup(selectedGroup.id, { notes: event.target.value })} /></label>
+            <button className={styles.panelButton} onClick={() => updateGroup(selectedGroup.id, { collapsed: !selectedGroup.collapsed })}>{selectedGroup.collapsed ? "展开分组" : "折叠分组"}</button>
+            <button className={styles.panelButton} onClick={() => { record(); setGroups((items) => items.filter((group) => group.id !== selectedGroup.id)); setSelectedId(null); scheduleSave(); }}>解散分组 · 保留节点</button>
+          </div> : selected ? <div key={selected.id} className={styles.inspectorForm}>
+            {selectedNodeRun && <section className={styles.nodeRuntime} aria-label="本次运行结果">
+              <strong>{statusLabel[selectedNodeRun.status] ?? selectedNodeRun.status} · 本次运行</strong>
+              <span>{elapsed(selectedNodeRun)} · {selectedNodeRun.total_tokens == null ? "Token 尚未完整上报" : `${selectedNodeRun.total_tokens.toLocaleString()} Token`}</span>
+              <Link href={`/projects/${projectId}/generate`}>查看产物 / 检查与修复 →</Link>
+              <details><summary>结果数据</summary><pre>{JSON.stringify(selectedNodeRun.output_refs, null, 2)}</pre></details>
+              {selectedNodeRun.error_message && <em>{selectedNodeRun.error_message}</em>}
+            </section>}
             <label>节点名称<input value={selected.data.graphNode.name} onChange={(event) => updateSelected({ name: event.target.value })} /></label>
             <label>节点类型<input value={selected.data.graphNode.type} disabled /></label>
             {selected.data.graphNode.type === "generator.page" ? <><label>模型由每次生成选择<input value="必须显式选择供应商图片模型" disabled /></label><label>建议清晰度<select value={selected.data.graphNode.config.resolution ?? "1K"} onChange={(event) => updateSelected({}, { resolution: event.target.value as Resolution })}><option>1K</option><option>2K</option><option>4K</option></select></label></> : null}
@@ -942,13 +1180,18 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
                 updateSelected({}, { condition: { ...selected.data.graphNode.config.condition, value: parseConditionValue(raw, operator) } });
               }} placeholder="除“存在”外必须填写" /></label></> : null}
             <label>备注<textarea value={selected.data.graphNode.config.notes} onChange={(event) => updateSelected({}, { notes: event.target.value })} /></label>
-            {selectedNodeRun ? <section className={styles.nodeRuntime}><strong>{statusLabel[selectedNodeRun.status] ?? selectedNodeRun.status}</strong><span>{selectedNodeRun.started_at && selectedNodeRun.finished_at ? `耗时 ${((new Date(selectedNodeRun.finished_at).getTime() - new Date(selectedNodeRun.started_at).getTime()) / 1000).toFixed(1)} 秒` : "尚未产生完整耗时"}</span><pre>{JSON.stringify(selectedNodeRun.output_refs, null, 2)}</pre>{selectedNodeRun.error_message ? <em>{selectedNodeRun.error_code ? `${selectedNodeRun.error_code} · ` : ""}{selectedNodeRun.error_message}</em> : null}</section> : null}
           </div> : <div className={styles.noSelection}><GitBranch size={28} /><strong>从这里开始</strong><ol><li>选择节点查看配置</li><li>拖动端口建立连线</li><li>校验草稿并修复问题</li><li>发布不可变版本</li><li>选择范围后运行</li></ol></div>}
-          <section className={styles.versionList}><header><span>发布版本</span><strong>{versions.isError ? "读取失败" : versions.data?.length ?? 0}</strong></header>{versions.isError ? <div role="alert"><span>发布版本列表读取失败：{versions.error instanceof Error ? versions.error.message : "请稍后重试"}</span><button type="button" onClick={() => void versions.refetch()}>重试</button></div> : versions.data?.slice(0, 4).map((version) => <button key={version.id} disabled={restoreVersion.isPending} onClick={() => { if (window.confirm(`用发布版本 V${version.revision} 覆盖当前草稿？未保存的草稿修改会丢失。`)) restoreVersion.mutate(version.id); }}><RotateCcw size={12} />V{version.revision}<small>{new Date(version.published_at).toLocaleString("zh-CN")}</small></button>)}</section>
+          <section id="workflow-versions" className={styles.versionList}><header><span>发布版本</span><strong>{versions.isError ? "读取失败" : versions.data?.length ?? 0}</strong></header>{versions.isError ? <div role="alert"><span>发布版本列表读取失败：{versions.error instanceof Error ? versions.error.message : "请稍后重试"}</span><button type="button" onClick={() => void versions.refetch()}>重试</button></div> : versions.data?.map((version) => <button key={version.id} disabled={restoreVersion.isPending} onClick={() => { if (window.confirm(`用发布版本 V${version.revision} 覆盖当前草稿？未保存的草稿修改会丢失。`)) restoreVersion.mutate(version.id); }}><RotateCcw size={12} />V{version.revision}<small>{new Date(version.published_at).toLocaleString("zh-CN")}</small></button>)}</section>
         </aside>
       </section>
 
       <footer className={styles.runner}>
+        <div className={styles.runHistory}>
+          <label>查看运行<select aria-label="查看运行记录" value={displayedRun?.id ?? ""} onChange={(event) => setCurrentRun(runs.data?.find((run) => run.id === event.target.value) ?? null)}><option value="" disabled>尚未运行</option>{runs.data?.map((run) => <option key={run.id} value={run.id}>{pages.data?.find((page) => page.id === run.scope_id)?.page_number ? `第 ${pages.data.find((page) => page.id === run.scope_id)!.page_number} 页 · ` : ""}{new Date(run.created_at).toLocaleTimeString("zh-CN")} · {statusLabel[run.status] ?? run.status}</option>)}</select></label>
+          <label><input type="checkbox" checked={followRun} onChange={(event) => { cameraTargetRef.current = null; setFollowRun(event.target.checked); }} />跟随运行</label>
+          <button onClick={() => { setRunMode((mode) => mode === "batch" ? "single" : "batch"); setScopeType("PAGE"); scheduleSave(); }}>{runMode === "batch" ? "收起批量" : "批量运行"}</button>
+          {runMode === "batch" && <details className={styles.batchPicker}><summary>选择页面（{batchPageIds.length}）</summary><div><p>使用已有分镜，图片生成仍逐页确认模型。</p>{pages.isError ? <button onClick={() => void pages.refetch()}>页面加载失败，重试</button> : !pages.data?.length ? <p>当前章节没有可运行页面</p> : pages.data.map((page) => <label key={page.id}><input type="checkbox" checked={batchPageIds.includes(page.id)} onChange={(event) => setBatchPageIds((ids) => event.target.checked ? [...ids, page.id] : ids.filter((id) => id !== page.id))} />第 {page.page_number} 页</label>)}<button disabled={batchBusy || !batchPageIds.length || !activeWorkflow.published_version_id} onClick={() => void startBatch()}>{batchBusy ? "逐页提交中…" : "启动所选页面"}</button></div></details>}
+        </div>
         <div className={styles.runScope}><span>运行范围</span><select aria-label="运行范围类型" value={scopeType} onChange={(event) => { const next = event.target.value as "CHAPTER" | "PAGE"; setScopeType(next); setScopeId(next === "CHAPTER" ? chapters.data?.[0]?.id ?? "" : ""); }}><option value="CHAPTER">章节</option><option value="PAGE">页面</option></select>{scopeType === "PAGE" ? <select aria-label="页面所属章节" value={activeChapter} onChange={(event) => { setPageChapterId(event.target.value); setScopeId(""); }}>{chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>)}</select> : null}<select aria-label="运行目标" value={effectiveScopeId} onChange={(event) => setScopeId(event.target.value)}>{scopeType === "CHAPTER" ? chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>) : pages.data?.map((page) => <option value={page.id} key={page.id}>第 {page.page_number} 页</option>)}</select></div>
         <div className={styles.runState}>{runsUnavailable ? <><i /><span role="alert">运行列表读取失败：{runs.error instanceof Error ? runs.error.message : "请稍后重试"}</span><button type="button" onClick={() => void runs.refetch()}>重试</button></> : <><i className={displayedRun?.status === "RUNNING" ? styles.running : ""} /><span>{displayedRun ? `运行 ${statusLabel[displayedRun.status] ?? displayedRun.status} · ${displayedRun.node_runs.filter((item) => item.status === "COMPLETED").length}/${displayedRun.node_runs.length}${liveRunStale ? " · 实时状态读取失败，显示快照" : ""}` : "尚未运行已发布版本"}</span>{liveRunStale ? <button type="button" onClick={() => void liveRun.refetch()}>重试</button> : null}</>}</div>
         {/* 取消按钮必须覆盖 PAUSED（审批栅栏态）：cancel_run 接受 PAUSED，
@@ -969,6 +1212,25 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             时目录内容仍可信，维持 #381 空目录指引。 */}
         {displayedRun?.node_runs.filter((run) => run.status === "WAITING_APPROVAL").map((run) => <div className={styles.approval} key={run.id}><strong>{run.node_type === "generator.page" ? "单页生成等待选择模型" : "采用候选后继续"}</strong>{run.node_type === "generator.page" ? models.isError && models.data === undefined ? <><span>模型目录读取失败：请重试重新获取目录，或取消本次运行。</span><button type="button" onClick={() => void models.refetch()}>重试</button></> : imageModels.length === 0 ? <><span>未配置可用图像模型：请先在设置中启用图像模型，或取消本次运行。</span><Link href="/settings">前往设置</Link></> : <><select aria-label="选择图片模型" value={drawModel} onChange={(event) => setDrawModel(event.target.value as ImageModelAlias | "")}><option value="">选择图片模型</option>{imageModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select><select aria-label="选择图片清晰度" value={drawResolution} onChange={(event) => setDrawResolution(event.target.value as Resolution)}><option>1K</option><option>2K</option><option>4K</option></select></> : <Link href={`/projects/${projectId}/generate`}>前往采用</Link>}<button disabled={approveNode.isPending || (run.node_type === "generator.page" && (drawModel === "" || !imageModels.some((model) => model.logical_alias === drawModel)))} onClick={() => approveNode.mutate(run)}>确认继续</button></div>)}
       </footer>
+      {picker && <WorkflowDialog title={picker.edgeId ? "插入节点 · 自动接线" : "添加节点"} onClose={() => setPicker(null)}>
+        <input autoFocus className={styles.searchInput} aria-label="搜索节点" placeholder="搜索节点名称或用途…" value={nodeSearch} onChange={(event) => setNodeSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && pickerItems[0]) addNode(pickerItems[0]); }} />
+        <div className={styles.filterTabs}>{[["ALL", "全部"], ["RECENT", "最近使用"], ["FAVORITES", "收藏"], ...Object.entries(categoryLabel)].map(([id, label]) => <button key={id} aria-pressed={category === id} onClick={() => setCategory(id)}>{label}</button>)}</div>
+        <div className={styles.searchResults}>{pickerItems.map((item) => <div className={styles.pickerRow} key={item.type}><button onClick={() => addNode(item)}><span>{item.label}<small>{item.description}</small></span><Plus size={16} /></button><button aria-label={`${favorites.includes(item.type) ? "取消收藏" : "收藏"}${item.label}`} aria-pressed={favorites.includes(item.type)} onClick={() => { const next = favorites.includes(item.type) ? favorites.filter((id) => id !== item.type) : [...favorites, item.type]; setFavorites(next); storePreference("mangaflow.node-favorites", next); }}>{favorites.includes(item.type) ? "★" : "☆"}</button></div>)}
+          {catalog.isError ? <button onClick={() => void catalog.refetch()}>节点目录加载失败，重试</button> : !pickerItems.length && <p>没有匹配节点{picker.source || picker.target ? "，仅显示端口类型兼容的节点" : "，试试其他分类或关键词"}。</p>}
+        </div><footer>{picker.source || picker.target ? "选择后自动连接兼容端口 · Esc 取消并保留原连线" : "Enter 添加首个结果 · 星标收藏 · Esc 关闭"}</footer>
+      </WorkflowDialog>}
+      {templateDialog && <WorkflowDialog title="流程模板" onClose={() => { if (!templateBusy) setTemplateDialog(false); }}>
+        <label className={styles.templateName}>工作流 / 模板名称<input autoFocus maxLength={160} value={templateName} onChange={(event) => setTemplateName(event.target.value)} /></label>
+        <div className={styles.templateGrid}>{([
+          ["manga_default", "单页生成", "从原作到分镜、生成、采用与质量检查。"],
+          ["check", "检查修复", "从已有候选开始确认与检查；发现问题后前往修复页。"],
+          ["batch", "批量出图", "从已有分镜开始，为所选页面创建独立流程，逐页确认生成。"],
+          ["chapter_export", "整章导出", "汇总已通过检查的成品，导出整章。"],
+          ["blank", "空白流程", "从零开始编排你的创作流程。"],
+        ] as const).map(([kind, title, description]) => <button key={kind} disabled={templateBusy || !templateName.trim()} onClick={() => void createFromTemplate(kind)}><GitBranch size={18} /><strong>{title}</strong><small>{description}</small></button>)}</div>
+        <div className={styles.savedTemplates}><strong>我的模板 · 当前浏览器</strong><button disabled={!templateName.trim()} onClick={saveTemplate}>保存当前流程为模板</button>{templates.map((template) => <div key={template.id}><button disabled={templateBusy} onClick={() => void createFromTemplate(template)}>{template.name} · {template.graph.nodes.length} 个节点</button><button aria-label={`删除模板 ${template.name}`} onClick={() => { const next = templates.filter((item) => item.id !== template.id); if (storePreference("mangaflow.workflow-templates", next)) setTemplates(next); }}>×</button></div>)}</div>
+        <footer>套用会创建新流程。自定义模板保存在当前浏览器，也可用顶部导出迁移。</footer>
+      </WorkflowDialog>}
     </main>
   );
 }

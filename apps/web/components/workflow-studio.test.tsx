@@ -159,6 +159,39 @@ describe("WorkflowStudio 草稿保存与发布", () => {
     });
   });
 
+  it("多选批量复制、分组、删除与撤销保留完整图", async () => {
+    updateSpy.mockImplementation(async (_id, _version, payload) => workflow({ version: 2, draft_graph: payload.draft_graph }));
+    renderStudio();
+    fireEvent.click(await screen.findByRole("button", { name: /解析原作/ }));
+    fireEvent.click(screen.getByRole("button", { name: /解析原作/ }));
+    fireEvent.keyDown(window, { key: "a", ctrlKey: true });
+    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+    expect(updateSpy.mock.calls[0][2].draft_graph?.nodes).toHaveLength(4);
+    fireEvent.click(screen.getByRole("button", { name: "分组" }));
+    fireEvent.change(screen.getByLabelText("分组名称"), { target: { value: "准备阶段" } });
+    fireEvent.click(screen.getByRole("button", { name: "折叠分组" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(2));
+    expect(updateSpy.mock.calls[1][2].draft_graph?.groups?.[0]).toMatchObject({ name: "准备阶段", collapsed: true });
+    expect(updateSpy.mock.calls[1][2].draft_graph?.groups?.[0].node_ids).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(3));
+    expect(updateSpy.mock.calls[2][2].draft_graph?.nodes).toHaveLength(4);
+    expect(updateSpy.mock.calls[2][2].draft_graph?.groups?.[0].name).toBe("准备阶段");
+  });
+
+  it("文本输入期间不拦截 Ctrl+A", async () => {
+    renderStudio();
+    fireEvent.click(await screen.findByRole("button", { name: /解析原作/ }));
+    fireEvent.click(screen.getByRole("button", { name: /解析原作/ }));
+    fireEvent.keyDown(screen.getByLabelText("节点名称"), { key: "a", ctrlKey: true });
+    expect(screen.queryByLabelText("批量工具")).not.toBeInTheDocument();
+  });
+
   it.each([
     ["超时（秒）", ["4", "45"], "timeout_seconds", 45],
     ["超时（秒）", ["6", "60", "600"], "timeout_seconds", 600],

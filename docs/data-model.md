@@ -1,5 +1,7 @@
 # MangaFlow AI 数据模型与状态机
 
+工作流 schema_version 2 图谱新增可选 groups、run_mode、entry_node_ids；字段保存在既有 JSON 列，无数据库迁移。运行读取响应新增可空 total_tokens，来自本次运行时间范围内的关联任务尝试。字段约束和兼容性见[流程编排效率升级](workflow-efficiency-upgrade.md)。
+
 ## 1. 建模原则
 
 - 主键使用 UUID；可编辑实体带时间戳和乐观锁版本。
