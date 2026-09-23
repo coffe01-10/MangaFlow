@@ -196,7 +196,28 @@ def _safe_extra_body(runtime: CompatibleRuntime) -> dict[str, Any]:
     configured = runtime.capabilities.get("extra_body") or {}
     if not isinstance(configured, dict):
         return {}
-    return {key: value for key, value in configured.items() if key not in _RESERVED_BODY}
+    return {
+        key: value
+        for key, value in configured.items()
+        if isinstance(key, str) and key.casefold() not in _RESERVED_BODY
+    }
+
+
+def _multipart_extra_body(runtime: CompatibleRuntime) -> dict[str, str]:
+    """Encode scalar image-edit options as form fields, rejecting ambiguous values."""
+    result: dict[str, str] = {}
+    for key, value in _safe_extra_body(runtime).items():
+        if key.casefold() == "image[]":
+            continue
+        if isinstance(value, bool):
+            result[key] = "true" if value else "false"
+        elif isinstance(value, (str, int, float)):
+            result[key] = str(value)
+        else:
+            raise ProviderAdapterError(
+                "INVALID_INPUT", f"图片编辑参数 {key} 只能是字符串、数字或布尔值"
+            )
+    return result
 
 
 def _supported_parameters(runtime: CompatibleRuntime) -> set[str] | None:
@@ -345,9 +366,15 @@ class _CompatibleBase:
                     content = read_bounded_http_body(
                         response, self.runtime.max_response_bytes
                     )
+                    headers = dict(response.headers)
+                    # iter_bytes() has already decoded Content-Encoding. Reusing
+                    # the wire headers would make HTTPX decode the body again.
+                    headers.pop("content-encoding", None)
+                    headers.pop("content-length", None)
+                    headers.pop("transfer-encoding", None)
                     return httpx.Response(
                         response.status_code,
-                        headers=response.headers,
+                        headers=headers,
                         content=content,
                         request=request,
                         extensions=response.extensions,
@@ -620,6 +647,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                     # response turns the download into part of the paid window
                     # (issue #207).
                     "response_format": "b64_json",
+                    **_multipart_extra_body(self.runtime),
                 },
                 files=files,
             )

@@ -193,7 +193,7 @@ describe("LibrarySection 导出阻塞", () => {
       expect(screen.getByText("0/1 页生产通过")).toBeInTheDocument();
     });
     expect(screen.getAllByText("请先人工校对文字并暂选一张当前页候选").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "PNG" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "原图 ZIP" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "PDF" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "JSON" })).toBeDisabled();
     expect(screen.getByText("素材库还是空的")).toBeInTheDocument();
@@ -225,10 +225,10 @@ describe("LibrarySection 导出阻塞", () => {
     createExport.mockResolvedValueOnce(bundle);
     renderLibrary();
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "PNG" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "原图 ZIP" })).toBeEnabled();
     });
     const before = exportsApi.mock.calls.length;
-    fireEvent.click(screen.getByRole("button", { name: "PNG" }));
+    fireEvent.click(screen.getByRole("button", { name: "原图 ZIP" }));
     await waitFor(() => {
       expect(createExport).toHaveBeenCalledWith("chapter-1", "PNG");
       expect(exportsApi.mock.calls.length).toBeGreaterThan(before);

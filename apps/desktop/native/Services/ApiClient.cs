@@ -55,6 +55,19 @@ public sealed class ApiClient : IDisposable
             : root.Value;
     }
 
+    public async Task<List<JsonElement>> ListAssetsAsync(string projectId, CancellationToken cancellation = default)
+    {
+        const int pageSize = 200;
+        var all = new List<JsonElement>();
+        for (var offset = 0; ; offset += pageSize)
+        {
+            var page = await SendAsync($"assets?project_id={Uri.EscapeDataString(projectId)}&limit={pageSize}&offset={offset}", cancellation: cancellation).ConfigureAwait(false);
+            var rows = page.EnumerateArray().ToList();
+            all.AddRange(rows);
+            if (rows.Count < pageSize) return all;
+        }
+    }
+
     public async Task<JsonElement?> SendOptionalAsync(string path, HttpMethod? method = null, object? body = null,
         CancellationToken cancellation = default)
     {
@@ -148,13 +161,14 @@ public sealed class ApiClient : IDisposable
     // Media downloads stay streaming (ResponseHeadersRead) so a large PNG/ZIP never buffers
     // in memory, and a failed transfer (non-2xx, network drop) leaves the user's previous
     // file untouched instead of a silent half-written copy.
-    public async Task SaveDownloadAsync(string path, string destination, CancellationToken cancellation = default)
+    public async Task<string> SaveDownloadAsync(string path, string destination, CancellationToken cancellation = default, bool matchImageExtension = false)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         timeout.CancelAfter(TimeSpan.FromMinutes(5));
         cancellation = timeout.Token;
         var relative = MediaPath(path);
         var target = Path.GetFullPath(destination);
+        var requestedTarget = target;
         var temporary = Path.Combine(Path.GetDirectoryName(target)!, ".mangaflow-" + Guid.NewGuid().ToString("N") + ".download");
         var created = false;
         try
@@ -168,6 +182,17 @@ public sealed class ApiClient : IDisposable
                 ThrowResponseError(response, text, "下载失败");
                 throw new InvalidOperationException("unreachable");  // ThrowResponseError always throws
             }
+            if (matchImageExtension)
+            {
+                var extension = response.Content.Headers.ContentType?.MediaType switch
+                {
+                    "image/png" => ".png", "image/jpeg" => ".jpg", "image/webp" => ".webp",
+                    _ => throw new InvalidOperationException("服务未返回支持的图片格式"),
+                };
+                target = Path.ChangeExtension(target, extension);
+                if (!string.Equals(target, requestedTarget, StringComparison.OrdinalIgnoreCase) && File.Exists(target))
+                    throw new IOException($"目标文件已存在：{Path.GetFileName(target)}。请另选文件名。");
+            }
             await using (var input = await response.Content.ReadAsStreamAsync(cancellation).ConfigureAwait(false))
             await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
             {
@@ -178,6 +203,7 @@ public sealed class ApiClient : IDisposable
             cancellation.ThrowIfCancellationRequested();
             File.Move(temporary, target, overwrite: true);
             created = false;
+            return target;
         }
         finally { if (created) File.Delete(temporary); }
     }

@@ -7,6 +7,7 @@ lease checks stay owned by the execution shell via ``execution`` helpers.
 
 import copy
 import hashlib
+import io
 import json
 import logging
 
@@ -331,28 +332,35 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
     )
     if existing:
         return existing
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            width, height = image.size
+            image_format = image.format
+    except OSError as error:
+        raise ProviderAdapterError("INVALID_OUTPUT", "模型返回了无效图片") from error
+    image_types = {
+        "PNG": ("image/png", "png"),
+        "JPEG": ("image/jpeg", "jpg"),
+        "WEBP": ("image/webp", "webp"),
+    }
+    if image_format not in image_types:
+        raise ProviderAdapterError("INVALID_OUTPUT", "模型返回了不支持的图片格式")
+    mime_type, suffix = image_types[image_format]
     destination = (
         settings.storage_root
         / "generated"
         / chapter.project_id
         / candidate.batch_id
-        / f"{candidate.id}.png"
+        / f"{candidate.id}.{suffix}"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
-    try:
-        with Image.open(destination) as image:
-            width, height = image.size
-            mime_type = Image.MIME.get(image.format or "PNG", "image/png")
-    except OSError:
-        width = height = None
-        mime_type = "image/png"
     try:
         with db.begin_nested():
             asset = Asset(
                 project_id=chapter.project_id,
                 kind="page_candidate",
-                original_name=f"page-{page.page_number}-candidate-{candidate.ordinal}.png",
+                original_name=f"page-{page.page_number}-candidate-{candidate.ordinal}.{suffix}",
                 storage_key=destination.relative_to(settings.storage_root).as_posix(),
                 mime_type=mime_type,
                 byte_size=len(data),

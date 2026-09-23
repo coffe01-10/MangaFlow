@@ -630,11 +630,11 @@ public sealed partial class GenerateView : WorkspaceView
             var next = Kit.Act("生成下一页 →", async (_, _) => await NextPageAsync(), "InkButton");
             gateRow.Children.Add(next);
         }
-        var download = Kit.Act("单页 PNG 下载", async (_, _) =>
+        var download = Kit.Act("下载单页原图", async (_, _) =>
         {
             if (Context == null) return;
             var exportPage = currentPage;
-            var save = new SaveFileDialog { Filter = "PNG 图片|*.png", FileName = $"第{exportPage.PageNumber:D3}页.png" };
+            var save = new SaveFileDialog { Filter = "图片|*.png;*.jpg;*.webp", AddExtension = false, FileName = $"第{exportPage.PageNumber:D3}页" };
             if (save.ShowDialog(Host) != true) return;
             try
             {
@@ -642,8 +642,8 @@ public sealed partial class GenerateView : WorkspaceView
                 // stream): big pages never buffer in memory and a failure (non-2xx such
                 // as the 409 production blockers, or a network drop mid-copy) leaves the
                 // previous file intact and surfaces the server detail here.
-                await Api.SaveDownloadAsync($"pages/{exportPage.Id}/export.png", save.FileName, lifetime.Token);
-                notice.Text = "单页 PNG 已保存。";
+                var savedPath = await Api.SaveDownloadAsync($"pages/{exportPage.Id}/export.png", save.FileName, lifetime.Token, matchImageExtension: true);
+                notice.Text = $"单页原图已保存：{Path.GetFileName(savedPath)}";
             }
             catch (OperationCanceledException) when (lifetime.Token.IsCancellationRequested) { }
             catch (OperationCanceledException) { notice.Text = "下载超时，请重试；原有文件未被替换。"; }

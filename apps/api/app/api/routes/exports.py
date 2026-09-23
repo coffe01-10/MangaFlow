@@ -36,7 +36,11 @@ router = APIRouter()
 
 
 
-def _safe_archive_name(original_name: str) -> str:
+def _image_suffix(mime_type: str | None) -> str:
+    return {"image/jpeg": "jpg", "image/webp": "webp"}.get(mime_type or "", "png")
+
+
+def _safe_archive_name(original_name: str, mime_type: str | None = None) -> str:
     r"""Neutralize a stored asset name before it becomes a zip member.
 
     Upload-side sanitizing only covers new uploads; legacy rows can still
@@ -44,7 +48,10 @@ def _safe_archive_name(original_name: str) -> str:
     letting members extract outside the target directory.
     """
 
-    return sanitize_stored_filename(original_name, default="page.png")
+    name = sanitize_stored_filename(original_name, default="page.png")
+    if mime_type:
+        return f"{Path(name).stem}.{_image_suffix(mime_type)}"
+    return name
 
 
 def _asset_path(asset: Asset) -> Path:
@@ -113,8 +120,7 @@ def download_selected_page(
     # The route path is fixed (…/export.png) but the delivered filename must
     # match the actual bytes: webp/jpeg candidates delivered as .png break
     # extension-based viewers.
-    mime_suffix = (asset.mime_type or "image/png").split("/")[-1].lower()
-    suffix = {"jpeg": "jpg", "png": "png", "webp": "webp"}.get(mime_suffix, "png")
+    suffix = _image_suffix(asset.mime_type)
     return FileResponse(
         path,
         media_type=asset.mime_type or "image/png",
@@ -231,7 +237,10 @@ def create_export(
                 for page, _, asset in selected:
                     archive.write(
                         _asset_path(asset),
-                        arcname=f"{page.page_number:04d}-{_safe_archive_name(asset.original_name)}",
+                        arcname=(
+                            f"{page.page_number:04d}-"
+                            f"{_safe_archive_name(asset.original_name, asset.mime_type)}"
+                        ),
                     )
 
         _write_export_atomically(destination, _write_zip)

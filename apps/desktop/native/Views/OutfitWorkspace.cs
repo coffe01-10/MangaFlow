@@ -100,7 +100,7 @@ internal sealed class OutfitWorkspace : StackPanel
         if (view.PendingOutfitReferences.Count > 0)
         {
             Reset();
-            selected.UnionWith(view.PendingOutfitReferences.Where(id => view.assets.Any(a => a.Id == id && a.Kind == "OUTFIT_REFERENCE")));
+            selected.UnionWith(view.PendingOutfitReferences);
             view.PendingOutfitReferences.Clear();
         }
         UpdateDraft(); RenderRecords(); RenderReferences();
@@ -203,22 +203,19 @@ internal sealed class OutfitWorkspace : StackPanel
     }
     private async Task RefreshDataAsync()
     {
-        var assets = await view.ApiSend($"assets?project_id={projectId}");
+        var assets = await view.LoadAllAssetsAsync();
         var outfits = await view.ApiSend($"projects/{projectId}/outfits");
         if (!Active) return;
-        view.assets = assets.EnumerateArray().Select(AssetItem.From).ToList(); view.outfits = outfits.EnumerateArray().Select(OutfitItem.From).ToList();
+        view.assets = assets; view.outfits = outfits.EnumerateArray().Select(OutfitItem.From).ToList();
         AdoptReloaded();
     }
     // Absorbs already-refreshed shared rows (AssetsView.LoadAsync fetched them)
     // without rebuilding the editor: the draft, its baseline and the busy state
-    // stay exactly as they were. Only externally-deleted reference ids leave the
-    // baseline; typed text keeps marking the draft dirty.
+    // stay exactly as they were. A missing row in a paginated refresh is not
+    // proof that a saved reference was deleted; only the user can unbind it.
     internal void AdoptReloaded()
     {
         if (!Active) return;
-        var liveIds = view.assets.Where(a => a.Kind == "OUTFIT_REFERENCE").Select(a => a.Id).ToHashSet();
-        selected.IntersectWith(liveIds);
-        initialSelected.IntersectWith(liveIds);
         Children.RemoveAt(0); Children.Insert(0, AssetPageUi.Header("WARDROBE / 服装档案", "角色、服装与参考图逐一绑定", $"{view.outfits.Count} 份档案"));
         RenderReferences(); RenderRecords(); UpdateDraft();
     }

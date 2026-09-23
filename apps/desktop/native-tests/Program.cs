@@ -7,6 +7,11 @@ using MangaFlow.Native;
 using MangaFlow.Native.Services;
 
 // Client-side regression checks: API safety, models, preferences, navigation, director rules.
+if (args.Contains("--open-issues"))
+{
+    await NativeOpenIssueChecks.Run();
+    return 0;
+}
 if (args.Contains("--sidebar"))
 {
     NativeSidebarChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-sidebar-checks"));
@@ -261,6 +266,7 @@ using (var editPage = JsonDocument.Parse("""{"id":"page-id","version":7}"""))
     catch (ArgumentException) { Check(true, "empty masks cannot be proposed"); }
 }
 await NativeBehaviorChecks.Run(Check);
+await NativeOpenIssueChecks.Run();
 var output = args.FirstOrDefault(a => !a.StartsWith("--"))
     ?? Path.Combine(Path.GetTempPath(), "mangaflow-native-checks");
 // 连接生命周期回归（NUI-8 缺陷 #4 排查产物）：默认全套即执行，无需专用 flag。

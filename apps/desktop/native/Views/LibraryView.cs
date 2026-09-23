@@ -310,7 +310,7 @@ public sealed partial class LibraryView : WorkspaceView
                 var actions = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, IsEnabled = ready && !exporting };
                 foreach (var type in new[] { "PNG", "PDF", "JSON" })
                 {
-                    var button = Kit.Act("↓ " + type, async (_, _) => await ExportChapter(chapter.Id, type), "Compact");
+                    var button = Kit.Act("↓ " + (type == "PNG" ? "原图 ZIP" : type), async (_, _) => await ExportChapter(chapter.Id, type), "Compact");
                     button.Foreground = Brushes.White; button.Background = Brushes.Transparent;
                     button.BorderBrush = light; button.Margin = new Thickness(6, 2, 0, 2);
                     actions.Children.Add(button);
@@ -344,11 +344,12 @@ public sealed partial class LibraryView : WorkspaceView
                 var rows = await Api.SendAsync($"projects/{project}/exports", cancellation: token);
                 if (!Current()) return;
                 exportList.Children.Add(new TextBlock { Text = "导出文件", Style = (Style)FindResource("SectionIndex"), Margin = new Thickness(0, 14, 0, 6) });
-                if (rows.GetArrayLength() == 0) exportList.Children.Add(Kit.Caption("还没有导出文件；通过门禁后即可导出整章 PNG / PDF / JSON。"));
+                if (rows.GetArrayLength() == 0) exportList.Children.Add(Kit.Caption("还没有导出文件；通过门禁后即可导出整章原图 ZIP / PDF / JSON。"));
                 foreach (var row in rows.EnumerateArray())
                 {
                     var item = ExportItem.From(row);
-                    var download = Kit.Act($"{item.ExportType} · {item.PageCount} 页 · {item.SizeLabel}    ↓ 下载", async (sender, _) => await Download(item, (Button)sender), "Ghost");
+                    var label = item.ExportType == "PNG" ? "原图 ZIP" : item.ExportType;
+                    var download = Kit.Act($"{label} · {item.PageCount} 页 · {item.SizeLabel}    ↓ 下载", async (sender, _) => await Download(item, (Button)sender), "Ghost");
                     download.HorizontalAlignment = HorizontalAlignment.Left; exportList.Children.Add(download);
                 }
             }
