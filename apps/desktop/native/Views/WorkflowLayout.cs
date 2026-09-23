@@ -79,15 +79,15 @@ public sealed partial class WorkflowView
         canvasScroll.VerticalScrollBarVisibility = canvasScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
         var canvasHost = new Grid();
         canvasHost.Children.Add(canvasScroll);
-        minimap.Background = FlowResource("Paper");
+        minimap.Background = FlowResource("Surface");
         minimap.ClipToBounds = true;
         System.Windows.Automation.AutomationProperties.SetName(minimap, "工作流小地图");
         minimap.MouseLeftButtonDown += OnMinimapNavigate;
         minimapHost = new Border
         {
-            Width = 176, Height = 118, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(0, 0, 12, 12), BorderBrush = FlowResource("Line"), BorderThickness = new Thickness(1),
-            Background = FlowResource("Paper"), Child = minimap, Padding = new Thickness(4),
+            Width = 180, Height = 122, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 12, 12), BorderBrush = FlowResource("InkSoft"), BorderThickness = new Thickness(2),
+            Background = FlowResource("Surface"), Child = minimap, Padding = new Thickness(3),
         };
         canvasHost.Children.Add(minimapHost);
         center.Children.Add(canvasHost); Grid.SetColumn(center, 1); studioBody.Children.Add(center);

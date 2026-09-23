@@ -112,6 +112,7 @@ public sealed partial class WorkflowView : WorkspaceView
         canvasScroll.ScrollChanged += (_, e) =>
         {
             if (e.ViewportWidthChange != 0 || e.ViewportHeightChange != 0) ApplyView();
+            else if (e.HorizontalChange != 0 || e.VerticalChange != 0) RenderMinimap();
         };
         PreviewKeyDown += OnStudioKeyDown;
         // 键盘纪律：Delete/Backspace/Escape 只在画布持有键盘焦点时生效。属性面板的
@@ -990,23 +991,37 @@ public sealed partial class WorkflowView : WorkspaceView
             canvas.Children.Add(hint);
         }
         ApplyView();
-        RenderMinimap();
         RefreshDeleteButton();   // 重建会收敛悬空的 selectedEdgeKey，按钮态随之刷新
         RefreshCanvasButtons();
     }
 
     private void RenderMinimap()
     {
+        var viewport = canvasScroll.ViewportWidth > 0 && canvasScroll.ViewportHeight > 0 && scale > 0
+            ? new Rect(canvasScroll.HorizontalOffset / scale, canvasScroll.VerticalOffset / scale,
+                canvasScroll.ViewportWidth / scale, canvasScroll.ViewportHeight / scale)
+            : Rect.Empty;
+        DrawMinimap(viewport);
+    }
+
+    private void DrawMinimap(Rect viewport)
+    {
         minimap.Children.Clear();
-        if (nodes.Count == 0) return;
-        var minX = nodes.Min(n => n.Position.X);
-        var maxX = nodes.Max(n => n.Position.X + NodeWidth);
-        var minY = nodes.Min(n => n.Position.Y);
-        // 色块只画在节点左上角（高 ≤6px）：若按节点完整高度（+140）取包络再
-        // 居中，色块会整体偏高、底部留出一大块（实机验收指出的残余偏差）。
-        // 按色块实际覆盖范围（节点顶部坐标）取包络，视觉上才真正居中。
-        // FitView 的同款包络含节点高度——那边要装下整张卡片，是正确的。
-        var maxY = nodes.Max(n => n.Position.Y);
+        miniScale = 0;
+        if (nodes.Count == 0 && viewport.IsEmpty) return;
+        var minX = nodes.Count > 0 ? nodes.Min(n => n.Position.X) : viewport.Left;
+        var maxX = nodes.Count > 0 ? nodes.Max(n => n.Position.X + NodeWidth) : viewport.Right;
+        var minY = nodes.Count > 0 ? nodes.Min(n => n.Position.Y) : viewport.Top;
+        // 节点小卡片以顶部坐标定位；视口加入包络后，当前视图框始终完整可见。
+        // 无视口尺寸的离屏场景仍按节点顶部居中，保持点击导航的几何契约。
+        var maxY = nodes.Count > 0 ? nodes.Max(n => n.Position.Y) : viewport.Bottom;
+        if (!viewport.IsEmpty)
+        {
+            minX = Math.Min(minX, viewport.Left);
+            maxX = Math.Max(maxX, viewport.Right);
+            minY = Math.Min(minY, viewport.Top);
+            maxY = Math.Max(maxY, viewport.Bottom);
+        }
         var spanX = Math.Max(200, maxX - minX);
         var spanY = Math.Max(200, maxY - minY);
         var sx = (minimap.Width - 8) / spanX;
@@ -1025,13 +1040,32 @@ public sealed partial class WorkflowView : WorkspaceView
                 : Color.FromRgb(0x32, 0x6B, 0x91);
             var dot = new System.Windows.Shapes.Rectangle
             {
-                Width = Math.Max(4, NodeWidth * s * 0.4),
-                Height = Math.Max(3, 18 * s),
-                Fill = new SolidColorBrush(tone),
+                Width = Math.Max(6, NodeWidth * s),
+                Height = Math.Max(5, Math.Min(10, 100 * s)),
+                Fill = new SolidColorBrush(Color.FromArgb(55, tone.R, tone.G, tone.B)),
+                Stroke = new SolidColorBrush(tone),
+                StrokeThickness = 1.5,
             };
             Canvas.SetLeft(dot, ox + (node.Position.X - minX) * s);
             Canvas.SetTop(dot, oy + (node.Position.Y - minY) * s);
             minimap.Children.Add(dot);
+        }
+        if (!viewport.IsEmpty)
+        {
+            var frame = new System.Windows.Shapes.Rectangle
+            {
+                Width = viewport.Width * s,
+                Height = viewport.Height * s,
+                Stroke = FlowResource("AccentInk"),
+                StrokeThickness = 2,
+                Fill = new SolidColorBrush(Color.FromArgb(28, 154, 73, 58)),
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true,
+                Tag = "current-viewport",
+            };
+            Canvas.SetLeft(frame, ox + (viewport.Left - minX) * s);
+            Canvas.SetTop(frame, oy + (viewport.Top - minY) * s);
+            minimap.Children.Add(frame);
         }
         // 反算式 x = miniOriginX + (point.X - 4) / s：代回可得 flow x = minX + (point.X - ox) / s，
         // 恰为色块摆放的正向映射，保证点击色块本身即居中该节点。
@@ -1060,6 +1094,7 @@ public sealed partial class WorkflowView : WorkspaceView
             nodes.Select(n => n.Position.X + NodeWidth + 160).DefaultIfEmpty(1200).Max());
         canvas.Height = Math.Max(Math.Max(700, canvasScroll.ViewportHeight / scale),
             nodes.Select(n => n.Position.Y + Math.Max(140, n.Element.ActualHeight) + 160).DefaultIfEmpty(700).Max());
+        RenderMinimap();
     }
 
     private void FitView()

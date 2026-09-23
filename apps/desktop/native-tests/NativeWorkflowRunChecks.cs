@@ -1405,8 +1405,12 @@ internal static class NativeWorkflowRunChecks
             var b = CreateNode(view, "map-2", "agent.parse");
             var c = CreateNode(view, "map-3", "output.page");
             var minimap = Field<System.Windows.Controls.Canvas>(view, "minimap");
+            var minimapHost = Field<Border>(view, "minimapHost");
+            Require(minimapHost.BorderThickness.Left >= 2 && minimapHost.BorderThickness.Top >= 2,
+                "小地图外框应在浅色画布上清晰可见");
             var nodeWidth = Convert.ToDouble(typeof(WorkflowView).GetField("NodeWidth", All)!.GetValue(null)!);
             var render = () => typeof(WorkflowView).GetMethod("RenderMinimap", All)!.Invoke(view, null);
+            var drawWithViewport = (Rect viewport) => typeof(WorkflowView).GetMethod("DrawMinimap", All)!.Invoke(view, [viewport]);
             var positions = new (double X, double Y)[] { (0, 0), (800, 20), (1600, 60) };
 
             SetPositions([a, b, c], positions);
@@ -1438,13 +1442,37 @@ internal static class NativeWorkflowRunChecks
             Require(Math.Abs(Canvas.GetLeft(dots[2]) - (originX + 400 * s)) <= 0.5
                 && Math.Abs(Canvas.GetTop(dots[2]) - (originY + 500 * s)) <= 0.5,
                 "节点位置变化后小地图未跟随重渲染");
+
+            // 当前视图框要完整显示；缩放或滚动后使用新的 flow 坐标重绘。
+            SetPositions([a, b, c], [(0, 0), (800, 20), (1600, 60)]);
+            var firstViewport = new Rect(0, 0, 1200, 700);
+            drawWithViewport(firstViewport);
+            var frame = minimap.Children.OfType<System.Windows.Shapes.Rectangle>()
+                .Single(item => Equals(item.Tag, "current-viewport"));
+            Require(frame.StrokeThickness >= 2 && !frame.IsHitTestVisible,
+                "当前视图框应有清晰描边，且不阻挡点击小地图导航");
+            Require(Canvas.GetLeft(frame) >= 0 && Canvas.GetTop(frame) >= 0
+                && Canvas.GetLeft(frame) + frame.Width <= minimap.Width
+                && Canvas.GetTop(frame) + frame.Height <= minimap.Height,
+                "当前视图框应完整位于小地图内");
+            var firstLeft = Canvas.GetLeft(frame);
+            var firstWidth = frame.Width;
+            var nextViewport = new Rect(500, 100, 700, 350);
+            drawWithViewport(nextViewport);
+            frame = minimap.Children.OfType<System.Windows.Shapes.Rectangle>()
+                .Single(item => Equals(item.Tag, "current-viewport"));
+            Require(Canvas.GetLeft(frame) > firstLeft && frame.Width < firstWidth,
+                "滚动和放大后当前视图框应移动并缩小");
+            s = Field<double>(view, "miniScale");
+            Require(Math.Abs(Canvas.GetLeft(frame) - (4 + (nextViewport.Left - Field<double>(view, "miniOriginX")) * s)) <= 0.5,
+                "当前视图框与小地图点击导航应使用同一坐标映射");
         }
         catch (Exception error)
         {
             Console.WriteLine("FAIL: workflow minimap geometry: " + error.Message);
             throw;
         }
-        Console.WriteLine("PASS: workflow minimap letterbox centering, click-nav origin parity, live re-render");
+        Console.WriteLine("PASS: workflow minimap outline, viewport frame, letterbox centering, click-nav origin parity, live re-render");
     }
 
     // 与 WorkflowView.RenderMinimap 同一公式：正向摆放原点（含最小 4px 内边距）。
