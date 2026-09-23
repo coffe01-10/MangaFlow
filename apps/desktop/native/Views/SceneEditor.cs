@@ -14,6 +14,7 @@ internal sealed class SceneEditor : Window
     private readonly bool variant;
     private readonly Func<object, Task> submit;
     private readonly Dictionary<string, TextBox> inputs = new();
+    private readonly Dictionary<string, CheckBox> overrideChecks = new();
     private readonly ComboBox time = SceneWorkspace.Select("时间", ("", "未指定"), ("dawn", "黎明"), ("day", "白天"), ("dusk", "黄昏"), ("night", "夜晚"));
     private readonly ComboBox interior = SceneWorkspace.Select("室内外", ("", "未指定"), ("true", "室内"), ("false", "室外"));
     private readonly CheckBox canonical = new() { Content = "设为默认变体", MinHeight = 40, VerticalContentAlignment = VerticalAlignment.Center };
@@ -63,15 +64,23 @@ internal sealed class SceneEditor : Window
             if (structured.ValueKind == JsonValueKind.Object && structured.TryGetProperty("interior", out var room)) Pick(interior, room.ValueKind == JsonValueKind.True ? "true" : room.ValueKind == JsonValueKind.False ? "false" : "");
             Add(SceneWorkspace.Field("室内外", interior));
         }
-        Pick(time, structured.Text("time_of_day")); Add(SceneWorkspace.Field("时间", time));
-        foreach (var (key, label) in new[] { ("weather", "天气"), ("season", "季节"), ("lighting", "光照") }) Add(Input(key, label, structured.Text(key)));
+        Pick(time, structured.Text("time_of_day"));
+        var timeField = SceneWorkspace.Field("时间", time);
+        Add(variant ? OverrideField("time_of_day", timeField, time) : timeField);
+        foreach (var (key, label) in new[] { ("weather", "天气"), ("season", "季节"), ("lighting", "光照") })
+        {
+            var field = Input(key, label, structured.Text(key));
+            Add(variant ? OverrideField(key, field, inputs[key]) : field);
+        }
         if (!variant)
         {
             Add(Input("subareas", "子区域（用逗号分隔）", Join(structured.Array("subareas"))), true);
             Add(Input("fixed_props", "固定物件（用逗号分隔）", Join(structured.Array("fixed_props"))), true);
         }
-        Add(Input("dominant", "主色", Join(structured.Element("palette").Array("dominant"))));
+        var dominantField = Input("dominant", "主色", Join(structured.Element("palette").Array("dominant")));
+        Add(variant ? OverrideField("palette", dominantField, inputs["dominant"]) : dominantField);
         Add(Input("mood", "色调情绪", structured.Element("palette").Text("mood")));
+        if (variant) inputs["mood"].TextChanged += (_, _) => overrideChecks["palette"].IsChecked = true;
         if (!variant) Add(Input("spatial_relations", "空间关系（每行：起点 > 关系 > 终点）", string.Join("\n", structured.Array("spatial_relations").Select(r => $"{r.Text("from")} > {r.Text("relation")} > {r.Text("to")}")), true), true);
         else { canonical.IsChecked = data.Flag("is_canonical"); Add(canonical, true); }
         form.Children.Add(grid); root.Children.Add(new ScrollViewer { Content = form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }); Content = root;
@@ -91,6 +100,16 @@ internal sealed class SceneEditor : Window
         if (key == "description") input.MaxLength = 8000;
         inputs[key] = input; var field = SceneWorkspace.Field(label, input); field.Margin = new Thickness(0, 0, 0, 10); return field;
     }
+    private FrameworkElement OverrideField(string key, FrameworkElement field, Control input)
+    {
+        var source = original?.Element("structured_overrides") ?? default;
+        var present = source.ValueKind == JsonValueKind.Object && source.TryGetProperty(key, out _);
+        var check = new CheckBox { Content = "覆盖主场景（留空可清除）", IsChecked = present, Margin = new Thickness(0, 0, 0, 4) };
+        overrideChecks[key] = check;
+        if (input is TextBox text) text.TextChanged += (_, _) => check.IsChecked = true;
+        if (input is ComboBox combo) combo.SelectionChanged += (_, _) => check.IsChecked = true;
+        return new StackPanel { Children = { check, field } };
+    }
     internal object Payload()
     {
         string Text(string key) => inputs[key].Text;
@@ -99,6 +118,9 @@ internal sealed class SceneEditor : Window
             ["time_of_day"] = SceneWorkspace.Value(time), ["weather"] = Text("weather"), ["season"] = Text("season"), ["lighting"] = Text("lighting"),
             ["palette"] = new { dominant = Split(Text("dominant")), mood = Text("mood") },
         };
+        if (variant)
+            foreach (var key in new[] { "time_of_day", "weather", "season", "lighting", "palette" })
+                if (overrideChecks[key].IsChecked != true) structured.Remove(key);
         if (!variant)
         {
             structured["place"] = Text("place"); structured["interior"] = SceneWorkspace.Value(interior) switch { "true" => true, "false" => false, _ => (bool?)null };

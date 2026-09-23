@@ -237,6 +237,9 @@ export function SceneWorkspace({
     palette_mood: "",
     is_canonical: false,
   });
+  const [variantPresence, setVariantPresence] = useState({
+    time_of_day: false, weather: false, season: false, lighting: false, palette: false,
+  });
   // #546-3：弹窗表单的「打开时快照」。backdrop/Escape 与取消按钮关闭前，
   // 当前草稿与快照不一致（有未保存输入）就先确认，取消关闭则原样保留。
   const [draftSnapshot, setDraftSnapshot] = useState("");
@@ -348,14 +351,13 @@ export function SceneWorkspace({
     mutationFn: async () => {
       if (!selected) throw new Error("请先选择场景资产");
       const structured_overrides = pickVariantOverrides({
-        time_of_day: variantDraft.time_of_day,
-        weather: variantDraft.weather,
-        season: variantDraft.season,
-        lighting: variantDraft.lighting,
-        palette: {
-          dominant: splitList(variantDraft.palette_dominant),
-          mood: variantDraft.palette_mood,
-        },
+        ...(variantPresence.time_of_day && { time_of_day: variantDraft.time_of_day }),
+        ...(variantPresence.weather && { weather: variantDraft.weather }),
+        ...(variantPresence.season && { season: variantDraft.season }),
+        ...(variantPresence.lighting && { lighting: variantDraft.lighting }),
+        ...(variantPresence.palette && { palette: {
+          dominant: splitList(variantDraft.palette_dominant), mood: variantDraft.palette_mood,
+        } }),
       });
       if (editingVariantId) {
         const current = selected.variants.find((item) => item.id === editingVariantId);
@@ -520,6 +522,13 @@ export function SceneWorkspace({
 
   function openVariant(variant?: SceneAsset["variants"][number]) {
     const overrides = pickVariantOverrides(variant?.structured_overrides);
+    const presence = {
+      time_of_day: Object.hasOwn(overrides, "time_of_day"),
+      weather: Object.hasOwn(overrides, "weather"),
+      season: Object.hasOwn(overrides, "season"),
+      lighting: Object.hasOwn(overrides, "lighting"),
+      palette: Object.hasOwn(overrides, "palette"),
+    };
     const palette = (overrides.palette ?? {}) as { dominant?: string[]; mood?: string };
     setEditingVariantId(variant?.id ?? null);
     const next = {
@@ -533,13 +542,14 @@ export function SceneWorkspace({
       is_canonical: variant?.is_canonical ?? false,
     };
     setVariantDraft(next);
-    setVariantSnapshot(JSON.stringify(next));
+    setVariantPresence(presence);
+    setVariantSnapshot(JSON.stringify({ next, presence }));
     setFormError("");
     setShowVariant(true);
   }
 
   const sceneDraftDirty = (showCreate || showEdit) && JSON.stringify(draft) !== draftSnapshot;
-  const variantDraftDirty = showVariant && JSON.stringify(variantDraft) !== variantSnapshot;
+  const variantDraftDirty = showVariant && JSON.stringify({ next: variantDraft, presence: variantPresence }) !== variantSnapshot;
 
   function closeAssetForm() {
     if (sceneDraftDirty && !window.confirm("当前弹窗内容尚未保存，关闭会丢弃已输入的内容。仍要关闭吗？")) return;
@@ -906,29 +916,34 @@ export function SceneWorkspace({
             </label>
             <label>
               <span>时间</span>
-              <select aria-label="变体时间" value={variantDraft.time_of_day} onChange={(event) => setVariantDraft({ ...variantDraft, time_of_day: event.target.value })}>
+              <span><input type="checkbox" aria-label="覆盖时间" checked={variantPresence.time_of_day} onChange={(event) => setVariantPresence({ ...variantPresence, time_of_day: event.target.checked })} />覆盖主场景（留空可清除）</span>
+              <select aria-label="变体时间" value={variantDraft.time_of_day} onChange={(event) => { setVariantDraft({ ...variantDraft, time_of_day: event.target.value }); setVariantPresence({ ...variantPresence, time_of_day: true }); }}>
                 {TIME_OF_DAY_OPTIONS.map(([id, label]) => <option key={id || "none"} value={id}>{label}</option>)}
               </select>
             </label>
             <label>
               <span>天气</span>
-              <input aria-label="变体天气" value={variantDraft.weather} onChange={(event) => setVariantDraft({ ...variantDraft, weather: event.target.value })} />
+              <span><input type="checkbox" aria-label="覆盖天气" checked={variantPresence.weather} onChange={(event) => setVariantPresence({ ...variantPresence, weather: event.target.checked })} />覆盖主场景（留空可清除）</span>
+              <input aria-label="变体天气" value={variantDraft.weather} onChange={(event) => { setVariantDraft({ ...variantDraft, weather: event.target.value }); setVariantPresence({ ...variantPresence, weather: true }); }} />
             </label>
             <label>
               <span>季节</span>
-              <input aria-label="变体季节" value={variantDraft.season} onChange={(event) => setVariantDraft({ ...variantDraft, season: event.target.value })} />
+              <span><input type="checkbox" aria-label="覆盖季节" checked={variantPresence.season} onChange={(event) => setVariantPresence({ ...variantPresence, season: event.target.checked })} />覆盖主场景（留空可清除）</span>
+              <input aria-label="变体季节" value={variantDraft.season} onChange={(event) => { setVariantDraft({ ...variantDraft, season: event.target.value }); setVariantPresence({ ...variantPresence, season: true }); }} />
             </label>
             <label>
               <span>光照</span>
-              <input aria-label="变体光照" value={variantDraft.lighting} onChange={(event) => setVariantDraft({ ...variantDraft, lighting: event.target.value })} />
+              <span><input type="checkbox" aria-label="覆盖光照" checked={variantPresence.lighting} onChange={(event) => setVariantPresence({ ...variantPresence, lighting: event.target.checked })} />覆盖主场景（留空可清除）</span>
+              <input aria-label="变体光照" value={variantDraft.lighting} onChange={(event) => { setVariantDraft({ ...variantDraft, lighting: event.target.value }); setVariantPresence({ ...variantPresence, lighting: true }); }} />
             </label>
             <label>
               <span>主色</span>
-              <input aria-label="变体主色" value={variantDraft.palette_dominant} onChange={(event) => setVariantDraft({ ...variantDraft, palette_dominant: event.target.value })} />
+              <span><input type="checkbox" aria-label="覆盖色板" checked={variantPresence.palette} onChange={(event) => setVariantPresence({ ...variantPresence, palette: event.target.checked })} />覆盖主场景色板（留空可清除）</span>
+              <input aria-label="变体主色" value={variantDraft.palette_dominant} onChange={(event) => { setVariantDraft({ ...variantDraft, palette_dominant: event.target.value }); setVariantPresence({ ...variantPresence, palette: true }); }} />
             </label>
             <label>
               <span>色调情绪</span>
-              <input aria-label="变体色调情绪" value={variantDraft.palette_mood} onChange={(event) => setVariantDraft({ ...variantDraft, palette_mood: event.target.value })} />
+              <input aria-label="变体色调情绪" value={variantDraft.palette_mood} onChange={(event) => { setVariantDraft({ ...variantDraft, palette_mood: event.target.value }); setVariantPresence({ ...variantPresence, palette: true }); }} />
             </label>
             <label className="scene-archive-toggle">
               <input type="checkbox" checked={variantDraft.is_canonical} onChange={(event) => setVariantDraft({ ...variantDraft, is_canonical: event.target.checked })} />

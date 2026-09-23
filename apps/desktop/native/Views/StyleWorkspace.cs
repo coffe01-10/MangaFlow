@@ -73,7 +73,7 @@ internal sealed class StyleWorkspace : StackPanel
         upload.DragOver += (_, e) => { e.Effects = !saving && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
         upload.Drop += async (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] paths) await UploadAsync(paths); e.Handled = true; };
         Children.Add(upload); Children.Add(references);
-        selected.UnionWith(view.PendingStyleReferences.Where(id => view.assets.Any(a => a.Id == id && a.Kind == "STYLE_REFERENCE")));
+        selected.UnionWith(view.PendingStyleReferences);
         view.PendingStyleReferences.Clear();
         name.TextChanged += (_, _) => UpdateDraft(); UpdateDraft(); RenderReferences();
         Dispatcher.BeginInvoke(new Action(() => { if (Active) InitialLoad = ReloadAsync(); }));
@@ -230,9 +230,9 @@ internal sealed class StyleWorkspace : StackPanel
         try
         {
             await View.ApiSendOptional($"assets/{id}", method, body);
-            var assets = await View.ApiSend($"assets?project_id={ProjectId}"); if (!Active) return;
-            View.assets = assets.EnumerateArray().Select(AssetItem.From).ToList();
-            selected.RemoveWhere(key => !View.assets.Any(a => a.Id == key && a.Kind == "STYLE_REFERENCE"));
+            var assets = await View.LoadAllAssetsAsync(); if (!Active) return;
+            View.assets = assets;
+            if (method == HttpMethod.Delete) selected.Remove(id);
             await ReloadAsync();
         }
         catch (Exception ex) { Notify(ex.Message); }

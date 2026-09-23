@@ -73,6 +73,15 @@ internal static class NativeSceneChecks
         var variantPayload = JsonSerializer.SerializeToElement(variant.Payload());
         Require(!variantPayload.Element("structured_overrides").TryGetProperty("place", out _) && !variantPayload.Element("structured_overrides").TryGetProperty("fixed_props", out _), "variant cannot override permanent spatial identity");
         Render((FrameworkElement)variant.Content, 526, 600, 96, Path.Combine(output, "native-scene-variant-editor.png")); variant.Close();
+        using var sparseDocument = JsonDocument.Parse("""{"name":"雨天","version":1,"structured_overrides":{"weather":"雨"}}""");
+        var sparseEditor = new SceneEditor(sparseDocument.RootElement, true, _ => Task.CompletedTask);
+        Field<Dictionary<string, TextBox>>(sparseEditor, "inputs")["name"].Text = "雨天修订";
+        var sparsePayload = JsonSerializer.SerializeToElement(sparseEditor.Payload()).Element("structured_overrides");
+        Require(sparsePayload.Text("weather") == "雨" && !sparsePayload.TryGetProperty("time_of_day", out _) && !sparsePayload.TryGetProperty("lighting", out _) && !sparsePayload.TryGetProperty("palette", out _), "name-only edit preserves sparse variant overrides");
+        Field<Dictionary<string, CheckBox>>(sparseEditor, "overrideChecks")["lighting"].IsChecked = true;
+        var clearedPayload = JsonSerializer.SerializeToElement(sparseEditor.Payload()).Element("structured_overrides");
+        Require(clearedPayload.TryGetProperty("lighting", out var lighting) && lighting.GetString() == "", "explicit clearing remains distinct from inheritance");
+        sparseEditor.Close();
         var pendingSave = new TaskCompletionSource(); int submissions = 0;
         var dedup = new SceneEditor(scene, false, async _ => { submissions++; await pendingSave.Task; });
         var first = dedup.SaveAsync(); Require(!await dedup.SaveAsync() && submissions == 1, "double submit cannot duplicate saves"); pendingSave.SetResult(); Require(await first, "first save finishes"); dedup.Close();

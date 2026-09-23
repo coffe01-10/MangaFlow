@@ -164,13 +164,13 @@ public sealed class AssetsView : WorkspaceView
         try
         {
             var modelTask = Api.SendAsync("models", cancellation: token);
-            var assetTask = Api.SendAsync($"assets?project_id={ProjectId}", cancellation: token);
+            var assetTask = LoadAllAssetsAsync(token);
             var characterTask = Api.SendAsync($"projects/{ProjectId}/characters", cancellation: token);
             var outfitTask = Api.SendAsync($"projects/{ProjectId}/outfits", cancellation: token);
             await Task.WhenAll(modelTask, assetTask, characterTask, outfitTask);
             if (!IsCurrent(captured) || request != loadRequest) return;
             models = (await modelTask).EnumerateArray().ToList();
-            assets = (await assetTask).EnumerateArray().Select(AssetItem.From).ToList();
+            assets = await assetTask;
             characters = (await characterTask).EnumerateArray().Select(CharacterItem.From).ToList();
             SelectedCharacter = characters.FirstOrDefault(c => c.Id == SelectedCharacter?.Id);
             outfits = (await outfitTask).EnumerateArray().Select(OutfitItem.From).ToList();
@@ -322,6 +322,9 @@ public sealed class AssetsView : WorkspaceView
     // Bridges for the nested panes (they are plain controls, not WorkspaceViews).
     internal Task<JsonElement> ApiSend(string path, HttpMethod? method = null, object? body = null) =>
         Api.SendAsync(path, method, body, lifetime.Token);
+    internal async Task<List<AssetItem>> LoadAllAssetsAsync(CancellationToken cancellation = default) =>
+        (await Api.ListAssetsAsync(ProjectId, cancellation == default ? lifetime.Token : cancellation))
+            .Select(AssetItem.From).ToList();
     internal Task<JsonElement?> ApiSendOptional(string path, HttpMethod? method = null, object? body = null) =>
         Api.SendOptionalAsync(path, method, body, lifetime.Token);
     internal string ProjectIdValue => ProjectId;

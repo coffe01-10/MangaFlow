@@ -90,8 +90,6 @@ internal sealed class ReferencesPane : StackPanel
         if (error.Text.StartsWith("素材刷新失败")) error.Text = "";
         retry.Visibility = Visibility.Collapsed;
         header.Content = AssetPageUi.Header("REFERENCE INTAKE / 原始素材", "上传、分类与追溯原始参考图", $"{View.assets.Count} 个文件");
-        View.PendingOutfitReferences.RemoveWhere(id => !View.assets.Any(a => a.Id == id && a.Kind == "OUTFIT_REFERENCE"));
-        View.PendingStyleReferences.RemoveWhere(id => !View.assets.Any(a => a.Id == id && a.Kind == "STYLE_REFERENCE"));
         syncingCharacter = true;
         character.Items.Clear(); character.Items.Add(new ComboBoxItem { Tag = "", Content = "选择角色后绑定参考图" });
         foreach (var c in View.characters) character.Items.Add(new ComboBoxItem { Tag = c.Id, Content = c.PrimaryName });

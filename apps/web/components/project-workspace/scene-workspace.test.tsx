@@ -20,6 +20,7 @@ const uploadApi = vi.spyOn(api, "uploadAsset");
 const bindRefApi = vi.spyOn(api, "bindSceneAssetReference");
 const unbindRefApi = vi.spyOn(api, "unbindSceneAssetReference");
 const createVariantApi = vi.spyOn(api, "createSceneAssetVariant");
+const updateVariantApi = vi.spyOn(api, "updateSceneAssetVariant");
 const chaptersApi = vi.spyOn(api, "chapters");
 const scriptApi = vi.spyOn(api, "script");
 
@@ -64,6 +65,7 @@ describe("SceneWorkspace", () => {
     bindRefApi.mockReset();
     unbindRefApi.mockReset();
     createVariantApi.mockReset();
+    updateVariantApi.mockReset();
     chaptersApi.mockReset().mockResolvedValue([]);
     scriptApi.mockReset().mockResolvedValue({ chapter_id: "c1", status: "READY", revision_no: 1, coverage: {}, scenes: [] });
   });
@@ -457,6 +459,7 @@ describe("SceneWorkspace 表单弹窗草稿守卫（#546-3）", () => {
     bindRefApi.mockReset();
     unbindRefApi.mockReset();
     createVariantApi.mockReset();
+    updateVariantApi.mockReset();
     chaptersApi.mockReset().mockResolvedValue([]);
     scriptApi.mockReset().mockResolvedValue({ chapter_id: "c1", status: "READY", revision_no: 1, coverage: {}, scenes: [] });
   });
@@ -524,5 +527,30 @@ describe("SceneWorkspace 表单弹窗草稿守卫（#546-3）", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(screen.queryByLabelText("变体天气")).not.toBeInTheDocument());
     confirmSpy.mockRestore();
+  });
+
+  it("只改变体名称保留稀疏覆盖，并允许显式清空光照（#1006）", async () => {
+    const variant = {
+      id: "variant-1", scene_asset_id: "asset-1", name: "雨天",
+      structured_overrides: { weather: "大雨" }, is_canonical: false,
+      deleted_at: null, version: 1, references: [],
+    };
+    listApi.mockResolvedValue([assetFixture({ variants: [variant] })]);
+    updateVariantApi.mockResolvedValue(variant);
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    expect(screen.getByLabelText("覆盖天气")).toBeChecked();
+    expect(screen.getByLabelText("覆盖时间")).not.toBeChecked();
+    expect(screen.getByLabelText("覆盖光照")).not.toBeChecked();
+    fireEvent.change(screen.getByLabelText("变体名称"), { target: { value: "雨天修订" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存变体" }));
+    await waitFor(() => expect(updateVariantApi).toHaveBeenCalled());
+    expect(updateVariantApi.mock.calls[0][3].structured_overrides).toEqual({ weather: "大雨" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    fireEvent.click(screen.getByLabelText("覆盖光照"));
+    fireEvent.click(screen.getByRole("button", { name: "保存变体" }));
+    await waitFor(() => expect(updateVariantApi).toHaveBeenCalledTimes(2));
+    expect(updateVariantApi.mock.calls[1][3].structured_overrides).toEqual({ weather: "大雨", lighting: "" });
   });
 });
