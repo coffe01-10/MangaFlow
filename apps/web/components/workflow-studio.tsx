@@ -1145,7 +1145,20 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             }}
           >
             <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="#4c514e" />
-            <MiniMap ariaLabel="工作流小地图" pannable zoomable className={styles.minimap} nodeColor={(node) => ({ input: "#397b68", control: "#b77c26", output: "#b94735", quality: "#7862a4", agent: "#326b91" })[nodeTone((node.data as StudioNodeData).graphNode.type)]} />
+            <MiniMap
+              ariaLabel="工作流小地图"
+              pannable
+              zoomable
+              className={styles.minimap}
+              bgColor="#202421"
+              maskColor="rgba(8, 13, 11, 0.38)"
+              maskStrokeColor="#f4a78c"
+              maskStrokeWidth={2}
+              nodeStrokeColor="#d6dfd8"
+              nodeStrokeWidth={8}
+              nodeBorderRadius={2}
+              nodeColor={(node) => ({ input: "#397b68", control: "#b77c26", output: "#b94735", quality: "#7862a4", agent: "#326b91" })[nodeTone((node.data as StudioNodeData).graphNode.type)]}
+            />
             <Controls showInteractive={false} />
           </ReactFlow></GroupToggleContext.Provider>
           {validation.length ? <div className={styles.validation}><CircleAlert size={15} /><div>{validation.map((message, index) => <span key={`${index}-${message}`}>{message}</span>)}</div><button aria-label="清除校验提示" onClick={() => setValidation([])}><X size={13} /></button></div> : null}

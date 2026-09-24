@@ -83,7 +83,7 @@
 .ports small { color: #a4ada7; font-size: 5px; }
 .handle { width: 8px !important; height: 8px !important; position: absolute !important; border: 1px solid #161917 !important; background: #77847c !important; }
 .handle.text { background: #3c8d78 !important; }.handle.json { background: #3c7698 !important; }.handle.image { background: #b84a38 !important; }.handle.asset { background: #a07b39 !important; }.handle.report { background: #8067a5 !important; }.handle.boolean { background: #d0c65e !important; }
-.minimap { border: 1px solid #3f4642; background: #202421 !important; }
+.minimap { overflow: hidden; border: 2px solid #a4ada7; border-radius: 4px; background: #202421; box-shadow: 0 8px 22px #0008; }
 .validation { position: absolute; z-index: 9; left: 12px; bottom: 54px; width: min(460px, calc(100% - 24px)); max-height: 150px; overflow: auto; display: grid; grid-template-columns: 20px 1fr 24px; gap: 7px; padding: 10px; border: 1px solid #9f493d; background: #382622; color: #ead8d2; }
 .validation div { display: grid; gap: 4px; }
 .validation span { font-size: 7px; line-height: 1.4; }

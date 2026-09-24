@@ -25,7 +25,28 @@ vi.mock("@xyflow/react", () => ({
   Background: () => null,
   BackgroundVariant: { Dots: "dots" },
   Controls: () => null,
-  MiniMap: () => null,
+  MiniMap: (props: {
+    ariaLabel: string;
+    maskColor?: string;
+    maskStrokeColor?: string;
+    maskStrokeWidth?: number;
+    nodeStrokeColor?: string;
+    nodeStrokeWidth?: number;
+    pannable?: boolean;
+    zoomable?: boolean;
+  }) => (
+    <div
+      data-testid="workflow-minimap"
+      aria-label={props.ariaLabel}
+      data-mask={props.maskColor}
+      data-viewport-stroke={props.maskStrokeColor}
+      data-viewport-stroke-width={props.maskStrokeWidth}
+      data-node-stroke={props.nodeStrokeColor}
+      data-node-stroke-width={props.nodeStrokeWidth}
+      data-pannable={props.pannable}
+      data-zoomable={props.zoomable}
+    />
+  ),
   Handle: () => null,
   Position: { Left: "left", Right: "right" },
   addEdge: (edge: unknown, edges: unknown[]) => [...edges, edge],
@@ -157,6 +178,18 @@ describe("WorkflowStudio 草稿保存与发布", () => {
       validation_report: { valid: true, issues: [], topological_order: [] },
       published_at: "2026-08-27T00:00:00Z",
     });
+  });
+
+  it("小地图显示可辨认的当前视图框和节点轮廓，仍可导航", async () => {
+    renderStudio();
+    const minimap = await screen.findByTestId("workflow-minimap");
+    expect(minimap.getAttribute("data-mask")).toMatch(/^rgba\(/);
+    expect(minimap.getAttribute("data-viewport-stroke")).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(Number(minimap.getAttribute("data-viewport-stroke-width"))).toBeGreaterThanOrEqual(2);
+    expect(minimap.getAttribute("data-node-stroke")).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(Number(minimap.getAttribute("data-node-stroke-width"))).toBeGreaterThan(0);
+    expect(minimap).toHaveAttribute("data-pannable", "true");
+    expect(minimap).toHaveAttribute("data-zoomable", "true");
   });
 
   it("多选批量复制、分组、删除与撤销保留完整图", async () => {
