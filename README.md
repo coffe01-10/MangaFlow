@@ -18,7 +18,7 @@ MangaFlow AI is a private, single-user AI manga workbench for novelists and mang
 
 The workbench UI is primarily in Chinese. This repository provides English and Simplified Chinese READMEs, not a fully localized application.
 
-[How it works](#how-it-works) · [Windows release](#windows-desktop-release) · [Quick start](#quick-start) · [Development and checks](#development-and-checks) · [Documentation](#documentation)
+[Promo video](#promo-video) · [How it works](#how-it-works) · [Windows release](#windows-desktop-release) · [Quick start](#quick-start) · [Development and checks](#development-and-checks) · [Documentation](#documentation)
 
 > [!IMPORTANT]
 > The current Windows build is the `v1.0.0-rc2` release candidate. The main workflow is implemented, but the installer is not code-signed and several real-provider, multi-display/DPI, and long-session acceptance cases remain open. Do not treat it as a production-stable release. See the [main-branch roadmap](docs/roadmap.md) for impact and priorities.
@@ -31,6 +31,14 @@ The workbench UI is primarily in Chinese. This repository provides English and S
 Story and references → script and storyboard → page candidate → human proofreading, selection, and visual checks → finished pages and chapter exports.
 
 This is a workflow diagram, not a product screenshot. MangaFlow is not an unattended whole-chapter generator: you decide when to start the next page.
+
+## Promo video
+
+<p align="center">
+  <a href="assets/readme/mangaflow-promo.mp4"><img src="assets/readme/mangaflow-promo-poster.jpg" width="920" alt="Play the 56-second MangaFlow animated promo, showing page candidates from the creative workflow"></a>
+</p>
+
+[Watch the 56-second promo video](assets/readme/mangaflow-promo.mp4). This animation illustrates the workflow; it is not a recording of the application UI.
 
 ## How it works
 

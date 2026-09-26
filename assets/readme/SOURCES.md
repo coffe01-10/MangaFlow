@@ -42,6 +42,7 @@ MangaFlow 的漫画页图形、流程文案与布局为本项目定制。米纸�
 | [overview-mobile.svg](overview-mobile.svg) / [overview-mobile.png](overview-mobile.png) | 中文窄屏纵向图，430 × 904 逻辑画布，PNG 为 2 倍分辨率 |
 | [overview-en.svg](overview-en.svg) / [overview-en.png](overview-en.png) | 英文桌面流程图，与中文桌面版共用布局逻辑 |
 | [overview-mobile-en.svg](overview-mobile-en.svg) / [overview-mobile-en.png](overview-mobile-en.png) | 英文窄屏纵向图，与中文窄屏版共用布局逻辑 |
+| [mangaflow-promo.mp4](mangaflow-promo.mp4) / [mangaflow-promo-poster.jpg](mangaflow-promo-poster.jpg) | 用户提供的 56 秒动画宣传片；封面取自第 34 秒画面并加播放图标 |
 
 两版 README 分别用 `<picture>` 在窄屏选择相应语言的纵向 PNG；不支持该选择的阅读器回退到同语言桌面 PNG。PNG 用于固定字体与版面，SVG 保留为可编辑来源。核心流程在正文和图片替代文本中均以相应语言说明，不依赖图片传递唯一信息。
 
