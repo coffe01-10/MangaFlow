@@ -34,11 +34,9 @@ MangaFlow AI 是面向小说作者与漫画创作者的私有、单用户 AI 漫
 
 ## 宣传视频
 
-<p align="center">
-  <a href="assets/readme/mangaflow-promo.mp4"><img src="assets/readme/mangaflow-promo.webp" width="920" alt="MangaFlow 56 秒动画宣传片内嵌播放中，展示创作流程中的多版页面候选"></a>
-</p>
+https://github.com/user-attachments/assets/7fd8d37d-f587-4bd0-9c1b-f3f486fd5f67
 
-宣传片在上方自动播放；点击查看 [带声音的完整画质视频](assets/readme/mangaflow-promo.mp4)。视频为工作流程的动画演示，并非应用界面录屏。
+上方播放器可直接播放 56 秒宣传片（带声音）。视频为工作流程的动画演示，并非应用界面录屏。
 
 ## 工作方式
 
