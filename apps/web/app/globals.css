@@ -590,6 +590,13 @@ a { color: inherit; text-decoration: none; }
    0ms，保证命令式逐帧绘制仍然即写即显。层序变更走 z-flash 透明度脉冲。 */
 .canvas-page { position: relative; flex-shrink: 0; margin: auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; --cmd-dur: .17s; --cmd-ease: cubic-bezier(.2,.75,.3,1); }
 .canvas-page.is-gesturing { --cmd-dur: 0s; }
+/* 对开预览：邻页骨架页与当前页同排垂直居中，只画版面轮廓。 */
+.spread-page { flex-shrink: 0; align-self: center; display: grid; gap: 6px; margin: 0 20px; opacity: .92; }
+.spread-caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--muted); }
+.spread-caption button { padding: 2px 8px; font-size: 11px; }
+.spread-sheet { position: relative; background: #fffdf8; border: 1px solid var(--ink); box-shadow: 3px 3px 0 rgba(21,21,18,.10); }
+.spread-panel { position: absolute; border: 1px solid var(--ink); background: rgba(38,32,25,.05); display: flex; align-items: flex-start; justify-content: flex-start; padding: 1px 3px; font-family: var(--mono); font-size: 9px; line-height: 1.4; color: var(--muted); overflow: hidden; }
+.spread-loading { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; color: var(--muted); }
 .canvas-panel { position: absolute; border: 1.5px solid #4a453d; background: rgba(255,255,255,.04); cursor: move; touch-action: none; transition: left var(--cmd-dur) var(--cmd-ease), top var(--cmd-dur) var(--cmd-ease), width var(--cmd-dur) var(--cmd-ease), height var(--cmd-dur) var(--cmd-ease), border-color .12s ease, box-shadow .12s ease; }
 @keyframes canvas-z-flash { 0% { opacity: 1; } 40% { opacity: .45; } 100% { opacity: 1; } }
 .canvas-panel.z-flash { animation: canvas-z-flash .26s ease; }

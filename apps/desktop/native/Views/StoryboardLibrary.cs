@@ -429,6 +429,147 @@ public sealed partial class StoryboardView
         };
     }
 
+    // ============================ 对开预览 ===================================
+    // 跨页对开预览（roadmap 已选定 2/5）：前后页版面骨架拼在画布两侧，位置按
+    // 印刷对开约定——RTL（漫画）前一页在右、后一页在左；LTR 相反。邻页分镜走
+    // 既有 pages/{id}/storyboard 端点并按页缓存，纯展示不进保存载荷。
+
+    private sealed record SpreadCell(int Order, Rect Rect);
+
+    private readonly ToggleButton spreadButton = new() { Content = "对开", Style = (Style)Application.Current.FindResource("Pill") };
+    private bool spreadOpen;
+    private int spreadLoadVersion;
+    private readonly Dictionary<string, List<SpreadCell>> spreadCache = new();
+    private Border spreadLeftElement = new() { Visibility = Visibility.Collapsed };
+    private Border spreadRightElement = new() { Visibility = Visibility.Collapsed };
+    private Canvas spreadLeftSheet = new(), spreadRightSheet = new();
+    private TextBlock spreadLeftCaption = new(), spreadRightCaption = new();
+    private PageItem? spreadLeftItem, spreadRightItem;
+
+    private bool ReadingRtl =>
+        storyboard.ValueKind != JsonValueKind.Object
+        || storyboard.Element("page").Text("reading_direction") != "ltr";
+
+    private async Task ToggleSpread()
+    {
+        spreadOpen = !spreadOpen;
+        spreadButton.IsChecked = spreadOpen;
+        await RefreshSpreadSkeletons();
+    }
+
+    /// <summary>刷新两侧骨架：按 page_number 找前后页，各自拉取/命中缓存后渲染。
+    /// 版本号防迟到覆盖（与 pageLoadVersion 同一模式）；关闭时两侧收起。</summary>
+    private async Task RefreshSpreadSkeletons()
+    {
+        var version = ++spreadLoadVersion;
+        if (!spreadOpen || currentPage == null)
+        {
+            RenderSpreadSide(spreadLeftElement, spreadLeftSheet, spreadLeftCaption, null, null, "");
+            RenderSpreadSide(spreadRightElement, spreadRightSheet, spreadRightCaption, null, null, "");
+            return;
+        }
+        var ordered = pages.OrderBy(p => p.PageNumber).ToList();
+        var index = ordered.FindIndex(p => p.Id == currentPage.Id);
+        var prev = index > 0 ? ordered[index - 1] : null;
+        var next = index >= 0 && index < ordered.Count - 1 ? ordered[index + 1] : null;
+        var rtl = ReadingRtl;
+        var leftItem = rtl ? next : prev;
+        var rightItem = rtl ? prev : next;
+        var left = leftItem == null ? null : await LoadSpreadCells(leftItem);
+        var right = rightItem == null ? null : await LoadSpreadCells(rightItem);
+        if (version != spreadLoadVersion) return;
+        spreadLeftItem = leftItem;
+        spreadRightItem = rightItem;
+        RenderSpreadSide(spreadLeftElement, spreadLeftSheet, spreadLeftCaption, leftItem, left, rtl ? "后一页" : "前一页");
+        RenderSpreadSide(spreadRightElement, spreadRightSheet, spreadRightCaption, rightItem, right, rtl ? "前一页" : "后一页");
+    }
+
+    private async Task<List<SpreadCell>?> LoadSpreadCells(PageItem item)
+    {
+        if (spreadCache.TryGetValue(item.Id, out var cached)) return cached;
+        try
+        {
+            var doc = await Api.SendAsync($"pages/{item.Id}/storyboard", cancellation: lifetime.Token);
+            var cells = doc.Array("panels")
+                .Select(PanelNode.From)
+                .Select(node => new SpreadCell(node.ReadingOrder, node.Rect))
+                .OrderBy(cell => cell.Order).ToList();
+            spreadCache[item.Id] = cells;
+            return cells;
+        }
+        catch (Exception) when (!lifetime.Token.IsCancellationRequested)
+        {
+            return [];   // 邻页读取失败只留空骨架，不打断当前页
+        }
+    }
+
+    private void RenderSpreadSide(Border host, Canvas sheet, TextBlock caption,
+        PageItem? item, List<SpreadCell>? cells, string label)
+    {
+        host.Visibility = spreadOpen && item != null ? Visibility.Visible : Visibility.Collapsed;
+        if (!spreadOpen || item == null) return;
+        caption.Text = $"P.{item.PageNumber:D3} · {label}";
+        sheet.Children.Clear();
+        sheet.Height = sheet.Width * pageAspect;
+        var ink = AssetPageUi.Brush("Ink");
+        var muted = AssetPageUi.Brush("Muted");
+        foreach (var cell in cells ?? [])
+        {
+            var rect = new Rectangle
+            {
+                Stroke = ink, StrokeThickness = 1,
+                Fill = new SolidColorBrush(Color.FromArgb(0x0d, 0x26, 0x20, 0x19)),
+            };
+            var orderText = new TextBlock
+            {
+                Text = cell.Order.ToString(), FontSize = 8, Foreground = muted,
+                FontFamily = (FontFamily)Application.Current.FindResource("Mono"),
+            };
+            rect.Width = cell.Rect.Width * sheet.Width;
+            rect.Height = cell.Rect.Height * sheet.Height;
+            Canvas.SetLeft(rect, cell.Rect.X * sheet.Width);
+            Canvas.SetTop(rect, cell.Rect.Y * sheet.Height);
+            Canvas.SetLeft(orderText, cell.Rect.X * sheet.Width + 2);
+            Canvas.SetTop(orderText, cell.Rect.Y * sheet.Height + 1);
+            sheet.Children.Add(rect);
+            sheet.Children.Add(orderText);
+        }
+    }
+
+    private Border BuildSpreadSide(bool left)
+    {
+        var caption = new TextBlock { FontSize = 10, Foreground = AssetPageUi.Brush("Muted"), VerticalAlignment = VerticalAlignment.Center };
+        var jump = new Button { Content = "跳到此页", Style = (Style)Application.Current.FindResource("Compact"), MinHeight = 26, FontSize = 10, Margin = new Thickness(8, 0, 0, 0) };
+        jump.Click += async (_, _) =>
+        {
+            var item = left ? spreadLeftItem : spreadRightItem;
+            if (item != null && await ConfirmLeaveAsync()) await SelectPageAsync(item);
+        };
+        var captionRow = new StackPanel { Orientation = Orientation.Horizontal };
+        captionRow.Children.Add(caption);
+        captionRow.Children.Add(jump);
+        var sheet = new Canvas { Width = 190, Height = 190 * pageAspect, ClipToBounds = true, Background = Brushes.White };
+        var stack = new StackPanel();
+        stack.Children.Add(captionRow);
+        stack.Children.Add(new Border
+        {
+            Child = sheet, BorderBrush = AssetPageUi.Brush("Ink"), BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 6, 0, 0),
+        });
+        if (left) { spreadLeftCaption = caption; spreadLeftSheet = sheet; }
+        else { spreadRightCaption = caption; spreadRightSheet = sheet; }
+        return new Border
+        {
+            Child = stack,
+            Padding = new Thickness(10),
+            Background = new SolidColorBrush(Color.FromArgb(0xf2, 0xff, 0xfd, 0xf8)),
+            HorizontalAlignment = left ? HorizontalAlignment.Left : HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(16, 0, 16, 0),
+            Visibility = Visibility.Collapsed,
+        };
+    }
+
     // ============================ 制作回放 ===================================
 
     private Border BuildReplayBar()
@@ -744,6 +885,14 @@ public sealed partial class StoryboardView
     internal void ReplaySeekForTest(int index) => ShowReplayFrame(index);
     internal void CloseReplayForTest() => CloseReplay();
     internal int GhostCountForTest => ghostElements.Count;
+    internal Task ToggleSpreadForTest() => ToggleSpread();
+    internal bool SpreadOpenForTest => spreadOpen;
+    internal bool SpreadLeftVisibleForTest => spreadLeftElement.Visibility == Visibility.Visible;
+    internal bool SpreadRightVisibleForTest => spreadRightElement.Visibility == Visibility.Visible;
+    internal string SpreadLeftCaptionForTest => spreadLeftCaption.Text;
+    internal string SpreadRightCaptionForTest => spreadRightCaption.Text;
+    internal int SpreadLeftCellCountForTest => spreadLeftSheet.Children.OfType<Rectangle>().Count();
+    internal int SpreadRightCellCountForTest => spreadRightSheet.Children.OfType<Rectangle>().Count();
     internal int SnapshotCountForTest => LoadSnapshots().Count;
     internal string? SnapshotNameForTest(int index) => LoadSnapshots().ElementAtOrDefault(index)?.Name;
     internal void SaveSnapshotForTest(string name) => SaveSnapshot(name);

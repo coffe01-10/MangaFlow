@@ -12,6 +12,7 @@ import {
   type MangaPage,
   type NormalizedRect,
   type Outfit,
+  type Storyboard,
   type StoryboardGeometrySavePayload,
   type StoryboardPanel,
 } from "@/lib/api";
@@ -65,6 +66,7 @@ import { PageCanvas, syntheticBubbleShape, type CanvasBubble, type CanvasSelecti
 import { PanelInspector, type PanelDraft } from "./panel-inspector";
 import { ReplayBar } from "./replay-bar";
 import type { SfxNodeData } from "./sfx-node";
+import { SpreadPage } from "./spread-preview";
 import { storyboardCopy } from "./storyboard-copy";
 import {
   BUILT_IN_TEMPLATES,
@@ -148,6 +150,7 @@ export function StoryboardEditor({
     bleed: false,
     safe: false,
     grid: false,
+    spread: false,
   });
   const [rebuild, setRebuild] = useState<{ open: boolean; panelCount: number; layoutMode: "dynamic" | "balanced" }>({
     open: false,
@@ -181,6 +184,47 @@ export function StoryboardEditor({
   const serverPage = storyboard.data?.page ?? null;
   const canvas = defaultCanvas(serverPage);
   const canvasKnown = Boolean(serverPage?.canvas);
+
+  // 对开预览（roadmap 已选定 2/5）：前后页骨架拼在画布两侧，位置按印刷
+  // 对开约定——RTL（漫画）前一页在右、后一页在左；LTR 反向。邻页分镜复用
+  // storyboard 查询缓存（与切页同一 key），只在开关打开时才取数。
+  const sortedPages = useMemo(
+    () => [...pages].sort((a, b) => a.page_number - b.page_number),
+    [pages],
+  );
+  const pageIndex = sortedPages.findIndex((page) => page.id === currentPage?.id);
+  const spreadPrev = pageIndex > 0 ? sortedPages[pageIndex - 1] : null;
+  const spreadNext = pageIndex >= 0 && pageIndex < sortedPages.length - 1 ? sortedPages[pageIndex + 1] : null;
+  const spreadPrevQuery = useQuery({
+    queryKey: ["storyboard", spreadPrev?.id],
+    queryFn: () => api.storyboard(spreadPrev!.id),
+    enabled: toggles.spread && Boolean(spreadPrev),
+  });
+  const spreadNextQuery = useQuery({
+    queryKey: ["storyboard", spreadNext?.id],
+    queryFn: () => api.storyboard(spreadNext!.id),
+    enabled: toggles.spread && Boolean(spreadNext),
+  });
+  const readingRtl = (serverPage ?? currentPage)?.reading_direction !== "ltr";
+  const spreadSide = (page: MangaPage | null, query: { data?: Storyboard; isLoading: boolean }, label: string) =>
+    toggles.spread && page
+      ? <SpreadPage
+          page={page}
+          panels={query.data?.panels ?? []}
+          canvas={defaultCanvas(query.data?.page)}
+          label={label}
+          loading={query.isLoading}
+          width={BASE_PAGE_WIDTH * zoom * 0.55}
+          onJump={() => switchPage(page.id)}
+        />
+      : null;
+  // Flex 从左往右排：RTL 时左槽位放后一页、右槽位放前一页；LTR 相反。
+  const spreadLeft = readingRtl
+    ? spreadSide(spreadNext, spreadNextQuery, storyboardCopy.spreadNext)
+    : spreadSide(spreadPrev, spreadPrevQuery, storyboardCopy.spreadPrev);
+  const spreadRight = readingRtl
+    ? spreadSide(spreadPrev, spreadPrevQuery, storyboardCopy.spreadPrev)
+    : spreadSide(spreadNext, spreadNextQuery, storyboardCopy.spreadNext);
 
   const panelRects: Record<string, NormalizedRect> = useMemo(() => {
     const map: Record<string, NormalizedRect> = {};
@@ -1217,6 +1261,8 @@ export function StoryboardEditor({
           onBubbleBounce={() => setNotice(storyboardCopy.bubbleBelongs)}
           onZoomStep={(direction) => zoomManually(direction === 1 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)}
           zFlash={zFlash}
+          beforePage={spreadLeft}
+          afterPage={spreadRight}
         />
         {activePanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={620} aria-valuenow={inspectorWidth} tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) setDragInspectorWidth(clampInspectorWidth(worktable.right - event.clientX)); }} onPointerMove={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) setDragInspectorWidth(clampInspectorWidth(worktable.right - event.clientX)); }} onPointerUp={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; event.currentTarget.releasePointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); setDragInspectorWidth(null); }} onPointerCancel={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; event.currentTarget.releasePointerCapture(event.pointerId); persistInspectorWidth(inspectorWidth); setDragInspectorWidth(null); }}><span /></div>}
         {activePanel && <PanelInspector

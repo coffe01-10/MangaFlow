@@ -121,6 +121,7 @@ internal static class NativeStoryboardPrecisionChecks
             await ConflictKeepsDraftsChecks(view, fixture);
             await RefreshRestoresSelectionChecks(view, fixture);
             LibraryChecks(view);
+            await SpreadChecks(view);
         }
         finally { view.Deactivate(); }
         Console.WriteLine("PASS: storyboard precision checks (multi-select/align/distribute/same-size/grid/gap-guides/numeric-fields/bubble/sfx/layers/copy-paste/group-scale/save-payload/conflict/refresh/library) all match the web contract");
@@ -735,6 +736,28 @@ internal static class NativeStoryboardPrecisionChecks
             $"退出后撤销应回退实时命令（实际 {view.PanelRectForTest(1)}）");
     }
 
+    // ── 17. 跨页对开预览：邻页版面骨架按印刷对开位置拼在画布两侧 ──
+    // 与 web spread-preview 同一契约：RTL（漫画）前一页在右、后一页在左；
+    // 骨架只画邻页格位与阅读序，跳页走 SelectPageAsync。
+    private static async Task SpreadChecks(StoryboardView view)
+    {
+        Layout(view, 1400, 1000);
+        Require(!view.SpreadOpenForTest, "对开预览默认关闭");
+        await view.ToggleSpreadForTest();
+        Require(view.SpreadOpenForTest, "对开开关应打开预览");
+        // RTL：左槽位放后一页（pg-2，页号 4）、右槽位放前一页（pg-0，页号 2）。
+        Require(view.SpreadLeftVisibleForTest && view.SpreadRightVisibleForTest, "两个邻页都应出骨架");
+        Require(view.SpreadLeftCaptionForTest.Contains("P.004") && view.SpreadLeftCaptionForTest.Contains("后一页"),
+            $"RTL 左侧应是后一页（实际 {view.SpreadLeftCaptionForTest}）");
+        Require(view.SpreadRightCaptionForTest.Contains("P.002") && view.SpreadRightCaptionForTest.Contains("前一页"),
+            $"RTL 右侧应是前一页（实际 {view.SpreadRightCaptionForTest}）");
+        Require(view.SpreadLeftCellCountForTest == 1 && view.SpreadRightCellCountForTest == 1,
+            $"邻页骨架应各画 1 格（左 {view.SpreadLeftCellCountForTest} / 右 {view.SpreadRightCellCountForTest}）");
+        await view.ToggleSpreadForTest();
+        Require(!view.SpreadOpenForTest && !view.SpreadLeftVisibleForTest && !view.SpreadRightVisibleForTest,
+            "关闭对开应收起两侧骨架");
+    }
+
     // ── helpers（NativeStoryboardEditChecks 同款最小集）──
     private static void Undo(StoryboardView view) => Click(Buttons(view, "撤销").First());
     private static bool Near(double actual, double expected) => Math.Abs(actual - expected) < 5e-4;
@@ -821,6 +844,8 @@ internal static class NativeStoryboardPrecisionChecks
             {
                 if (path.EndsWith("/chapters/ch-1/pages")) return Json(Pages);
                 if (path.EndsWith("/pages/pg-1/storyboard")) { StoryboardGets++; return Json(Storyboard()); }
+                if (path.EndsWith("/pages/pg-0/storyboard")) return Json(NeighborStoryboard("pg-0", 2, 0.60));
+                if (path.EndsWith("/pages/pg-2/storyboard")) return Json(NeighborStoryboard("pg-2", 4, 0.20));
                 if (path.EndsWith("/projects/sb-precision/chapters"))
                     return Json("""[{"id":"ch-1","title":"第一章","ordinal":1,"page_count":1}]""");
                 if (path.EndsWith("/projects/sb-precision/characters")) return Json("[]");
@@ -848,7 +873,20 @@ internal static class NativeStoryboardPrecisionChecks
             return Json("{}");
         }
 
-        private static string Pages => """[{"id":"pg-1","chapter_id":"ch-1","page_number":3,"panel_count":4,"storyboard_version":1,"status":"","selected_candidate_id":"","continuity_status":""}]""";
+        private static string Pages => """[{"id":"pg-1","chapter_id":"ch-1","page_number":3,"panel_count":4,"storyboard_version":1,"status":"","selected_candidate_id":"","continuity_status":""},{"id":"pg-0","chapter_id":"ch-1","page_number":2,"panel_count":1,"storyboard_version":1,"status":"","selected_candidate_id":"","continuity_status":""},{"id":"pg-2","chapter_id":"ch-1","page_number":4,"panel_count":1,"storyboard_version":1,"status":"","selected_candidate_id":"","continuity_status":""}]""";
+
+        // 邻页最小分镜：一页一格，rect 的 x 由参数给出便于断言骨架取到正确页。
+        private static string NeighborStoryboard(string id, int number, double x) => $$"""
+          {"page":{"id":"{{id}}","chapter_id":"ch-1","page_number":{{number}},"storyboard_version":1,
+            "canvas":{"width_mm":182,"height_mm":257,"bleed_mm":3,"safe_mm":5},"status":""},
+           "panels":[{"id":"{{id}}-p1","page_id":"{{id}}","reading_order":1,"version":1,
+             "bounds":{"x":{{x}},"y":0.1,"width":0.3,"height":0.3},
+             "geometry":{"type":"rect","rect":{"x":{{x}},"y":0.1,"width":0.3,"height":0.3},"rotation":0,"z_order":1},
+             "shot_type":"","camera_angle":"","bleed":false,"borderless":false,
+             "actions":{},"background":"","props":[],"sound_effects":[],
+             "characters":[],"character_presence":{},"expressions":{},"outfits":{},"dialogues":[]}],
+           "candidate_count":0}
+          """;
 
         private string Storyboard() => $$$$"""
           {"page":{"id":"pg-1","chapter_id":"ch-1","page_number":3,"storyboard_version":{{{{pageVersion}}}},

@@ -162,6 +162,8 @@ export function PageCanvas({
   zFlash,
   ghosts,
   overlay,
+  beforePage,
+  afterPage,
 }: {
   page: MangaPage;
   canvas: CanvasInfo;
@@ -198,6 +200,10 @@ export function PageCanvas({
   ghosts?: { key: string; rect: NormalizedRect; ellipse?: boolean; variant?: "a" | "b" }[] | null;
   /** 覆盖层插槽（回放控制条）：渲染在 canvas-viewport 内、页面之外。 */
   overlay?: ReactNode;
+  /** 对开预览插槽：邻页骨架作为页面的左右 flex 邻居挂在 viewport 里，
+   * 随页面一起滚动、随 zoom 缩放。 */
+  beforePage?: ReactNode;
+  afterPage?: ReactNode;
 }) {
   const renderCountRef = useRef(0);
   // Runs once per render (no deps): exposes the render count for V02-32 tests
@@ -1096,6 +1102,7 @@ export function PageCanvas({
     className="canvas-viewport"
     ref={viewportRef}
   >
+    {beforePage}
     <div
       ref={pageRef}
       data-testid="canvas-page"
@@ -1285,6 +1292,7 @@ export function PageCanvas({
         }}
       />}
     </div>
+    {afterPage}
     {overlay}
     <p className="canvas-live" aria-live="polite">{announcement}</p>
   </div>;

@@ -69,11 +69,15 @@ public sealed partial class StoryboardView
         viewport.BorderBrush = AssetPageUi.Brush("Ink"); viewport.BorderThickness = new Thickness(1); viewport.PreviewMouseWheel += OnViewportWheel;
         viewport.SizeChanged += (_, _) => { if ((fitPending || fitToViewport) && currentPage != null && viewport.ActualWidth > 100 && viewport.ActualHeight > 100) { fitPending = false; FitViewport(); } };
         // V02-33 回放控制条叠在画布层底部居中（对齐 web replay-bar 的 absolute 定位）；
-        // A/B 选择条叠在顶部居中，两者同在 canvasLayer。
+        // A/B 选择条叠在顶部居中，对开骨架页左右居中，三者同在 canvasLayer。
         replayBarElement = BuildReplayBar();
         compareBarElement = BuildCompareBar();
+        spreadLeftElement = BuildSpreadSide(left: true);
+        spreadRightElement = BuildSpreadSide(left: false);
         var canvasLayer = new Grid();
         canvasLayer.Children.Add(viewport);
+        canvasLayer.Children.Add(spreadLeftElement);
+        canvasLayer.Children.Add(spreadRightElement);
         canvasLayer.Children.Add(replayBarElement);
         canvasLayer.Children.Add(compareBarElement);
         worktable.Children.Add(canvasLayer); Grid.SetColumn(directorSplitter, 1); worktable.Children.Add(directorSplitter);
@@ -136,6 +140,7 @@ public sealed partial class StoryboardView
             if (gridStepBox.SelectedItem is ComboBoxItem { Tag: int step }) { gridStepMm = step; RenderGridOverlay(); }
         };
         Add(gridStepBox);
+        spreadButton.Click += async (_, _) => await ToggleSpread(); Add(spreadButton);
         // 对齐/分布/同尺寸组（对齐 web toolbar-align）：≥2 可移动选中格才显示，
         // 等距分布需要 ≥3（UpdateAlignBar 统一管可见性）。
         alignBar = new WrapPanel { Margin = new Thickness(0, 0, 5, 5), Visibility = Visibility.Collapsed };

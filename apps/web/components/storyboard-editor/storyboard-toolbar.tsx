@@ -15,6 +15,8 @@ export interface ToolbarToggleState {
   bleed: boolean;
   safe: boolean;
   grid: boolean;
+  /** 对开预览：邻页版面骨架按印刷对开位置拼在画布两侧（roadmap 已选定 2/5）。 */
+  spread: boolean;
 }
 
 const GRID_STEPS = [5, 10, 20];
@@ -128,6 +130,7 @@ export function StoryboardToolbar({
         onClick={() => onToggle("safe")}
       >{storyboardCopy.safeArea}</button>
       <button type="button" aria-pressed={toggles.grid} className={toggles.grid ? "active" : ""} onClick={() => onToggle("grid")}>{storyboardCopy.grid}</button>
+      <button type="button" aria-pressed={toggles.spread} className={toggles.spread ? "active" : ""} onClick={() => onToggle("spread")}>{storyboardCopy.spread}</button>
       {toggles.grid && onGridStep && <select
         aria-label={storyboardCopy.gridStep}
         value={gridStep}

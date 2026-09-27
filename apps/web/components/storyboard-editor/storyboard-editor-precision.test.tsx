@@ -727,6 +727,49 @@ describe("StoryboardEditor 精准编辑", () => {
     expect(document.querySelector(".canvas-ghost")).toBeNull();
   });
 
+  it("T8 对开预览：邻页骨架按 RTL 拼左右，可跳页", async () => {
+    const pagePrev = { ...page, id: "page-0", page_number: 0 };
+    const pageNext = { ...page, id: "page-2", page_number: 2 };
+    const prevData = {
+      page: pagePrev, candidate_count: 0,
+      panels: [makePanel({ id: "prev-1", page_id: "page-0", bounds: { x: 0.6, y: 0.6, width: 0.3, height: 0.3 }, geometry: { type: "rect", rect: { x: 0.6, y: 0.6, width: 0.3, height: 0.3 }, rotation: 0, z_order: 1 } })],
+    };
+    const nextData = {
+      page: pageNext, candidate_count: 0,
+      panels: [makePanel({ id: "next-1", page_id: "page-2", bounds: { x: 0.2, y: 0.2, width: 0.5, height: 0.4 }, geometry: { type: "rect", rect: { x: 0.2, y: 0.2, width: 0.5, height: 0.4 }, rotation: 0, z_order: 1 } })],
+    };
+    storyboardQuery.mockImplementation((id: string) => Promise.resolve(
+      (id === "page-0" ? prevData : id === "page-2" ? nextData : data) as never,
+    ));
+    renderEditor({ pages: [pagePrev, page, pageNext] as never, initialPageId: "page-1" });
+    await screen.findByTestId("canvas-page");
+    expect(document.querySelector(".spread-page")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "对开" }));
+    await waitFor(() => expect(document.querySelectorAll(".spread-page").length).toBe(2));
+    // RTL（漫画）：后一页在画布左侧、前一页在右侧。
+    const viewport = document.querySelector(".canvas-viewport")!;
+    const children = [...viewport.children];
+    const leftPage = children.findIndex((el) => (el as HTMLElement).dataset.testid === "spread-page-page-2");
+    const livePage = children.findIndex((el) => (el as HTMLElement).dataset.testid === "canvas-page");
+    const rightPage = children.findIndex((el) => (el as HTMLElement).dataset.testid === "spread-page-page-0");
+    expect(leftPage).toBeGreaterThanOrEqual(0);
+    expect(leftPage).toBeLessThan(livePage);
+    expect(livePage).toBeLessThan(rightPage);
+    // 骨架画邻页格位（归一化 → % 定位）；骨架页先于邻页查询落地挂载。
+    await waitFor(() => expect(
+      document.querySelector("[data-testid='spread-page-page-2'] .spread-panel"),
+    ).not.toBeNull());
+    const nextPanel = document.querySelector("[data-testid='spread-page-page-2'] .spread-panel") as HTMLElement;
+    expect(parseFloat(nextPanel.style.left)).toBeCloseTo(20, 4);
+    // 跳页走 switchPage：点后页跳到 page-2，左右骨架随新页重排。
+    fireEvent.click(within(document.querySelector("[data-testid='spread-page-page-2']") as HTMLElement)
+      .getByRole("button", { name: "跳到此页" }));
+    await waitFor(() => expect(document.querySelector("[data-testid='spread-page-page-1']")).not.toBeNull());
+    expect(document.querySelector("[data-testid='spread-page-page-2']")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "对开" }));
+    expect(document.querySelector(".spread-page")).toBeNull();
+  });
+
   /** 读取 panel-2 气泡节点当前的 left/width（% 文本转数值比例）。 */
   function payloadBubbleAfterTemplate() {
     const element = bubbleEl("dialogue-1");
