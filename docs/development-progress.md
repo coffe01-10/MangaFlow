@@ -4,6 +4,21 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## 作品发布与自然语言导演六连项落地（2026-09-27，PUB-01A/B/C + DIR-01A/B/C）
+
+roadmap「下一产品迭代 TodoList」六项全部完成，Web + WPF 双端对齐；lead 复核后修复四处契约偏差并补齐本条目与 roadmap 勾选。
+
+- **PUB-01A 章节手机阅读预览**（`4a51f103`，Issue #1013）：`GET /chapters/{id}/mobile-preview` 只读返回按页码排序的页面、生产就绪态、阻塞原因与采用图地址；素材库「手机预览」对话框提供视口/目标宽度/页间距/最大片高控制，条带内原位渲染未达标占位卡，`lib/mobile-preview.ts computeStrip` 页间优先 + 超限单页硬切。
+- **PUB-01B 条漫导出契约冻结**（`812b9d96`，Issue #1014）：`docs/pub-01b-webtoon-export-contract.md` 冻结 ZIP 结构、六参数与三预设、页间优先 + 硬切规则、manifest 结构、内存上限与孤儿清理语义；平台规格为可调整预设，不写死进数据模型。
+- **PUB-01C WEBTOON 条漫包**（`758b342e`，Issue #1015）：`services/manga_export.py` 逐页流式渲染 `slice-NNNN.{jpg,png}` + `manifest.json`（逐片 sha256、src/dst 矩形、hard_cut）；`ExportRequest` 新增 WEBTOON 及参数门禁（非 WEBTOON 携带参数 422）；幂等 token 混入规范化参数；`.{serial}.slices`/`*.tmp` 孤儿清扫带 10 分钟 mtime 保护；预览对话框导出按钮与当前控件参数一致。
+- **DIR-01A NL→导演命令契约冻结**（`e7e7f45d`）：`docs/dir-01a-director-nl-contract.md` 冻结 utterances API、版本锚定、NL 白名单（不含 regenerate_region）、组状态机与 A1–A9 验收矩阵。
+- **DIR-01B 中文指令解析**（`439625c0`，Issue #1017）：`POST /projects/{id}/director/utterances` 同事务落 PARSING 组 + `DIRECTOR_PARSE` 任务（幂等键 `director-parse:{client_request_id}`，同键重放返回既有组；同页并发 409 `PARSE_IN_FLIGHT`）；Worker 经 `structured_text` 能力位绑定文本模型，`target_hint` 服务端归一化、`expected_version` 自行填充、≤8 条截断；`NEEDS_CLARIFICATION`/`STALE`/`PARSE_FAILED` 终态不猜目标；`max_attempts=1` 杜绝静默重复计费。
+- **DIR-01C 导演台交互**（`93963557`，Issue #1018）：「AI 解析」提交 + 轮询组终态；多命令预览卡逐条确认/拒绝，澄清选项点选回填作用域；STALE/PARSE_FAILED 保留草稿；模型解析组标注真实模型三元组，规则桩继续标注「规则解析，非模型调用」。
+- **WPF 同步**（`15fb603e`）：MobilePreviewWindow + `StripSlices.cs`（computeStrip 同语义移植）、Library 条漫导出入口（下载 .zip）、DirectorPane NL 解析/澄清/逐条确认/丢弃/重试/撤销重做；顺带修复 DirectorScope.Dialogue id 互换与离场后渲染门卡死两个潜伏缺陷。
+- **lead 复核修复（本分支）**：素材尺寸缺失按契约 §7 归 409（原 422）；模型澄清选项 id 经页/项目归属校验后才下发，幻觉 id 降级为纯文本提示（契约 §8）；幂等重放按 §2 返回 200（原 202）；导演台新增常驻费用提示与预览「解析用量」行（文本调用次数 + 耗时 + 记账标记）。
+- **验证**：pytest 条漫/预览/导演解析套件 26 项全绿（含新增幻觉 id 与 409 回归）；Vitest 导演台 29 项全绿（含费用提示/用量展示回归）；切片金样例 Web/后端/C# 三侧同一边界。
+- **NOT RUN**：真实文本/图片供应商调用（无凭据授权，按约定另测）；WPF 实机运行验收（本机 Linux，`dotnet` 目标为 Windows）；Playwright E2E；PostgreSQL/Redis live。
+
 ## 分镜画布成熟化·已选定待派工（2026-09-27）
 
 用户从候选清单挑选的五项逐个落地，每项独立分支与回归；原生端编译通过（`EnableWindowsTargeting`），WPF 运行验收 NOT RUN（本机 Linux，无 Windows/WPF 运行时）。

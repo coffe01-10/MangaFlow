@@ -268,7 +268,7 @@ def create_export(
                     project_id=project.id,
                 )
             except WebtoonExportError as error:
-                raise HTTPException(status_code=422, detail=error.detail) from error
+                raise HTTPException(status_code=error.status_code, detail=error.detail) from error
 
         _write_export_atomically(destination, _write_webtoon)
     elif payload.export_type == "PNG":

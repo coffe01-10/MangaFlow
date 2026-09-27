@@ -21,11 +21,16 @@ MAX_EXPANDED_BYTES = 2 * 1024**3
 
 
 class WebtoonExportError(ValueError):
-    """确定性导出失败（参数/素材/体量），路由层翻译成 HTTP 错误。"""
+    """确定性导出失败（参数/素材/体量），路由层翻译成 HTTP 错误。
 
-    def __init__(self, detail: str):
+    ``status_code`` 区分契约 §7 的错误类别：参数非法与体量超限为 422，
+    素材数据缺陷（尺寸缺失等，与「采用素材不存在」同类）为 409。
+    """
+
+    def __init__(self, detail: str, status_code: int = 422):
         super().__init__(detail)
         self.detail = detail
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -92,7 +97,8 @@ def resolve_webtoon_params(
 
 def scaled_page_height(src_width: int | None, src_height: int | None, target_width: int) -> int:
     if not src_width or not src_height or src_width <= 0 or src_height <= 0:
-        raise WebtoonExportError("采用素材缺少尺寸信息，无法条漫导出")
+        # 契约 §7：尺寸缺失是素材数据缺陷（409），不是参数错误（422）。
+        raise WebtoonExportError("采用素材缺少尺寸信息，无法条漫导出", status_code=409)
     return round(src_height * target_width / src_width)
 
 

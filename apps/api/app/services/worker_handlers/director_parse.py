@@ -700,13 +700,25 @@ def _run_director_parse(db: Session, job: GenerationJob) -> None:
 
     # Nothing anchored: clarifications (model or derived) drive the outcome.
     options = clarify_options
+    # §8: model-produced clarify option ids must pass project/page ownership
+    # before they reach the client — a hallucinated id is demoted to a
+    # label-only hint (frontend renders id-less options as disabled hints).
+    owned_ids = {
+        "panel": {panel.id for panel in panels},
+        "dialogue": {dialogue.id for dialogue in dialogues},
+        "scene": {scene.id for scene in scenes},
+        "character": {character.id for character in characters},
+    }
     for clarification in output.clarifications:
         for option in clarification.options[:CLARIFY_OPTIONS_MAX]:
             if isinstance(option, dict) and option.get("id"):
+                kind = str(option.get("kind") or "target")
+                option_id = str(option["id"])
+                verified = option_id if option_id in owned_ids.get(kind, set()) else None
                 options.append(
                     _clarify_option(
-                        str(option.get("kind") or "target"),
-                        str(option["id"]),
+                        kind,
+                        verified,
                         str(option.get("label") or clarification.question),
                     )
                 )
