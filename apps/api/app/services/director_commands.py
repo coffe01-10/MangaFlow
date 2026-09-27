@@ -21,6 +21,8 @@ from app.domain.director_commands import (
 )
 from app.models import (
     CandidateLineage,
+    Chapter,
+    Character,
     Dialogue,
     DirectorCommand,
     DirectorCommandGroup,
@@ -112,6 +114,14 @@ def _group_read(db: Session, group: DirectorCommandGroup) -> dict:
         "status": group.status,
         "idempotent_replay": False,
         "commands": [_command_read(row) for row in rows],
+        # Parse groups store their NL outcome ({kind: ready|clarify|stale|
+        # error, ...}) in first_result; manual propose groups store a replay
+        # snapshot of the group read there instead, which never has "kind".
+        "first_result": (
+            copy.deepcopy(group.first_result)
+            if isinstance(group.first_result, dict) and "kind" in group.first_result
+            else None
+        ),
         "version": group.version,
     }
 
@@ -845,6 +855,73 @@ def propose_command_group(db: Session, project_id: str, body: dict) -> dict:
     return result
 
 
+def attach_parse_commands(
+    db: Session,
+    group: DirectorCommandGroup,
+    parsed: list[CommandEnvelope],
+    rejected: list[dict],
+) -> None:
+    """Attach NL-parse results to an existing PARSING group (DIR-01A).
+
+    Same preview/validation semantics as propose_command_group — every
+    envelope runs _preview_command — but commands and failures are
+    server-produced: command_ids are minted by the DIRECTOR_PARSE worker, so
+    the client-supplied duplicate/replay branches do not apply. The caller
+    (worker wrapper) owns the transaction commit.
+    """
+    for envelope in parsed:
+        row = DirectorCommand(
+            project_id=group.project_id,
+            group_id=group.id,
+            command_id=envelope.command_id,
+            command_group_id=envelope.command_group_id,
+            operation=envelope.operation,
+            status=CommandStatus.PROPOSED.value,
+            target=envelope.target.model_dump(),
+            expected_version=envelope.expected_version.model_dump(),
+            payload=envelope.payload,
+            source=envelope.source.model_dump(),
+            envelope_created_at=envelope.created_at,
+        )
+        try:
+            diff, error = _preview_command(db, envelope, row)
+            row.diff = diff
+            row.error = error
+            row.inverse_payload = _inverse_from_diff(diff)
+            row.status = (
+                CommandStatus.PREVIEWED.value
+                if error is None
+                else CommandStatus.REJECTED.value
+            )
+        except HTTPException as exc:
+            row.status = CommandStatus.REJECTED.value
+            row.error = {
+                "code": "VALIDATION",
+                "message": exc.detail,
+                "status": exc.status_code,
+            }
+        db.add(row)
+        db.flush()
+    for item in rejected:
+        row = DirectorCommand(
+            project_id=group.project_id,
+            group_id=group.id,
+            command_id=item["command_id"],
+            command_group_id=group.command_group_id,
+            operation=item.get("operation") or "unknown",
+            status=CommandStatus.REJECTED.value,
+            target=item.get("target") or {},
+            expected_version=item.get("expected_version") or {},
+            payload=item.get("payload") or {},
+            source=item.get("source") or {},
+            error=item.get("error") or {},
+            envelope_created_at=item.get("created_at") or "",
+        )
+        db.add(row)
+        db.flush()
+    _refresh_group_status(db, group)
+
+
 def get_command_group(db: Session, project_id: str, command_group_id: str) -> dict:
     _owned_project(db, project_id)
     group = _existing_group(db, project_id, command_group_id)
@@ -1305,3 +1382,117 @@ def redo_command(db: Session, project_id: str, command_id: str) -> dict:
     if not row.inverse_of_command_id:
         raise _http_409("只能重做撤销命令")
     return undo_command(db, project_id, command_id)
+
+
+def submit_utterance(db: Session, project_id: str, body: dict) -> dict:
+    """DIR-01A §2: validate + enqueue a DIRECTOR_PARSE job.
+
+    Creates the PARSING command group and the job in one transaction; the
+    caller commits before enqueue_job (architecture §140 ownership rule).
+    """
+    from app.domain.states import JobStatus
+    from app.services.job_service import ACTIVE_JOB_STATUSES, create_job
+
+    _owned_project(db, project_id)
+    page = db.get(MangaPage, body["page_id"])
+    if page is None or project_id_for_page(db, page) != project_id:
+        raise _http_422("目标页不存在")
+    chapter = db.get(Chapter, page.chapter_id)
+    if chapter is None or chapter.deleted_at is not None:
+        raise _http_422("目标页不存在")
+
+    selection = body.get("selection")
+    if selection:
+        kind = selection.get("kind")
+        if kind == "panel" and selection.get("panel_id"):
+            panel = db.get(Panel, selection["panel_id"])
+            if panel is None or panel.page_id != page.id:
+                raise _http_422("选中格不属于目标页")
+        if kind == "dialogue" and selection.get("dialogue_id"):
+            dialogue = db.get(Dialogue, selection["dialogue_id"])
+            panel = db.get(Panel, dialogue.panel_id) if dialogue else None
+            if dialogue is None or panel is None or panel.page_id != page.id:
+                raise _http_422("选中气泡不属于目标页")
+        if kind == "character" and selection.get("character_id"):
+            character = db.get(Character, selection["character_id"])
+            if character is None or character.project_id != project_id:
+                raise _http_422("选中角色不属于当前项目")
+
+    # Idempotent replay wins over the in-flight gate: a duplicate submit must
+    # return its original job instead of tripping PARSE_IN_FLIGHT on itself.
+    idempotency_key = f"director-parse:{body['client_request_id']}"
+    existing = db.scalar(
+        select(GenerationJob).where(GenerationJob.idempotency_key == idempotency_key)
+    )
+    if existing is not None and existing.status not in {
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+    }:
+        return {
+            "job_id": existing.id,
+            "job_status": str(existing.status),
+            "command_group_id": existing.request_parameters.get("command_group_id"),
+            "idempotent_replay": True,
+            "_job": existing,
+        }
+    in_flight = db.scalar(
+        select(GenerationJob.id)
+        .join(DirectorCommandGroup, GenerationJob.target_id == DirectorCommandGroup.id)
+        .where(
+            GenerationJob.project_id == project_id,
+            GenerationJob.job_type == "DIRECTOR_PARSE",
+            GenerationJob.target_type == "DIRECTOR_GROUP",
+            GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+            DirectorCommandGroup.page_id == page.id,
+        )
+        .limit(1)
+    )
+    if in_flight is not None:
+        raise _http_409(
+            {"code": "PARSE_IN_FLIGHT", "message": "该页已有进行中的解析，请等待完成"}
+        )
+
+    command_group_id = str(uuid4())
+    group = DirectorCommandGroup(
+        project_id=project_id,
+        command_group_id=command_group_id,
+        page_id=page.id,
+        status=CommandGroupStatus.PARSING.value,
+    )
+    db.add(group)
+    db.flush()
+    job = create_job(
+        db,
+        project_id=project_id,
+        target_type="DIRECTOR_GROUP",
+        target_id=group.id,
+        job_type="DIRECTOR_PARSE",
+        request_parameters={
+            "command_group_id": command_group_id,
+            "page_id": page.id,
+            "storyboard_version": body["storyboard_version"],
+            "utterance": body["utterance"],
+            "selection": selection,
+            "retry_of_group_id": body.get("retry_of_group_id"),
+        },
+        idempotency_key=idempotency_key,
+        # Parse outcomes land on the group; job retry would double-bill the
+        # same utterance (contract §7: user-visible retry only).
+        max_attempts=1,
+        auto_commit=False,
+    )
+    replay = job.request_parameters.get("command_group_id") != command_group_id
+    if replay:
+        # A concurrent submit won the idempotency race between the early
+        # lookup and this insert — drop the fresh PARSING group so list views
+        # never show a phantom parse.
+        db.delete(group)
+        db.flush()
+        command_group_id = job.request_parameters["command_group_id"]
+    return {
+        "job_id": job.id,
+        "job_status": str(job.status),
+        "command_group_id": command_group_id,
+        "idempotent_replay": replay,
+        "_job": job,
+    }

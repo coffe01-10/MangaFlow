@@ -140,3 +140,44 @@ class StyleAnalysisOutput(BaseModel):
     prompt_summary: str = ""
     palette: dict = Field(default_factory=dict)
     color_rules: list[str] = Field(default_factory=list)
+
+
+DIRECTOR_PARSE_MAX_COMMANDS = 16
+DIRECTOR_PARSE_MAX_CLARIFICATIONS = 8
+DIRECTOR_PARSE_MAX_UNSUPPORTED = 8
+
+
+class DirectorParseCommand(BaseModel):
+    """One NL-parse command candidate (dir-01a §5).
+
+    The model emits target *hints* (reading orders / names / scene refs);
+    the worker resolves them to real ids before envelope validation.
+    """
+
+    op_ref: str = Field(default="", max_length=64)
+    operation: str = Field(max_length=48)
+    target_hint: dict = Field(default_factory=dict)
+    payload: dict = Field(default_factory=dict)
+
+
+class DirectorParseClarification(BaseModel):
+    kind: str = Field(default="target", max_length=32)
+    question: str = Field(default="", max_length=500)
+    options: list[dict] = Field(default_factory=list, max_length=16)
+
+
+class DirectorParseUnsupported(BaseModel):
+    reason: str = Field(default="", max_length=500)
+    excerpt: str = Field(default="", max_length=200)
+
+
+class DirectorParseOutput(BaseModel):
+    commands: list[DirectorParseCommand] = Field(
+        default_factory=list, max_length=DIRECTOR_PARSE_MAX_COMMANDS
+    )
+    clarifications: list[DirectorParseClarification] = Field(
+        default_factory=list, max_length=DIRECTOR_PARSE_MAX_CLARIFICATIONS
+    )
+    unsupported: list[DirectorParseUnsupported] = Field(
+        default_factory=list, max_length=DIRECTOR_PARSE_MAX_UNSUPPORTED
+    )

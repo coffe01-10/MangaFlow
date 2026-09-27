@@ -592,6 +592,12 @@ def execute_job(job_id: str) -> None:
                 _run_style_analyze(db, job)
             elif job.job_type == "PAGE_INSPECT":
                 _run_inspection(db, job)
+            elif job.job_type == "DIRECTOR_PARSE":
+                from app.services.worker_handlers.director_parse import (
+                    _run_director_parse,
+                )
+
+                _run_director_parse(db, job)
             elif job.job_type == "WORKFLOW_NODE":
                 from app.services.workflow_engine import execute_workflow_node
 

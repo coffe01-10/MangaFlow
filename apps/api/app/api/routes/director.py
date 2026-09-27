@@ -1,10 +1,16 @@
 """Director command journal API (V02-40). Independent of the workflow router."""
 
 from fastapi import APIRouter, Depends, Query
+from fastapi import status as http_status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.schemas import DirectorCommandGroupRead, DirectorCommandPropose
+from app.schemas import (
+    DirectorCommandGroupRead,
+    DirectorCommandPropose,
+    DirectorUtteranceQueued,
+    DirectorUtteranceRequest,
+)
 from app.services.director_commands import (
     accept_command,
     discard_group,
@@ -13,10 +19,31 @@ from app.services.director_commands import (
     propose_command_group,
     redo_command,
     reject_command,
+    submit_utterance,
     undo_command,
 )
+from app.services.job_service import enqueue_job
 
 router = APIRouter()
+
+
+@router.post(
+    "/projects/{project_id}/director/utterances",
+    response_model=DirectorUtteranceQueued,
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
+def create_director_utterance(
+    project_id: str,
+    payload: DirectorUtteranceRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """DIR-01A §2: enqueue a DIRECTOR_PARSE job for one NL utterance."""
+    result = submit_utterance(db, project_id, payload.model_dump())
+    job = result.pop("_job")
+    db.commit()
+    job = enqueue_job(db, job)
+    result["job_status"] = str(job.status)
+    return result
 
 
 @router.post(

@@ -1626,4 +1626,34 @@ class DirectorCommandGroupRead(BaseModel):
     status: str
     idempotent_replay: bool = False
     commands: list[DirectorCommandRead]
+    first_result: dict | None = None
     version: int
+
+
+class DirectorUtteranceSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(pattern="^(panel|dialogue|character)$")
+    panel_id: str | None = Field(default=None, min_length=36, max_length=36)
+    dialogue_id: str | None = Field(default=None, min_length=36, max_length=36)
+    character_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+
+class DirectorUtteranceRequest(BaseModel):
+    """DIR-01A §2: natural-language director parse request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    utterance: str = Field(min_length=1, max_length=2000)
+    page_id: str = Field(min_length=36, max_length=36)
+    storyboard_version: int = Field(ge=0)
+    selection: DirectorUtteranceSelection | None = None
+    client_request_id: str = Field(min_length=36, max_length=36)
+    retry_of_group_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+
+class DirectorUtteranceQueued(BaseModel):
+    job_id: str
+    job_status: str
+    command_group_id: str
+    idempotent_replay: bool = False

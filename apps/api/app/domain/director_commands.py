@@ -58,6 +58,14 @@ class CommandGroupStatus(StrEnum):
     PARTIALLY_REJECTED = "PARTIALLY_REJECTED"
     REJECTED = "REJECTED"
     DISCARDED = "DISCARDED"
+    # DIR-01A NL-parse lifecycle (dir-01a-director-nl-contract.md §6):
+    # set only by the DIRECTOR_PARSE worker path; manual command groups never
+    # carry these values and _refresh_group_status never runs while a group is
+    # still PARSING.
+    PARSING = "PARSING"
+    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
+    STALE = "STALE"
+    PARSE_FAILED = "PARSE_FAILED"
 
 
 class CommandStatus(StrEnum):
