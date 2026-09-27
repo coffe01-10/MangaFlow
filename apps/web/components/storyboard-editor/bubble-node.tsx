@@ -11,6 +11,7 @@ export function BubbleNode({
   dialogue,
   rect,
   shapeType,
+  rotation = 0,
   selected,
   interactive,
   onPointerDown,
@@ -19,6 +20,8 @@ export function BubbleNode({
   dialogue: PanelDialogue;
   rect: NormalizedRect;
   shapeType: "rect" | "ellipse";
+  /** Bubble rotation in degrees; rendered as a CSS transform on the box. */
+  rotation?: number;
   selected: boolean;
   interactive: boolean;
   onPointerDown?: (dialogue: PanelDialogue, event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -29,6 +32,8 @@ export function BubbleNode({
     top: `${rect.y * 100}%`,
     width: `${rect.width * 100}%`,
     height: `${rect.height * 100}%`,
+    transform: rotation ? `rotate(${rotation}deg)` : undefined,
+    transformOrigin: "50% 50%",
   };
   return <div
     id={`canvas-bubble-${dialogue.id}`}

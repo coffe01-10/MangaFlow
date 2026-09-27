@@ -5,6 +5,7 @@
 import { ChevronDown, Maximize, Redo2, RefreshCw, Save, Scan, Undo2, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import type { AlignMode, SameSizeMode } from "./geometry";
 import { storyboardCopy } from "./storyboard-copy";
 
 export interface ToolbarToggleState {
@@ -12,7 +13,10 @@ export interface ToolbarToggleState {
   readingOrder: boolean;
   bleed: boolean;
   safe: boolean;
+  grid: boolean;
 }
+
+const GRID_STEPS = [5, 10, 20];
 
 export function StoryboardToolbar({
   zoomLabel,
@@ -33,6 +37,12 @@ export function StoryboardToolbar({
   onRedo,
   onSave,
   onRebuildLayout,
+  alignCount = 0,
+  onAlign,
+  onDistribute,
+  onSameSize,
+  gridStep,
+  onGridStep,
 }: {
   zoomLabel: string;
   toggles: ToolbarToggleState;  bleedAvailable: boolean;
@@ -52,6 +62,14 @@ export function StoryboardToolbar({
   onRedo: () => void;
   onSave: () => void;
   onRebuildLayout: () => void;
+  /** Count of movable rect panels in the current selection; >= 2 enables the
+   * align/distribute group. */
+  alignCount?: number;
+  onAlign?: (mode: AlignMode) => void;
+  onDistribute?: (axis: "x" | "y") => void;
+  onSameSize?: (mode: SameSizeMode) => void;
+  gridStep?: number;
+  onGridStep?: (step: number) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -105,7 +123,32 @@ export function StoryboardToolbar({
         title={safeAvailable ? undefined : storyboardCopy.canvasMissing}
         onClick={() => onToggle("safe")}
       >{storyboardCopy.safeArea}</button>
+      <button type="button" aria-pressed={toggles.grid} className={toggles.grid ? "active" : ""} onClick={() => onToggle("grid")}>{storyboardCopy.grid}</button>
+      {toggles.grid && onGridStep && <select
+        aria-label={storyboardCopy.gridStep}
+        value={gridStep}
+        onChange={(event) => onGridStep(Number(event.target.value))}
+      >{GRID_STEPS.map((step) => <option key={step} value={step}>{step}mm</option>)}</select>}
     </div>
+    {alignCount >= 2 && <div className="toolbar-group toolbar-align" role="group" aria-label="对齐与分布">
+      {(["left", "centerX", "right", "top", "middleY", "bottom"] as AlignMode[]).map((mode) => (
+        <button key={mode} type="button" disabled={saving} onClick={() => onAlign?.(mode)}>{{
+          left: storyboardCopy.alignLeft,
+          centerX: storyboardCopy.alignCenterX,
+          right: storyboardCopy.alignRight,
+          top: storyboardCopy.alignTop,
+          middleY: storyboardCopy.alignMiddleY,
+          bottom: storyboardCopy.alignBottom,
+        }[mode]}</button>
+      ))}
+      {alignCount >= 3 && <>
+        <button type="button" disabled={saving} onClick={() => onDistribute?.("x")}>{storyboardCopy.distributeX}</button>
+        <button type="button" disabled={saving} onClick={() => onDistribute?.("y")}>{storyboardCopy.distributeY}</button>
+      </>}
+      <button type="button" disabled={saving} onClick={() => onSameSize?.("width")}>{storyboardCopy.sameWidth}</button>
+      <button type="button" disabled={saving} onClick={() => onSameSize?.("height")}>{storyboardCopy.sameHeight}</button>
+      <button type="button" disabled={saving} onClick={() => onSameSize?.("size")}>{storyboardCopy.sameSize}</button>
+    </div>}
     <div className="toolbar-group" role="group" aria-label="撤销与重做">
       {/* 撤销/重做与保存按钮同受 saving 禁用（#637）：保存在途的撤销/重做会
           改写草稿与命令栈，随后被保存成功的 clearGeometryDrafts 静默清掉。 */}
@@ -113,7 +156,7 @@ export function StoryboardToolbar({
       <button type="button" aria-label={storyboardCopy.redo} disabled={!canRedo || saving} onClick={onRedo}><Redo2 size={14} /></button>
     </div>
     {overlayHint && <p className="toolbar-hint">{overlayHint}</p>}
-    {!overlayHint && <p className="toolbar-hint" aria-hidden="true">Tab 切换格子 · 方向键微调（Shift 加速） · 回车打开属性 · Delete 删除气泡</p>}
+    {!overlayHint && <p className="toolbar-hint" aria-hidden="true">{storyboardCopy.hintKeys}</p>}
     <div className="toolbar-group toolbar-spacer" role="group" aria-label="保存与页操作">
       <div className="page-menu" ref={menuRef}>
         <button type="button" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>

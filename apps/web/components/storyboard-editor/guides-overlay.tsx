@@ -23,14 +23,21 @@ export function GuidesOverlay({
   safeInset,
   showBleed,
   showSafe,
+  grid,
 }: {
   /** Normalized bleed extension per axis; null when the canvas field is absent. */
   bleedInset: { x: number; y: number } | null;
   safeInset: { x: number; y: number } | null;
   showBleed: boolean;
   showSafe: boolean;
+  /** Normalized grid line positions per axis; null hides the grid. */
+  grid?: { x: number[]; y: number[] } | null;
 }) {
   return <div className="canvas-guides-layer">
+    {grid && <div className="canvas-grid" aria-hidden="true">
+      {grid.x.map((at) => <div key={`x${at}`} className="canvas-grid-line vertical" style={{ left: `${at * 100}%` }} />)}
+      {grid.y.map((at) => <div key={`y${at}`} className="canvas-grid-line horizontal" style={{ top: `${at * 100}%` }} />)}
+    </div>}
     {showBleed && bleedInset && <div className="canvas-bleed-ring" style={insetStyle(bleedInset, true)} />}
     {showSafe && safeInset && <div className="canvas-safe-rect" style={insetStyle(safeInset, false)} />}
   </div>;

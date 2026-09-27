@@ -28,13 +28,23 @@ import {
   undoCommand,
   type CommandStackState,
   type GeometryCommandChange,
+  type PanelMetaGeometry,
+  type SoundEffectGeometry,
 } from "./command-stack";
 import type { DialogueDraft } from "./dialogue-card";
 import {
+  alignRects,
   BASE_PAGE_WIDTH,
+  defaultSfxPosition,
+  distributeRects,
+  gridLinesFor,
+  panelZOrder,
+  sameRect,
+  sameSizeRects,
   ZOOM_MAX,
   ZOOM_MIN,
   ZOOM_STEP,
+  zOrderChanges,
   bubbleGeometry,
   defaultCanvas,
   isPolygonPanel,
@@ -44,10 +54,14 @@ import {
   panelRect,
   toPayloadBubble,
   toPayloadRect,
+  type AlignMode,
+  type SameSizeMode,
+  type ZOrderOp,
 } from "./geometry";
 import { LayoutRebuildDialog } from "./layout-rebuild-dialog";
 import { PageCanvas, type CanvasBubble, type CanvasSelection } from "./page-canvas";
 import { PanelInspector, type PanelDraft } from "./panel-inspector";
+import type { SfxNodeData } from "./sfx-node";
 import { storyboardCopy } from "./storyboard-copy";
 import { StoryboardToolbar, type ToolbarToggleState } from "./storyboard-toolbar";
 
@@ -102,13 +116,19 @@ export function StoryboardEditor({
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [panelBoundsDrafts, setPanelBoundsDrafts] = useState<Record<string, NormalizedRect>>({});
   const [bubbleDrafts, setBubbleDrafts] = useState<Record<string, BubbleGeometryShape | null>>({});
+  const [panelMetaDrafts, setPanelMetaDrafts] = useState<Record<string, PanelMetaGeometry>>({});
+  // Sound-effect geometry drafts keyed panelId → entry index; they are saved
+  // through panel PATCH (narrative path), not the geometry PUT.
+  const [sfxDrafts, setSfxDrafts] = useState<Record<string, Record<number, SoundEffectGeometry>>>({});
   const [commandStack, setCommandStack] = useState<CommandStackState>(emptyCommandStack);
   const [zoom, setZoom] = useState(1);
+  const [gridStep, setGridStep] = useState(10);
   const [toggles, setToggles] = useState<ToolbarToggleState>({
     snap: true,
     readingOrder: true,
     bleed: false,
     safe: false,
+    grid: false,
   });
   const [rebuild, setRebuild] = useState<{ open: boolean; panelCount: number; layoutMode: "dynamic" | "balanced" }>({
     open: false,
@@ -143,9 +163,11 @@ export function StoryboardEditor({
   const canvas = defaultCanvas(serverPage);
   const canvasKnown = Boolean(serverPage?.canvas);
 
-  const serverPanelRects: Record<string, NormalizedRect> = {};
-  for (const panel of panels) serverPanelRects[panel.id] = panelRect(panel);
-  const panelRects: Record<string, NormalizedRect> = { ...serverPanelRects, ...panelBoundsDrafts };
+  const panelRects: Record<string, NormalizedRect> = useMemo(() => {
+    const map: Record<string, NormalizedRect> = {};
+    for (const panel of panels) map[panel.id] = panelRect(panel);
+    return { ...map, ...panelBoundsDrafts };
+  }, [panels, panelBoundsDrafts]);
 
   const panelOfDialogue = (dialogueId: string) =>
     panels.find((panel) => panel.dialogues.some((dialogue) => dialogue.id === dialogueId)) ?? null;
@@ -169,6 +191,44 @@ export function StoryboardEditor({
       });
     });
   }
+
+  // Sound-effect nodes rendered on the canvas: stored structured entries with
+  // canvas drafts applied on top; null x/y/size fall back to a cascaded
+  // position inside the owning panel (contract §12 leaves them to the layout).
+  const sfxNodes: SfxNodeData[] = useMemo(() => {
+    const list: SfxNodeData[] = [];
+    for (const panel of panels) {
+      const bounds = panelRects[panel.id] ?? panelRect(panel);
+      (panel.sound_effects ?? []).forEach((entry, index) => {
+        const stored = typeof entry === "object" && entry ? entry : {};
+        const text = typeof entry === "string" ? entry : String(stored.text ?? "");
+        if (!text) return;
+        const fallback = defaultSfxPosition(bounds, index);
+        const draft = sfxDrafts[panel.id]?.[index];
+        list.push({
+          panelId: panel.id,
+          index,
+          text,
+          x: draft?.x ?? (typeof stored.x === "number" ? stored.x : fallback.x),
+          y: draft?.y ?? (typeof stored.y === "number" ? stored.y : fallback.y),
+          rotation: draft?.rotation ?? (typeof stored.rotation === "number" ? stored.rotation : 0),
+          size: draft?.size ?? (typeof stored.size === "number" && stored.size > 0 ? stored.size : 0.05),
+        });
+      });
+    }
+    return list;
+  }, [panels, panelRects, sfxDrafts]);
+
+  const selectedPanelIds = selection?.kind === "panels" ? selection.ids : [];
+  const movableSelectedIds = selectedPanelIds.filter((id) => {
+    const panel = panels.find((item) => item.id === id);
+    return panel && !isPolygonPanel(panel) && panelRects[id];
+  });
+
+  const gridLines = useMemo(
+    () => (toggles.grid ? gridLinesFor(canvas, gridStep) : null),
+    [toggles.grid, canvas, gridStep],
+  );
 
   const activePanel: StoryboardPanel | null = selection?.kind === "panels"
     ? panels.find((panel) => panel.id === selection.ids[selection.ids.length - 1]) ?? null
@@ -229,13 +289,25 @@ export function StoryboardEditor({
   const clearGeometryDrafts = () => {
     setPanelBoundsDrafts({});
     setBubbleDrafts({});
+    setPanelMetaDrafts({});
+    setSfxDrafts({});
     setCommandStack(emptyCommandStack());
     geometryRequestRef.current = null;
   };
 
   const geometrySave = useMutation({
-    mutationFn: ({ pageId: targetPageId, payload }: { pageId: string; payload: StoryboardGeometrySavePayload }) =>
-      api.saveStoryboardGeometry(targetPageId, payload),
+    mutationFn: async ({ pageId: targetPageId, payload, sfxPatches }: {
+      pageId: string;
+      payload: StoryboardGeometrySavePayload;
+      sfxPatches: { panelId: string; version: number; sound_effects: Array<Record<string, unknown>> }[];
+    }) => {
+      // Sound-effect geometry persists through the narrative PATCH path
+      // (panel.version), sequentially before the whole-page geometry PUT.
+      for (const patch of sfxPatches) {
+        await api.updatePanel(patch.panelId, { version: patch.version, sound_effects: patch.sound_effects });
+      }
+      return api.saveStoryboardGeometry(targetPageId, payload);
+    },
     onSuccess: (response, variables) => {
       clearGeometryDrafts();
       // variables.pageId, not currentPage: a mid-save page switch re-renders
@@ -259,8 +331,15 @@ export function StoryboardEditor({
     for (const change of changes) {
       if (change.kind === "panel") {
         setPanelBoundsDrafts((drafts) => ({ ...drafts, [change.id]: change[direction] }));
-      } else {
+      } else if (change.kind === "panel-meta") {
+        setPanelMetaDrafts((drafts) => ({ ...drafts, [change.id]: { ...drafts[change.id], ...change[direction] } }));
+      } else if (change.kind === "bubble") {
         setBubbleDrafts((drafts) => ({ ...drafts, [change.id]: change[direction] }));
+      } else {
+        setSfxDrafts((drafts) => ({
+          ...drafts,
+          [change.panelId]: { ...drafts[change.panelId], [change.index]: change[direction] },
+        }));
       }
     }
   };
@@ -284,6 +363,61 @@ export function StoryboardEditor({
     applyChanges(command.changes, "after");
   };
 
+  // --- precision editing handlers (align / distribute / z-order / numeric) --
+
+  const runAlign = (mode: AlignMode) => {
+    const changes = alignRects(panelRects, movableSelectedIds, mode)
+      .map((change) => ({ kind: "panel" as const, ...change }));
+    if (changes.length) handleCommand("对齐", changes);
+  };
+
+  const runDistribute = (axis: "x" | "y") => {
+    const changes = distributeRects(panelRects, movableSelectedIds, axis)
+      .map((change) => ({ kind: "panel" as const, ...change }));
+    if (changes.length) handleCommand(axis === "x" ? "水平等距" : "垂直等距", changes);
+  };
+
+  const runSameSize = (mode: SameSizeMode) => {
+    const changes = sameSizeRects(panelRects, movableSelectedIds, mode)
+      .map((change) => ({ kind: "panel" as const, ...change }));
+    if (changes.length) handleCommand("同尺寸", changes);
+  };
+
+  const runZOrder = (op: ZOrderOp) => {
+    const targetId = selectedPanelIds.length === 1 ? selectedPanelIds[0] : inspectorPanel?.id;
+    if (!targetId) return;
+    const zOrders = Object.fromEntries(
+      panels.map((panel) => [panel.id, panelMetaDrafts[panel.id]?.z_order ?? panelZOrder(panel)]),
+    );
+    const changes = zOrderChanges(zOrders, targetId, op).map((change) => ({
+      kind: "panel-meta" as const,
+      id: change.id,
+      before: { z_order: change.before },
+      after: { z_order: change.after },
+    }));
+    if (changes.length) handleCommand("调整图层", changes);
+  };
+
+  const commitPanelRect = (panelId: string, after: NormalizedRect) => {
+    const before = panelRects[panelId];
+    if (!before || sameRect(before, after)) return;
+    handleCommand("输入几何", [{ kind: "panel", id: panelId, before, after }]);
+  };
+
+  const commitBubbleRect = (dialogueId: string, rect: NormalizedRect) => {
+    const bubble = bubbles.find((item) => item.dialogue.id === dialogueId);
+    if (!bubble) return;
+    const before = bubble.shape ?? { type: bubble.shapeType, rect: bubble.rect, rotation: 0 } as BubbleGeometryShape;
+    handleCommand("输入几何", [{ kind: "bubble", id: dialogueId, before, after: { ...before, rect } }]);
+  };
+
+  const commitBubbleRotation = (dialogueId: string, rotation: number) => {
+    const bubble = bubbles.find((item) => item.dialogue.id === dialogueId);
+    if (!bubble) return;
+    const before = bubble.shape ?? { type: bubble.shapeType, rect: bubble.rect, rotation: 0 } as BubbleGeometryShape;
+    handleCommand("输入几何", [{ kind: "bubble", id: dialogueId, before, after: { ...before, rotation } }]);
+  };
+
   const buildGeometryPayload = (): StoryboardGeometrySavePayload | null => {
     if (!storyboard.data || !currentPage) return null;
     const reuse = geometryRequestRef.current;
@@ -295,16 +429,17 @@ export function StoryboardEditor({
       panels: storyboard.data.panels.map((panel) => {
         const bounds = toPayloadRect(panelRects[panel.id] ?? panelRect(panel));
         const stored = panelGeometry(panel);
+        const meta = panelMetaDrafts[panel.id];
         return {
           panel_id: panel.id,
           bounds,
           geometry: isPolygonPanel(panel) && stored
-            ? stored
+            ? { ...stored, z_order: meta?.z_order ?? stored.z_order }
             : {
               type: "rect",
               rect: bounds,
-              rotation: stored?.rotation ?? 0,
-              z_order: stored?.z_order ?? panel.reading_order,
+              rotation: meta?.rotation ?? stored?.rotation ?? 0,
+              z_order: meta?.z_order ?? stored?.z_order ?? panel.reading_order,
             },
           reading_order: panel.reading_order,
         };
@@ -325,7 +460,25 @@ export function StoryboardEditor({
     const payload = buildGeometryPayload();
     if (!payload || !currentPage) return;
     setNotice("");
-    geometrySave.mutate({ pageId: currentPage.id, payload });
+    // Merge sound-effect canvas drafts into the narrative PATCH path: each
+    // affected panel gets one versioned update with its full merged list.
+    const sfxPatches = Object.entries(sfxDrafts).flatMap(([panelId, byIndex]) => {
+      const panel = panels.find((item) => item.id === panelId);
+      if (!panel || !Object.keys(byIndex).length) return [];
+      const merged = (panel.sound_effects ?? []).map((entry, index) => {
+        const base: Record<string, unknown> = typeof entry === "string" ? { text: entry } : { ...entry };
+        const draft = byIndex[index];
+        if (draft) {
+          base.x = draft.x;
+          base.y = draft.y;
+          base.rotation = draft.rotation;
+          base.size = draft.size;
+        }
+        return base;
+      });
+      return [{ panelId, version: panel.version, sound_effects: merged }];
+    });
+    geometrySave.mutate({ pageId: currentPage.id, payload, sfxPatches });
   };
 
   const discardDraft = () => {
@@ -580,6 +733,14 @@ export function StoryboardEditor({
     setSelection({ kind: "bubble", dialogueId });
   };
 
+  const selectSfx = (panelId: string, index: number) => {
+    setSelection({ kind: "sfx", panelId, index });
+  };
+
+  const selectedCanvasBubble = selection?.kind === "bubble"
+    ? bubbles.find((item) => item.dialogue.id === selection.dialogueId) ?? null
+    : null;
+
   const zoomTo = (next: number) => setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, next)));
 
   const fitToViewport = () => {
@@ -670,6 +831,12 @@ export function StoryboardEditor({
       onRedo={handleRedo}
       onSave={saveGeometry}
       onRebuildLayout={() => setRebuild({ open: true, panelCount: currentPage.panel_count, layoutMode: currentPage.source_coverage.layout_mode ?? "dynamic" })}
+      alignCount={movableSelectedIds.length}
+      onAlign={runAlign}
+      onDistribute={runDistribute}
+      onSameSize={runSameSize}
+      gridStep={gridStep}
+      onGridStep={setGridStep}
     />
     {storyboard.isLoading ? <div className="storyboard-loading">{storyboardCopy.loading}</div>
       : storyboard.isError ? <div className="storyboard-loading" role="alert"><span>{storyboardCopy.loadError}</span><button type="button" onClick={() => storyboard.refetch()}>{storyboardCopy.retry}</button></div>
@@ -680,9 +847,12 @@ export function StoryboardEditor({
           panels={panels}
           panelRects={panelRects}
           bubbles={bubbles}
+          sfx={sfxNodes}
           zoom={zoom}
           viewportRef={viewportRef}
           snapEnabled={toggles.snap}
+          extraSnapTargets={gridLines}
+          grid={gridLines}
           showReadingOrder={toggles.readingOrder}
           showBleed={toggles.bleed}
           showSafe={toggles.safe}
@@ -691,6 +861,8 @@ export function StoryboardEditor({
           onCommand={handleCommand}
           onSelectPanels={selectPanels}
           onSelectBubble={selectBubble}
+          onSelectSfx={selectSfx}
+          onNotice={setNotice}
           onClearSelection={() => setSelection(null)}
           onOpenInspector={() => {
             // Canvas double-click pairs onSelectPanels with this callback: a
@@ -750,6 +922,16 @@ export function StoryboardEditor({
           onSelectBubble={selectBubble}
           inspectorOpen={inspectorOpen}
           onToggleInspector={() => setInspectorOpen((open) => !open)}
+          canvas={canvas}
+          onRectCommit={commitPanelRect}
+          onZOrder={runZOrder}
+          bubbleFields={selectedCanvasBubble ? {
+            dialogueId: selectedCanvasBubble.dialogue.id,
+            rect: selectedCanvasBubble.rect,
+            rotation: selectedCanvasBubble.shape?.rotation ?? 0,
+          } : null}
+          onBubbleRectCommit={commitBubbleRect}
+          onBubbleRotationCommit={commitBubbleRotation}
         />}
       </div>}
     {rebuild.open && <LayoutRebuildDialog

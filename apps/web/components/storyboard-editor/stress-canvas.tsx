@@ -47,7 +47,7 @@ export function StressStoryboardCanvas() {
     for (const change of changes) {
       if (change.kind === "panel") {
         setPanelRects((drafts) => ({ ...drafts, [change.id]: change.after }));
-      } else {
+      } else if (change.kind === "bubble") {
         setBubbleDrafts((drafts) => ({ ...drafts, [change.id]: change.after }));
       }
     }
@@ -67,6 +67,7 @@ export function StressStoryboardCanvas() {
       panels={snapshot.panels}
       panelRects={panelRects}
       bubbles={bubbles}
+      sfx={[]}
       zoom={zoom}
       viewportRef={viewportRef}
       snapEnabled={false}
@@ -78,6 +79,7 @@ export function StressStoryboardCanvas() {
       onCommand={handleCommand}
       onSelectPanels={(ids) => setSelection({ kind: "panels", ids })}
       onSelectBubble={(dialogueId) => setSelection({ kind: "bubble", dialogueId })}
+      onSelectSfx={() => undefined}
       onClearSelection={() => setSelection(null)}
       onOpenInspector={() => undefined}
       onDeleteBubble={() => undefined}

@@ -1,15 +1,17 @@
 "use client";
 
 // Panel inspector: narrative fields keep the existing single-object PATCH
-// path; canvas geometry is read-only here (audit §2.1 L3).
+// path; canvas geometry is editable here as numeric input routed through the
+// same undoable command stack as canvas gestures.
 import { MessageSquarePlus, Pencil, X } from "lucide-react";
 import type { CSSProperties } from "react";
 
-import type { Character, CharacterPresence, MangaPage, NormalizedRect, Outfit, PanelDialogue, StoryboardPanel } from "@/lib/api";
+import type { CanvasInfo, Character, CharacterPresence, MangaPage, NormalizedRect, Outfit, PanelDialogue, StoryboardPanel } from "@/lib/api";
 
 import type { DialogueDraft } from "./dialogue-card";
 import { DialogueCard } from "./dialogue-card";
-import { geometryReadout, isPolygonPanel, panelGeometry } from "./geometry";
+import { GeometryFields } from "./geometry-fields";
+import { isPolygonPanel, MIN_BUBBLE_SIZE, MIN_PANEL_SIZE, panelGeometry, type ZOrderOp } from "./geometry";
 import { storyboardCopy } from "./storyboard-copy";
 
 const shotTypes = [["establishing", "远景建立"], ["wide_action", "全景动作"], ["medium_close_up", "中近景"], ["close_up", "近景"], ["extreme_close_up", "大特写"]] as const;
@@ -79,6 +81,12 @@ export function PanelInspector({
   onSelectBubble,
   inspectorOpen,
   onToggleInspector,
+  canvas,
+  onRectCommit,
+  onZOrder,
+  bubbleFields,
+  onBubbleRectCommit,
+  onBubbleRotationCommit,
 }: {
   page: MangaPage;
   panel: StoryboardPanel;
@@ -92,6 +100,12 @@ export function PanelInspector({
   newDialogue: DialogueDraft | null;
   selectedBubbleId: string | null;
   saving: boolean;
+  canvas: CanvasInfo;
+  onRectCommit: (panelId: string, rect: NormalizedRect) => void;
+  onZOrder: (op: ZOrderOp) => void;
+  bubbleFields?: { dialogueId: string; rect: NormalizedRect; rotation: number } | null;
+  onBubbleRectCommit?: (dialogueId: string, rect: NormalizedRect) => void;
+  onBubbleRotationCommit?: (dialogueId: string, rotation: number) => void;
   onBeginEdit: () => void;
   onExitEdit: () => void;
   onPanelDraftChange: (draft: PanelDraft) => void;
@@ -125,9 +139,33 @@ export function PanelInspector({
       <strong>{storyboardCopy.geometryReadoutTitle}</strong>
       {polygon
         ? <p className="polygon-note">{storyboardCopy.polygonNote}</p>
-        : <p>{rect ? geometryReadout(rect) : "—"}</p>}
+        : rect && <GeometryFields
+          rect={rect}
+          canvas={canvas}
+          minSize={MIN_PANEL_SIZE}
+          disabled={saving}
+          onCommitRect={(value) => onRectCommit(panel.id, value)}
+        />}
+      <div className="panel-layer-ops" role="group" aria-label="图层顺序">
+        <button type="button" disabled={saving} onClick={() => onZOrder("up")}>{storyboardCopy.layerUp}</button>
+        <button type="button" disabled={saving} onClick={() => onZOrder("down")}>{storyboardCopy.layerDown}</button>
+        <button type="button" disabled={saving} onClick={() => onZOrder("top")}>{storyboardCopy.layerTop}</button>
+        <button type="button" disabled={saving} onClick={() => onZOrder("bottom")}>{storyboardCopy.layerBottom}</button>
+      </div>
       <small>阅读序 {panel.reading_order} · 绘制层 Z{geometry?.z_order ?? panel.reading_order}{panel.bleed ? " · 出血格" : ""}{panel.borderless ? " · 无边框" : ""}</small>
     </div>
+    {bubbleFields && <div className="panel-geometry-readout" data-testid="bubble-geometry-readout">
+      <strong>气泡几何</strong>
+      <GeometryFields
+        rect={bubbleFields.rect}
+        canvas={canvas}
+        minSize={MIN_BUBBLE_SIZE}
+        rotation={bubbleFields.rotation}
+        disabled={saving}
+        onCommitRect={(value) => onBubbleRectCommit?.(bubbleFields.dialogueId, value)}
+        onCommitRotation={(value) => onBubbleRotationCommit?.(bubbleFields.dialogueId, value)}
+      />
+    </div>}
     {editingPanel && panelDraft ? <div className="panel-edit-form">
       <div className="panel-edit-grid"><label><span>景别</span><select value={panelDraft.shot_type} onChange={(event) => onPanelDraftChange({ ...panelDraft, shot_type: event.target.value })}>{shotTypes.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>镜头角度</span><select value={panelDraft.camera_angle} onChange={(event) => onPanelDraftChange({ ...panelDraft, camera_angle: event.target.value })}>{cameraAngles.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>机位高度</span><select value={panelDraft.camera_height} onChange={(event) => onPanelDraftChange({ ...panelDraft, camera_height: event.target.value })}><option value="eye_level">视线高度</option><option value="ground_level">贴地机位</option><option value="waist_level">腰部机位</option><option value="overhead">顶视机位</option></select></label></div>
       <label><span>动作与表演</span><textarea value={panelDraft.actions.script_action ?? ""} onChange={(event) => onPanelDraftChange({ ...panelDraft, actions: { ...panelDraft.actions, script_action: event.target.value } })} /></label>

@@ -3,9 +3,28 @@
 // snapshots through PUT /pages/{id}/storyboard-geometry (contract §10.4).
 import type { BubbleGeometryShape, NormalizedRect } from "@/lib/api";
 
+/** Non-rect fields of PanelGeometryShape editable through canvas commands. */
+export interface PanelMetaGeometry {
+  z_order?: number;
+  rotation?: number;
+}
+
+/** Structured SoundEffect geometry (contract §12): x/y are the element
+ * center in normalized page space, rotation in degrees, size the normalized
+ * font size. All fields are always present in a draft (nulls fall back at
+ * render/save time). */
+export interface SoundEffectGeometry {
+  x: number;
+  y: number;
+  rotation: number;
+  size: number;
+}
+
 export type GeometryCommandChange =
   | { kind: "panel"; id: string; before: NormalizedRect; after: NormalizedRect }
-  | { kind: "bubble"; id: string; before: BubbleGeometryShape | null; after: BubbleGeometryShape | null };
+  | { kind: "panel-meta"; id: string; before: PanelMetaGeometry; after: PanelMetaGeometry }
+  | { kind: "bubble"; id: string; before: BubbleGeometryShape | null; after: BubbleGeometryShape | null }
+  | { kind: "sfx"; panelId: string; index: number; before: SoundEffectGeometry; after: SoundEffectGeometry };
 
 export interface GeometryCommand {
   label: string;
