@@ -23,7 +23,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
 import {
+  commandsToTarget,
   emptyCommandStack,
+  historyDepth,
   pushCommand,
   redoCommand,
   undoCommand,
@@ -70,6 +72,7 @@ import { ReplayBar } from "./replay-bar";
 import { downloadBlob, exportReplayVideo } from "./replay-export";
 import type { SfxNodeData } from "./sfx-node";
 import { SpreadPage } from "./spread-preview";
+import { HistoryTree } from "./history-tree";
 import { storyboardCopy } from "./storyboard-copy";
 import {
   annotationsKey,
@@ -417,7 +420,7 @@ export function StoryboardEditor({
     [panels],
   );
   const hasLiveDialogueDraft = Object.keys(dialogueDrafts).some((id) => liveDialogueIds.has(id));
-  const dirty = commandStack.index > 0
+  const dirty = commandStack.activeId !== null
     || hasLiveDialogueDraft
     || newDialogue !== null
     || panelDraftDirty;
@@ -527,6 +530,20 @@ export function StoryboardEditor({
     pendingLabelRef.current = `重做：${command.label}`;
     setCommandStack(state);
     applyChanges(command.changes, "after");
+  };
+
+  // 回跳到历史树任意节点：先沿撤销段应用 before 到公共祖先，再沿重做段
+  // 应用 after 到目标；一次批量落位，回放时间线只录一帧。
+  const jumpToHistory = (targetId: string | null) => {
+    if (replay.open) return;
+    const plan = commandsToTarget(commandStack, targetId);
+    if (!plan || plan.undos.length + plan.redos.length === 0) return;
+    const last = plan.redos.length > 0 ? plan.redos[plan.redos.length - 1] : null;
+    pendingLabelRef.current = `回跳：${last?.label ?? storyboardCopy.historyBaseline}`;
+    for (const node of plan.undos) applyChanges(node.changes, "before");
+    for (const node of plan.redos) applyChanges(node.changes, "after");
+    setCommandStack(plan.state);
+    setNotice(storyboardCopy.historyJumped(last?.label ?? storyboardCopy.historyBaseline));
   };
 
   // --- precision editing handlers (align / distribute / z-order / numeric) --
@@ -780,8 +797,8 @@ export function StoryboardEditor({
   const buildGeometryPayload = (): StoryboardGeometrySavePayload | null => {
     if (!storyboard.data || !currentPage) return null;
     const reuse = geometryRequestRef.current;
-    const requestId = reuse && reuse.stackIndex === commandStack.index ? reuse.id : newRequestId();
-    geometryRequestRef.current = { id: requestId, stackIndex: commandStack.index };
+    const requestId = reuse && reuse.stackIndex === historyDepth(commandStack) ? reuse.id : newRequestId();
+    geometryRequestRef.current = { id: requestId, stackIndex: historyDepth(commandStack) };
     return {
       request_id: requestId,
       storyboard_version: storyboard.data.page.storyboard_version,
@@ -1179,9 +1196,9 @@ export function StoryboardEditor({
       toggles={toggles}
       bleedAvailable={canvasKnown}
       safeAvailable={canvasKnown}
-      canUndo={commandStack.index > 0}
-      canRedo={commandStack.index < commandStack.stack.length}
-      canSave={commandStack.index > 0}
+      canUndo={commandStack.activeId !== null}
+      canRedo={commandStack.nodes.some((node) => node.parentId === commandStack.activeId)}
+      canSave={commandStack.activeId !== null}
       saving={canvasBusy}
       overlayHint={toggles.annotate ? storyboardCopy.annotateHint : !canvasKnown ? storyboardCopy.canvasMissing : null}
       onZoomIn={() => zoomManually(zoom * ZOOM_STEP)}
@@ -1191,6 +1208,7 @@ export function StoryboardEditor({
       onToggle={(key) => setToggles((value) => ({ ...value, [key]: !value[key] }))}
       onUndo={handleUndo}
       onRedo={handleRedo}
+      historySlot={<HistoryTree stack={commandStack} onJump={jumpToHistory} />}
       onSave={saveGeometry}
       onRebuildLayout={() => {
         if (replay.open) return;

@@ -823,6 +823,44 @@ describe("StoryboardEditor 精准编辑", () => {
     expect(panelEl("panel-1").classList.contains("selected")).toBe(true);
   });
 
+  it("T11 撤销分支树：撤销后编辑开新支，历史树可回跳任意节点", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    const xInput = screen.getByLabelText("X（mm）");
+    fireEvent.change(xInput, { target: { value: "36.4" } });
+    fireEvent.blur(xInput);                                    // 命令 A：x=0.2
+    fireEvent.click(screen.getByRole("button", { name: "置顶" }));   // 命令 B：置顶
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));   // 回到 A
+    // 撤销触发重渲，输入框需重新抓取（引用会陈旧）。
+    const xInput2 = screen.getByLabelText("X（mm）");
+    fireEvent.change(xInput2, { target: { value: "91" } });          // 命令 C：在 A 上分叉
+    fireEvent.blur(xInput2);
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(50, 4);
+    // 打开历史树：基线 + A + B(分支 ↳) + C(当前)。
+    fireEvent.click(screen.getByRole("button", { name: "历史树" }));
+    expect(document.querySelectorAll(".history-node").length).toBe(4);
+    const branch = screen.getByRole("menuitem", { name: /调整图层/ });
+    expect(branch.classList.contains("branch")).toBe(true);
+    // 回跳到分支节点 B：撤销 C + 重做 B。
+    fireEvent.click(branch);
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(20, 4);
+    expect(screen.getByText("已回跳到「调整图层」")).toBeTruthy();
+    // 回跳基线：整页回到初始态。
+    fireEvent.click(screen.getByRole("button", { name: "历史树" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "基线（初始状态）" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(10, 4);
+    // 从基线重做沿最近离开方向：root → A；A 之后跟的是回跳用过的 B 支
+    // （置顶命令只动 z_order，x 保持 0.2）。
+    fireEvent.click(screen.getByRole("button", { name: "重做" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(20, 4);
+    fireEvent.click(screen.getByRole("button", { name: "重做" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(20, 4);
+    // 分支 C 此时已是树上的 ↳ 分支节点，依旧可直达（不被丢弃）。
+    fireEvent.click(screen.getByRole("button", { name: "历史树" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "↳ 输入几何" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(50, 4);
+  });
+
   /** 读取 panel-2 气泡节点当前的 left/width（% 文本转数值比例）。 */
   function payloadBubbleAfterTemplate() {
     const element = bubbleEl("dialogue-1");

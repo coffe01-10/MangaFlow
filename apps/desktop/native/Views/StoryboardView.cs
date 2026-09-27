@@ -1975,6 +1975,64 @@ public sealed partial class StoryboardView : WorkspaceView
         RenderInspector();
     }
 
+    // 回跳到历史树任意节点（对齐 web jumpToHistory）：先沿撤销段应用 Before
+    // 上行到公共祖先，再沿重做段应用 After 到目标；一次批量落位，回放
+    // 时间线只录一帧。
+    private void JumpToHistory(CommandStack.Node? target)
+    {
+        if (replayOpen || target == history.Active) return;
+        var (undos, redos) = history.PlanTo(target);
+        if (undos.Count + redos.Count == 0) { history.SetActive(target); return; }
+        pendingCommandLabel = $"回跳：{(redos.Count > 0 ? redos[^1].Label : "基线（初始状态）")}";
+        foreach (var command in undos) ApplyChanges(command.Changes, before: true);
+        foreach (var command in redos) ApplyChanges(command.Changes, before: false);
+        history.SetActive(target);
+        MarkDirty();
+        RenderCanvas();
+        RenderInspector();
+        Notice($"已回跳到「{(redos.Count > 0 ? redos[^1].Label : "基线（初始状态）")}」");
+    }
+
+    /// <summary>历史树菜单（轻量版：基线 + 全树按深度缩进平铺，分支节点标
+    /// ↳，当前节点打勾）——对齐 web HistoryTree 弹层。</summary>
+    private void OpenHistoryMenu(FrameworkElement anchor)
+    {
+        var menu = new ContextMenu();
+        var baseline = new MenuItem
+        {
+            Header = "基线（初始状态）",
+            IsChecked = history.Active == null,
+            FontWeight = history.Active == null ? FontWeights.Bold : FontWeights.Normal,
+        };
+        baseline.Click += (_, _) => JumpToHistory(null);
+        menu.Items.Add(baseline);
+        var seq = 0;
+        void AddChildren(CommandStack.Node? parent, int depth)
+        {
+            foreach (var node in history.ChildrenOf(parent))
+            {
+                seq += 1;
+                var captured = node;
+                var onPath = history.IsOnPath(node);
+                var indent = new string('　', depth);
+                var item = new MenuItem
+                {
+                    Header = $"{indent}{(onPath ? $"{seq}." : "↳")} {node.Command.Label}",
+                    IsChecked = node == history.Active,
+                    FontWeight = node == history.Active ? FontWeights.Bold : FontWeights.Normal,
+                    FontStyle = onPath ? FontStyles.Normal : FontStyles.Italic,
+                };
+                item.Click += (_, _) => JumpToHistory(captured);
+                menu.Items.Add(item);
+                AddChildren(node, depth + 1);
+            }
+        }
+        AddChildren(null, 0);
+        menu.PlacementTarget = anchor;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
     private void ApplyChanges(List<GeometryChange> changes, bool before)
     {
         foreach (var change in changes)
@@ -2716,11 +2774,11 @@ public sealed partial class StoryboardView : WorkspaceView
             // 撞不同内容被服务端以 409 拒绝。409 是版本拒绝（早退回滚不落库），
             // 恢复走冲突条的「放弃草稿并重新加载」，与本复用互不影响。
             var requestId = geometryRequest is { } prior
-                && prior.StackIndex == history.Index
+                && prior.StackIndex == history.Depth
                 && prior.BubbleCount == bubbles.Count
                 ? prior.Id
                 : Guid.NewGuid();
-            geometryRequest = (requestId, history.Index, bubbles.Count);
+            geometryRequest = (requestId, history.Depth, bubbles.Count);
             var payload = BuildPayload(requestId);
             // 拟声词几何走面板叙事 PATCH（panel.version），先于整页 PUT 逐格提交
             // （对齐 web saveGeometry 的 sfxPatches：对象条目打底 + Moved 覆写；
@@ -3049,7 +3107,11 @@ public sealed partial class StoryboardView : WorkspaceView
     internal int BubbleCountForTest => bubbles.Count;
     internal Rect PanelRectForTest(int index) => panels.ElementAtOrDefault(index)?.Rect ?? Rect.Empty;
     internal bool CanUndoForTest => history.CanUndo;
-    internal int HistoryDepthForTest => history.Index;
+    internal int HistoryDepthForTest => history.Depth;
+    internal int HistoryNodeCountForTest => history.Nodes.Count;
+    /// <summary>回跳到节点（index 为推入序号）或基线（index < 0）。</summary>
+    internal void JumpToHistoryForTest(int index) =>
+        JumpToHistory(index < 0 ? null : history.Nodes.ElementAtOrDefault(index));
     internal bool NarrativeDirtyForTest => NarrativeDirty;
     internal int HandleCountForTest => resizeHandles.Count;
     internal string? SelectedPanelIdForTest => selected?.Id;
@@ -3748,12 +3810,29 @@ public sealed partial class StoryboardView : WorkspaceView
             dialogue.Element("rewrite_forbidden").ValueKind != JsonValueKind.False);   // 缺省视为锁定
     }
 
+    // 历史是追加式节点树而非线性栈：撤销后再编辑向被撤销的节点追加一个子
+    // 节点（分叉），旧的重做尾巴不被截断，任何节点都能回跳。LastChild 记
+    // 录每个节点上次离开的方向，重做沿用户来时的分支走（对齐 web
+    // command-stack.ts 的 nodes/activeId/lastChildId）。
     private sealed class CommandStack
     {
-        private readonly List<GeometryCommand> stack = [];
-        public int Index { get; private set; }
-        public bool CanUndo => Index > 0;
-        public bool CanRedo => Index < stack.Count;
+        internal sealed class Node
+        {
+            public required GeometryCommand Command { get; init; }
+            public required Node? Parent { get; init; }
+            public Node? LastChild { get; set; }
+        }
+
+        private readonly List<Node> nodes = [];
+        private Node? active;
+        private Node? rootLastChild;
+
+        public Node? Active => active;
+        /// <summary>推入顺序的全量节点（历史树与测试缝共用）。</summary>
+        public IReadOnlyList<Node> Nodes => nodes;
+        public int Depth => PathFrom(active).Count;
+        public bool CanUndo => active != null;
+        public bool CanRedo => ChildOf(active) != null;
 
         // V02-33 回放帧标签：Push 先于应用发生，标签挂起到 UpdatePageSize
         // 落点后由 RecordFrame 消费；空变更（Changes.Count==0）不推不录。
@@ -3762,15 +3841,79 @@ public sealed partial class StoryboardView : WorkspaceView
         public void Push(GeometryCommand command)
         {
             if (command.Changes.Count == 0) return;
-            if (Index < stack.Count) stack.RemoveRange(Index, stack.Count - Index);
-            stack.Add(command);
-            Index++;
+            var node = new Node { Command = command, Parent = active };
+            if (active != null) active.LastChild = node;
+            else rootLastChild = node;
+            nodes.Add(node);
+            active = node;
             OnPush?.Invoke(command);
         }
 
-        public GeometryCommand Undo() => stack[--Index];
-        public GeometryCommand Redo() => stack[Index++];
-        public void Clear() { stack.Clear(); Index = 0; }
+        public GeometryCommand Undo()
+        {
+            var node = active!;
+            if (node.Parent != null) node.Parent.LastChild = node;
+            else rootLastChild = node;
+            active = node.Parent;
+            return node.Command;
+        }
+
+        public GeometryCommand Redo()
+        {
+            var node = ChildOf(active)!;
+            active = node;
+            return node.Command;
+        }
+
+        public void Clear()
+        {
+            nodes.Clear();
+            active = null;
+            rootLastChild = null;
+        }
+
+        private Node? ChildOf(Node? parent) =>
+            (parent != null ? parent.LastChild : rootLastChild)
+            ?? nodes.LastOrDefault(n => n.Parent == parent);
+
+        /// <summary>节点是否在「基线 → 当前活动节点」的主链上（历史树区分
+        /// 主链节点与 ↳ 分支节点的依据）。</summary>
+        public bool IsOnPath(Node node)
+        {
+            for (var cur = active; cur != null; cur = cur.Parent)
+                if (cur == node) return true;
+            return false;
+        }
+
+        public List<Node> ChildrenOf(Node? parent) => nodes.Where(n => n.Parent == parent).ToList();
+
+        private static List<Node> PathFrom(Node? tip)
+        {
+            var path = new List<Node>();
+            for (var cur = tip; cur != null; cur = cur.Parent) path.Insert(0, cur);
+            return path;
+        }
+
+        /// <summary>回跳计划：undos 段从活动点上行到公共祖先（应用 Before），
+        /// redos 段下行到目标（应用 After）；执行后 SetActive 落定。</summary>
+        public (List<GeometryCommand> Undos, List<GeometryCommand> Redos) PlanTo(Node? target)
+        {
+            var activeChain = PathFrom(active);
+            var targetChain = PathFrom(target);
+            var shared = 0;
+            while (shared < Math.Min(activeChain.Count, targetChain.Count)
+                && activeChain[shared] == targetChain[shared]) shared++;
+            foreach (var node in activeChain.Skip(shared))
+                if (node.Parent != null) node.Parent.LastChild = node;
+                else rootLastChild = node;
+            foreach (var node in targetChain.Skip(shared))
+                if (node.Parent != null) node.Parent.LastChild = node;
+                else rootLastChild = node;
+            return (activeChain.Skip(shared).Reverse().Select(n => n.Command).ToList(),
+                targetChain.Skip(shared).Select(n => n.Command).ToList());
+        }
+
+        public void SetActive(Node? target) => active = target;
     }
 }
 

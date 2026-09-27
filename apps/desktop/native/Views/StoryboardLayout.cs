@@ -177,6 +177,10 @@ public sealed partial class StoryboardView
         }
         wrapped.Children.Add(alignBar);
         undoButton.Click += (_, _) => Undo(); redoButton.Click += (_, _) => Redo(); Add(undoButton); Add(redoButton);
+        // 撤销分支树入口（对齐 web toolbar 的历史树弹层按钮）
+        var historyButton = Kit.Act("历史树", (_, _) => { }, "Compact");
+        historyButton.Click += (_, _) => OpenHistoryMenu(historyButton);
+        Add(historyButton);
         // V02-33 功能库：模板/快照集中在一个菜单，回放是独立开关
         // （对齐 web library-bar + replay 入口）；菜单每次打开重建以反映最新存储。
         history.OnPush = command => pendingCommandLabel = command.Label;

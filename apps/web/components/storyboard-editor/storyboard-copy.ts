@@ -130,6 +130,11 @@ export const storyboardCopy = {
   annotateClear: "清空批注",
   annotateUndoDone: "已撤销上一笔",
   annotateCleared: "已清空本页批注",
+  history: "历史树",
+  historyTitle: "编辑历史树",
+  historyBaseline: "基线（初始状态）",
+  historyEmpty: "还没有编辑历史",
+  historyJumped: (label: string) => `已回跳到「${label}」`,
 } as const;
 
 export const handleCornerLabels: Record<string, string> = {
