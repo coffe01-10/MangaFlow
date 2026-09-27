@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using MangaFlow.Native.Controls;
@@ -613,6 +614,7 @@ public sealed partial class StoryboardView
             if (replayTimer != null) replayTimer.Interval = TimeSpan.FromMilliseconds(620 / replaySpeed);
         };
         panel.Children.Add(replaySpeedBox);
+        Make("导出 GIF", (_, _) => _ = ExportReplayGif());
         Make("退出回放", (_, _) => CloseReplay());
         return new Border
         {
@@ -711,6 +713,70 @@ public sealed partial class StoryboardView
             if (state.Sfx.TryGetValue(node.PanelId, out var byIndex)
                 && byIndex.TryGetValue(node.Index, out var sfxState))
                 node.ApplySnapshot(sfxState);
+    }
+
+    /// <summary>制作回放导出（原生路径）：逐帧把页画布 RenderTargetBitmap 成位图，
+    /// GifBitmapEncoder 逐帧写 GIF；帧延沿用回放节拍 620ms/速度（GIF 单位 1/100s），
+    /// 首帧带 NETSCAPE2.0 循环扩展。导出期间暂停播放，结束回到导出前帧。</summary>
+    private async Task ExportReplayGif()
+    {
+        if (!replayOpen || timeline.Count < 2)
+        {
+            Notice("还没有可回放的编辑历史");
+            return;
+        }
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Filter = "GIF 动图|*.gif",
+            FileName = $"分镜回放-P{currentPage?.PageNumber ?? 0:D3}.gif",
+        };
+        if (dialog.ShowDialog() != true) return;
+        PauseReplay();
+        var restoreIndex = replayIndex;
+        try
+        {
+            await EncodeReplayGif(dialog.FileName);
+            Notice($"回放已导出 {System.IO.Path.GetFileName(dialog.FileName)}");
+        }
+        catch (Exception error)
+        {
+            Notice($"回放导出失败：{error.Message}");
+        }
+        finally
+        {
+            ShowReplayFrame(restoreIndex);
+        }
+    }
+
+    /// <summary>逐帧渲染整页（2× 超采样）+ GifBitmapEncoder 编码到 path。
+    /// 与对话框解耦便于测试缝直写临时文件。</summary>
+    private async Task EncodeReplayGif(string path)
+    {
+        var delay = (ushort)Math.Max(2, Math.Round(62.0 / replaySpeed));
+        var frames = new List<BitmapFrame>();
+        for (var i = 0; i < timeline.Count; i++)
+        {
+            ApplyCanvasState(timeline[i].State);
+            UpdatePageSize();
+            page.UpdateLayout();
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+            var width = Math.Max(1, (int)Math.Round(page.ActualWidth > 0 ? page.ActualWidth : page.Width));
+            var height = Math.Max(1, (int)Math.Round(page.ActualHeight > 0 ? page.ActualHeight : page.Height));
+            var bitmap = new RenderTargetBitmap(width * 2, height * 2, 192, 192, PixelFormats.Pbgra32);
+            bitmap.Render(page);
+            var metadata = new BitmapMetadata("gif");
+            metadata.SetQuery("/graphext/delay", delay);
+            if (i == 0)
+            {
+                metadata.SetQuery("/appext/application", System.Text.Encoding.ASCII.GetBytes("NETSCAPE2.0"));
+                metadata.SetQuery("/appext/data", new byte[] { 3, 1, 0, 0, 0 });
+            }
+            frames.Add(BitmapFrame.Create(bitmap, null, metadata, null));
+        }
+        var encoder = new GifBitmapEncoder();
+        foreach (var frame in frames) encoder.Frames.Add(frame);
+        await using var stream = File.Create(path);
+        encoder.Save(stream);
     }
 
     private void CloseReplay()
@@ -884,6 +950,15 @@ public sealed partial class StoryboardView
     internal void ToggleReplayForTest() => ToggleReplay();
     internal void ReplaySeekForTest(int index) => ShowReplayFrame(index);
     internal void CloseReplayForTest() => CloseReplay();
+    /// <summary>导出到指定文件（绕过 SaveFileDialog 的测试缝）：回放必须开着，
+    /// 结束回到导出前帧。</summary>
+    internal async Task ExportReplayGifForTest(string path)
+    {
+        var restoreIndex = replayIndex;
+        PauseReplay();
+        try { await EncodeReplayGif(path); }
+        finally { ShowReplayFrame(restoreIndex); }
+    }
     internal int GhostCountForTest => ghostElements.Count;
     internal Task ToggleSpreadForTest() => ToggleSpread();
     internal bool SpreadOpenForTest => spreadOpen;
