@@ -498,6 +498,7 @@ public sealed partial class StoryboardView : WorkspaceView
             RenderCanvas();
             RenderInspector();
             UpdatePageSize();
+            if (spreadOpen) await RefreshSpreadSkeletons();   // 对开骨架随新页重排邻页
             if (fitPending && viewport.ActualWidth > 100 && viewport.ActualHeight > 100) { fitPending = false; FitViewport(); }
             ApplyOutfitFocus();
         }
