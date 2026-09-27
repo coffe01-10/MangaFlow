@@ -230,7 +230,7 @@ describe("LibrarySection 导出阻塞", () => {
     const before = exportsApi.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "原图 ZIP" }));
     await waitFor(() => {
-      expect(createExport).toHaveBeenCalledWith("chapter-1", "PNG");
+      expect(createExport).toHaveBeenCalledWith("chapter-1", "PNG", undefined);
       expect(exportsApi.mock.calls.length).toBeGreaterThan(before);
     });
 

@@ -943,11 +943,22 @@ export interface ExportBundle {
   id: string;
   project_id: string;
   chapter_id: string | null;
-  export_type: "PNG" | "PDF" | "JSON";
+  export_type: "PNG" | "PDF" | "JSON" | "WEBTOON";
   byte_size: number;
   page_count: number;
   created_at: string;
   download_url: string;
+}
+
+export type WebtoonExportPreset = "STANDARD" | "COMPACT" | "HQ_PNG";
+
+export interface WebtoonExportOptions {
+  preset?: WebtoonExportPreset;
+  width?: number;
+  format?: "JPEG" | "PNG";
+  quality?: number;
+  gap_px?: number;
+  max_slice_height?: number;
 }
 
 export type WorkflowPortDataType = "text" | "json" | "image" | "asset" | "report" | "boolean";
@@ -2096,10 +2107,14 @@ export const api = {
       body: JSON.stringify({ model_alias, resolution }),
     }),
   exports: (projectId: string) => request<ExportBundle[]>(`/projects/${projectId}/exports`),
-  createExport: (chapterId: string, exportType: ExportBundle["export_type"]) =>
+  createExport: (
+    chapterId: string,
+    exportType: ExportBundle["export_type"],
+    options?: WebtoonExportOptions,
+  ) =>
     request<ExportBundle>(`/chapters/${chapterId}/exports`, {
       method: "POST",
-      body: JSON.stringify({ export_type: exportType }),
+      body: JSON.stringify({ export_type: exportType, ...(options ?? {}) }),
     }),
   selectedPagePngUrl: (pageId: string) => publicUrl(`/api/v1/pages/${pageId}/export.png`),
   workflowNodeTypes: () => request<WorkflowNodeType[]>("/workflow-node-types"),

@@ -21,7 +21,7 @@ export interface PreviewSlice {
   start: number;
   /** 片终点（不含），最后一片等于条带总高。 */
   end: number;
-  /** 单页超过最大片高时独占一片并标记。 */
+  /** 硬切片段：单页超过最大片高被等距切开时，每段独立成片并标记。 */
   oversized: boolean;
   /** 该片覆盖的条目 id（闭区间含义：完全落在片内的条目）。 */
   itemIds: string[];
@@ -56,8 +56,8 @@ export function scaledPageHeight(
  *   每个间距挂在前一个条目之后，切片边界落在间距末尾=下一条目顶边）。
  * - 顺序累加条目；当下一个条目的底边会使当前片超过 maxSlicePx 时，
  *   在该条目顶边的页间缝处收刀（当前片不含该条目）。
- * - 单个条目自身高度超过 maxSlicePx 时，该条目独占一片并标记
- *   oversized（PUB-01B 再定义真实导出的超限处理）。
+ * - 单个条目自身高度超过 maxSlicePx 时，按契约 §3-4 等距硬切为
+ *   ceil(h/max) 段，每段独立成片并标记 oversized，不与相邻条目合并。
  */
 export function computeStrip(
   items: PreviewStripItem[],
@@ -91,18 +91,25 @@ export function computeStrip(
       sliceStart = entry.top;
       sliceItems = [];
     }
-    sliceItems.push(entry.id);
     if (entry.height > maxSlicePx) {
-      slices.push({
-        index: slices.length + 1,
-        start: sliceStart,
-        end: bottom,
-        oversized: true,
-        itemIds: sliceItems,
-      });
+      // 契约 §3-4：超限单页等距硬切，每段独立成片，不与相邻条目合并。
+      let offset = 0;
+      while (offset < entry.height) {
+        const seg = Math.min(maxSlicePx, entry.height - offset);
+        slices.push({
+          index: slices.length + 1,
+          start: sliceStart + offset,
+          end: sliceStart + offset + seg,
+          oversized: true,
+          itemIds: [entry.id],
+        });
+        offset += seg;
+      }
       sliceStart = bottom;
       sliceItems = [];
+      return;
     }
+    sliceItems.push(entry.id);
   });
   if (sliceStart < totalHeight || !slices.length) {
     slices.push({

@@ -26,6 +26,12 @@ from app.models import (
     utcnow,
 )
 from app.schemas import ExportRead, ExportRequest
+from app.services.manga_export import (
+    WebtoonExportError,
+    build_webtoon_zip,
+    resolve_webtoon_params,
+    sweep_stale_webtoon_artifacts,
+)
 from app.services.media import sanitize_stored_filename
 from app.services.page_completion import (
     build_page_production_readiness,
@@ -196,9 +202,23 @@ def create_export(
     settings = get_settings()
     output_dir = settings.storage_root / "exports" / project.id / chapter.id
     output_dir.mkdir(parents=True, exist_ok=True)
-    token = hashlib.sha256(
-        "|".join(candidate.id for _, candidate, _ in selected).encode("utf-8")
-    ).hexdigest()[:12]
+    webtoon_params = None
+    if payload.export_type == "WEBTOON":
+        try:
+            webtoon_params = resolve_webtoon_params(
+                preset=payload.preset,
+                width=payload.width,
+                format=payload.format,
+                quality=payload.quality,
+                gap_px=payload.gap_px,
+                max_slice_height=payload.max_slice_height,
+            )
+        except WebtoonExportError as error:
+            raise HTTPException(status_code=422, detail=error.detail) from error
+    token_material = "|".join(candidate.id for _, candidate, _ in selected)
+    if webtoon_params is not None:
+        token_material += f"|{webtoon_params.canonical()}"
+    token = hashlib.sha256(token_material.encode("utf-8")).hexdigest()[:12]
     # The artifact path is deterministic given the selected candidate set, so
     # it doubles as the idempotency key for worker-side re-execution.
     destination = output_dir / {
@@ -229,7 +249,29 @@ def create_export(
             return existing
 
     serial = f"{utcnow().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
-    if payload.export_type == "PNG":
+    if payload.export_type == "WEBTOON":
+        destination = output_dir / f"{token}-{serial}-webtoon.zip"
+        # 契约 §6：开始前先清理同目录上轮崩溃残留的孤儿临时文件。
+        sweep_stale_webtoon_artifacts(output_dir, keep_name=destination.name)
+
+        def _write_webtoon(temp: Path) -> None:
+            try:
+                build_webtoon_zip(
+                    temp,
+                    pages=[page for page, _, _ in selected],
+                    assets=[asset for _, _, asset in selected],
+                    params=webtoon_params,
+                    asset_path=_asset_path,
+                    project_name=project.name,
+                    chapter_id=chapter.id,
+                    chapter_title=chapter.title,
+                    project_id=project.id,
+                )
+            except WebtoonExportError as error:
+                raise HTTPException(status_code=422, detail=error.detail) from error
+
+        _write_export_atomically(destination, _write_webtoon)
+    elif payload.export_type == "PNG":
         destination = output_dir / f"{token}-{serial}-pages.zip"
 
         def _write_zip(temp: Path) -> None:
@@ -402,5 +444,6 @@ def download_export(
         "PNG": "application/zip",
         "PDF": "application/pdf",
         "JSON": "application/json",
+        "WEBTOON": "application/zip",
     }
     return FileResponse(path, media_type=media_types[bundle.export_type], filename=path.name)

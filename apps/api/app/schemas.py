@@ -1285,7 +1285,31 @@ class UpscaleRequest(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    export_type: str = Field(pattern="^(PNG|PDF|JSON)$")
+    export_type: str = Field(pattern="^(PNG|PDF|JSON|WEBTOON)$")
+    # WEBTOON 专属参数（契约 docs/pub-01b-webtoon-export-contract.md §2）；
+    # 缺省走预设，显式字段覆盖同名预设值。
+    preset: str | None = None
+    width: int | None = Field(default=None, ge=320, le=4096)
+    format: str | None = Field(default=None, pattern="^(JPEG|PNG)$")
+    quality: int | None = Field(default=None, ge=50, le=100)
+    gap_px: int | None = Field(default=None, ge=0, le=128)
+    max_slice_height: int | None = Field(default=None, ge=512, le=16384)
+
+    @model_validator(mode="after")
+    def webtoon_params_only_on_webtoon(self):
+        if self.export_type != "WEBTOON" and any(
+            value is not None
+            for value in (
+                self.preset,
+                self.width,
+                self.format,
+                self.quality,
+                self.gap_px,
+                self.max_slice_height,
+            )
+        ):
+            raise ValueError("条漫导出参数仅对 WEBTOON 类型有效")
+        return self
 
 
 class ExportRead(BaseModel):

@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import Image from "next/image";
 import { useMemo, useState } from "react";
 
-import { api, publicUrl, type MobilePreviewPage } from "@/lib/api";
+import { api, publicUrl, type MobilePreviewPage, type WebtoonExportOptions } from "@/lib/api";
 import { computeStrip, scaledPageHeight } from "@/lib/mobile-preview";
 
 import { SceneModal } from "./scene-modal";
@@ -25,14 +25,23 @@ const PLACEHOLDER_RATIO = 4 / 3;
 export function MobilePreview({
   chapterId,
   onClose,
+  onExport,
+  exportPending = false,
+  exportError = null,
+  exportDone = false,
 }: {
   chapterId: string;
   onClose: () => void;
+  onExport?: (options: WebtoonExportOptions) => void;
+  exportPending?: boolean;
+  exportError?: string | null;
+  exportDone?: boolean;
 }) {
   const [viewportWidth, setViewportWidth] = useState(390);
   const [targetWidth, setTargetWidth] = useState(1080);
   const [gapPx, setGapPx] = useState(16);
   const [sliceHeight, setSliceHeight] = useState(4096);
+  const [format, setFormat] = useState<"JPEG" | "PNG">("JPEG");
 
   const preview = useQuery({
     queryKey: ["chapter-mobile-preview", chapterId],
@@ -93,12 +102,38 @@ export function MobilePreview({
             ))}
           </select>
         </label>
+        <label>
+          格式
+          <select value={format} onChange={(event) => setFormat(event.target.value as "JPEG" | "PNG")}>
+            <option value="JPEG">JPEG</option>
+            <option value="PNG">PNG</option>
+          </select>
+        </label>
         <span className="mobile-preview-summary">
           {preview.data
             ? `${pages.length} 页 · ${blockedCount ? `${blockedCount} 页未达标 · ` : ""}${strip.slices.length} 片`
             : ""}
         </span>
+        {onExport && (
+          <button
+            type="button"
+            className="mobile-preview-export"
+            disabled={exportPending || !preview.data || blockedCount > 0}
+            title={blockedCount > 0 ? "存在未达标页面，达到生产通过后才能导出条漫包" : "按当前参数生成条漫 ZIP"}
+            onClick={() =>
+              onExport({
+                width: targetWidth,
+                format,
+                gap_px: gapPx,
+                max_slice_height: sliceHeight,
+              })
+            }
+          >
+            {exportPending ? "正在导出…" : exportDone ? "已加入导出记录" : "导出条漫包"}
+          </button>
+        )}
       </div>
+      {exportError && <p className="form-error" role="alert">{exportError}</p>}
       {preview.isLoading && <p className="muted">正在加载章节预览…</p>}
       {preview.isError && <p className="muted">预览加载失败，请稍后重试。</p>}
       {preview.data && !pages.length && <p className="muted">该章节还没有分页。</p>}
@@ -136,7 +171,7 @@ export function MobilePreview({
                     className="mobile-preview-oversized"
                     style={{ top: slice.start * scale, height: (slice.end - slice.start) * scale }}
                   >
-                    <em>片 {slice.index} · 单页超片高</em>
+                    <em>片 {slice.index} · 单页硬切</em>
                   </div>
                 ))}
             </div>

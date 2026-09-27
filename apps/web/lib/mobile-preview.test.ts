@@ -60,23 +60,29 @@ describe("computeStrip", () => {
     expect(strip.slices[1].itemIds).toEqual(["c"]);
   });
 
-  it("单页超过最大片高时独占一片并标记 oversized", () => {
+  it("单页超过最大片高时按契约 §3-4 等距硬切为独立片", () => {
     const strip = computeStrip(
       [{ id: "a", heightPx: 300 }, { id: "big", heightPx: 5000 }, { id: "c", heightPx: 300 }],
       0,
       1000,
     );
-    // a: [0,300) big: [300,5300) c: [5300,5600)
-    expect(strip.slices).toHaveLength(3);
-    const oversized = strip.slices.find((slice) => slice.oversized);
-    expect(oversized).toMatchObject({ start: 300, end: 5300, itemIds: ["big"] });
-    expect(strip.slices[0].itemIds).toEqual(["a"]);
-    expect(strip.slices[2].itemIds).toEqual(["c"]);
+    // a: [0,300)；big: [300,5300) 硬切 5 段各 1000；c: [5300,5600)
+    expect(strip.slices).toHaveLength(7);
+    const hardCuts = strip.slices.filter((slice) => slice.oversized);
+    expect(hardCuts).toHaveLength(5);
+    hardCuts.forEach((slice, index) => {
+      expect(slice.start).toBe(300 + index * 1000);
+      expect(slice.end).toBe(slice.start + 1000);
+      expect(slice.itemIds).toEqual(["big"]);
+    });
+    expect(strip.slices[0]).toMatchObject({ start: 0, end: 300, itemIds: ["a"] });
+    expect(strip.slices[6]).toMatchObject({ start: 5300, end: 5600, itemIds: ["c"] });
   });
 
-  it("超长页位于片首时同样正确切分", () => {
-    const strip = computeStrip([{ id: "big", heightPx: 5000 }], 0, 1000);
-    expect(strip.slices).toHaveLength(1);
-    expect(strip.slices[0]).toMatchObject({ start: 0, end: 5000, oversized: true });
+  it("超长页位于片首时同样正确切分，余段自成尾片", () => {
+    const strip = computeStrip([{ id: "big", heightPx: 5300 }], 0, 1000);
+    expect(strip.slices).toHaveLength(6);
+    expect(strip.slices[0]).toMatchObject({ start: 0, end: 1000, oversized: true });
+    expect(strip.slices[5]).toMatchObject({ start: 5000, end: 5300, oversized: true });
   });
 });

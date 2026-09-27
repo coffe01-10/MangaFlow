@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { api, type ImageModelAlias, type Resolution } from "@/lib/api";
+import { api, type ExportBundle, type ImageModelAlias, type Resolution, type WebtoonExportOptions } from "@/lib/api";
 
 import type { WorkspaceSection } from "./types";
 
@@ -87,7 +87,13 @@ export function useLibraryWorkspace({
   });
 
   const createExport = useMutation({
-    mutationFn: (type: "PNG" | "PDF" | "JSON") => api.createExport(activeChapterId!, type),
+    mutationFn: ({
+      type,
+      options,
+    }: {
+      type: ExportBundle["export_type"];
+      options?: WebtoonExportOptions;
+    }) => api.createExport(activeChapterId!, type, options),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["exports", id] }),
   });
 
