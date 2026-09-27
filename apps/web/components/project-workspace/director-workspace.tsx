@@ -46,6 +46,11 @@ const COMMAND_STATUS_LABELS: Record<string, string> = {
   SUPERSEDED: "已被更新取代",
   DISCARDED: "已丢弃",
   FAILED: "执行失败",
+  // DIR-01A NL-parse group lifecycle.
+  PARSING: "AI 解析中",
+  NEEDS_CLARIFICATION: "待澄清",
+  STALE: "分镜已变更",
+  PARSE_FAILED: "解析失败",
 };
 
 const DIFF_FIELD_LABELS: Record<string, string> = {
@@ -126,6 +131,10 @@ export function DirectorWorkspace({
     planState,
     notice,
     propose,
+    parsePending,
+    nlClarify,
+    submitForParse,
+    applyClarifyOption,
     accept,
     reject,
     discard,
@@ -180,8 +189,6 @@ export function DirectorWorkspace({
     if (!selection || selection.kind !== kind) return false;
     return kind === "page" ? true : scopeKey(selection) === targetId;
   };
-
-  const previewCommand: DirectorCommand | null = preview?.commands[0] ?? null;
 
   // #165 修复补丁：propose 在途与 journal 执行在途一样要冻结全部 journal 按钮
   // （预览区确认执行/拒绝/丢弃 + 历史区撤销/重做/丢弃）——否则丢弃可在途清算
@@ -285,9 +292,19 @@ export function DirectorWorkspace({
           onChange={(event) => setDraft({ utterance: event.target.value, retryOfCommandId: draft.retryOfCommandId })}
         />
         <div className="director-command-actions">
-          <button type="submit" className="button ink compact" disabled={!draft.utterance.trim() || propose.isPending || executing}>
+          <button
+            type="button"
+            className="button ink compact"
+            disabled={!draft.utterance.trim() || parsePending || executing}
+            title="调用文字模型把整句指令编译为命令组（产生一次文本调用费用）"
+            onClick={submitForParse}
+          >
+            {parsePending ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
+            {parsePending ? "AI 解析中…" : "AI 解析"}
+          </button>
+          <button type="submit" className="button outline compact" disabled={!draft.utterance.trim() || propose.isPending || executing}>
             {propose.isPending ? <LoaderCircle className="spin" size={14} /> : <Send size={14} />}
-            {propose.isPending ? "解析中…" : "预览"}
+            {propose.isPending ? "解析中…" : "规则预览"}
           </button>
           <span className="director-kbd-hint">Ctrl+K 聚焦 · Esc 关闭预览</span>
         </div>
@@ -326,64 +343,124 @@ export function DirectorWorkspace({
         <p className="form-error" role="alert"><Ban size={14} />{planState.reason}</p>
       )}
 
-      {preview && previewCommand && (() => {
-        const command = previewCommand;
-        const stale = command.error?.code === "VERSION_CONFLICT";
-        const diffEntries = Object.entries(command.diff ?? {}).filter(([key]) => key !== "text_metrics");
+      {nlClarify && (
+        <section className="director-clarify" role="dialog" aria-modal="false" aria-label="请确认命令目标" aria-live="polite">
+          <p><CircleAlert size={14} />{nlClarify.reason}（AI 解析）</p>
+          {nlClarify.options.length > 0 && (
+            <div className="director-clarify-options">
+              {nlClarify.options.map((option, index) => (
+                <button
+                  key={`${option.kind}-${option.id ?? index}`}
+                  type="button"
+                  className="director-chip"
+                  disabled={!option.id || !["panel", "dialogue", "character"].includes(option.kind)}
+                  title={
+                    option.id && ["panel", "dialogue", "character"].includes(option.kind)
+                      ? undefined
+                      : "提示项：按说明修改指令后重发"
+                  }
+                  onClick={() => applyClarifyOption(option)}
+                >{option.label}</button>
+              ))}
+            </div>
+          )}
+          <p className="director-clarify-hint">点选目标后可直接再次点「AI 解析」，草稿不会清空。</p>
+          <button type="button" className="button ghost compact" onClick={() => closePreview()}>取消</button>
+        </section>
+      )}
+
+      {preview && preview.commands.length > 0 && (() => {
+        const parseResult = preview.first_result;
+        const modelLabel = parseResult?.model?.model_id
+          ? `AI 解析 · ${parseResult.model.model_id}`
+          : "规则解析";
         return (
           <section className="director-preview" role="region" aria-label="命令预览">
             <header>
               <div>
-                <span>命令预览 · {preview.idempotent_replay ? "历史重放" : "规则解析"}</span>
-                <strong>{previewPlan?.intentLabel ?? OPERATION_LABELS[command.operation] ?? command.operation}</strong>
+                <span>命令预览 · {preview.idempotent_replay ? "历史重放" : modelLabel}</span>
+                <strong>
+                  {previewPlan?.intentLabel ?? (
+                    preview.commands.length > 1
+                      ? `${preview.commands.length} 条命令`
+                      : OPERATION_LABELS[preview.commands[0].operation] ?? preview.commands[0].operation
+                  )}
+                </strong>
               </div>
               <button type="button" className="icon-button" aria-label="关闭预览" onClick={closePreview}><X size={15} /></button>
             </header>
-            <dl className="director-preview-facts">
-              <div><dt>作用域</dt><dd>{previewPlan?.scopeLabel ?? scopeLabelFromCommand(command, panels)}</dd></div>
-              <div><dt>状态</dt><dd>{COMMAND_STATUS_LABELS[command.status] ?? command.status}</dd></div>
-            </dl>
-            <p className="director-preview-summary">{previewPlan?.summary ?? command.source.user_prompt}</p>
-            {diffEntries.length > 0 && (
-              <table className="director-diff">
-                <thead><tr><th scope="col">字段</th><th scope="col">当前</th><th scope="col">将改为</th></tr></thead>
-                <tbody>
-                  {diffEntries.map(([key, change]) => (
-                    <tr key={key}>
-                      <th scope="row">{DIFF_FIELD_LABELS[key] ?? key}</th>
-                      <td>{formatDiffValue(key, change.before, characters)}</td>
-                      <td>{formatDiffValue(key, change.after, characters)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            <dl className="director-preview-meta">
-              <div><dt>模型</dt><dd>规则解析，非模型调用 · 抽卡模型：{activeDrawModelName ?? "未选择"}</dd></div>
-              <div><dt>费用</dt><dd>分镜字段修改 · 本次不调用图片模型 · 重新抽卡费用暂不可估算</dd></div>
-              <div><dt>风险</dt><dd>{previewPlan?.risk === "high" ? "高：整页命令，候选将过期" : previewPlan?.risk === "medium" ? "中：影响本页后续抽卡" : "低：局部字段修改"}</dd></div>
-            </dl>
-            {command.error && (
-              <p className="form-error" role="alert">
-                <CircleAlert size={14} />
-                {command.error.message}
-                {stale && " 你的草稿已保留；请刷新页面拿到最新分镜版本后重新预览。"}
+            {preview.commands.length > 1 && (
+              <p className="director-preview-summary">
+                AI 把指令编译成 {preview.commands.length} 条命令，逐条确认后才会执行。
+                {parseResult?.truncated ? " 超出单次上限的命令已被截断。" : ""}
               </p>
             )}
+            {preview.commands.map((command) => {
+              const stale = command.error?.code === "VERSION_CONFLICT";
+              const diffEntries = Object.entries(command.diff ?? {}).filter(([key]) => key !== "text_metrics");
+              return (
+                <article key={command.command_id} className="director-preview-command">
+                  <dl className="director-preview-facts">
+                    {preview.commands.length > 1 && (
+                      <div><dt>命令</dt><dd>{OPERATION_LABELS[command.operation] ?? command.operation}</dd></div>
+                    )}
+                    <div><dt>作用域</dt><dd>{preview.commands.length === 1 ? (previewPlan?.scopeLabel ?? scopeLabelFromCommand(command, panels)) : scopeLabelFromCommand(command, panels)}</dd></div>
+                    <div><dt>状态</dt><dd>{COMMAND_STATUS_LABELS[command.status] ?? command.status}</dd></div>
+                  </dl>
+                  {preview.commands.length === 1 && (
+                    <p className="director-preview-summary">{previewPlan?.summary ?? command.source.user_prompt}</p>
+                  )}
+                  {diffEntries.length > 0 && (
+                    <table className="director-diff">
+                      <thead><tr><th scope="col">字段</th><th scope="col">当前</th><th scope="col">将改为</th></tr></thead>
+                      <tbody>
+                        {diffEntries.map(([key, change]) => (
+                          <tr key={key}>
+                            <th scope="row">{DIFF_FIELD_LABELS[key] ?? key}</th>
+                            <td>{formatDiffValue(key, change.before, characters)}</td>
+                            <td>{formatDiffValue(key, change.after, characters)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {command.error && (
+                    <p className="form-error" role="alert">
+                      <CircleAlert size={14} />
+                      {command.error.message}
+                      {stale && " 你的草稿已保留；请刷新页面拿到最新分镜版本后重新预览。"}
+                    </p>
+                  )}
+                  <div className="director-preview-actions">
+                    {command.status === "PREVIEWED" && <>
+                      <button type="button" className="button ink compact" disabled={journalBusy} onClick={() => accept.mutate(command.command_id)}>确认执行</button>
+                      <button type="button" className="button outline compact" disabled={journalBusy} onClick={() => reject.mutate(command.command_id)}>拒绝</button>
+                    </>}
+                    {command.status === "EXECUTED" && (
+                      <span className="director-preview-done">已执行 · 分镜已更新，可在历史里撤销。</span>
+                    )}
+                    {(command.status === "FAILED" || command.status === "REJECTED") && (
+                      <button type="button" className="button outline compact" onClick={() => retryCommand(command)}>
+                        <RotateCcw size={13} />改口令重发
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+            <dl className="director-preview-meta">
+              <div><dt>模型</dt><dd>{parseResult?.model?.model_id ? `文本模型 ${parseResult.model.model_id}` : "规则解析，非模型调用"} · 抽卡模型：{activeDrawModelName ?? "未选择"}</dd></div>
+              <div><dt>费用</dt><dd>分镜字段修改 · 本次不调用图片模型 · 重新抽卡费用暂不可估算</dd></div>
+              {preview.commands.length === 1 && (
+                <div><dt>风险</dt><dd>{previewPlan?.risk === "high" ? "高：整页命令，候选将过期" : previewPlan?.risk === "medium" ? "中：影响本页后续抽卡" : "低：局部字段修改"}</dd></div>
+              )}
+            </dl>
             <footer className="director-preview-actions">
-              {command.status === "PREVIEWED" && <>
-                <button type="button" className="button ink compact" disabled={journalBusy} onClick={() => accept.mutate(command.command_id)}>确认执行</button>
-                <button type="button" className="button outline compact" disabled={journalBusy} onClick={() => reject.mutate(command.command_id)}>拒绝</button>
+              {preview.commands.some((command) => command.status === "PREVIEWED") && (
                 <button type="button" className="button ghost compact" disabled={journalBusy} onClick={() => discard.mutate(preview.command_group_id)}>丢弃</button>
-              </>}
-              {command.status === "EXECUTED" && <>
-                <span className="director-preview-done">已执行 · 分镜已更新，可在历史里撤销。</span>
+              )}
+              {preview.commands.every((command) => command.status === "EXECUTED") && (
                 <button type="button" className="button ghost compact" onClick={closePreview}>关闭</button>
-              </>}
-              {(command.status === "FAILED" || command.status === "REJECTED") && (
-                <button type="button" className="button outline compact" onClick={() => retryCommand(command)}>
-                  <RotateCcw size={13} />改口令重发
-                </button>
               )}
             </footer>
           </section>

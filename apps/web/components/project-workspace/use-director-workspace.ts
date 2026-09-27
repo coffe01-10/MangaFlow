@@ -80,6 +80,12 @@ export function useDirectorWorkspace({
   const pendingProposePlanRef = useRef<DirectorCommandPlan | null>(null);
   const [planState, setPlanState] = useState<DirectorPlan | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // DIR-01C: NL parse clarification surface for NEEDS_CLARIFICATION groups.
+  const [nlClarify, setNlClarify] = useState<{
+    reason: string;
+    options: { kind: string; id: string | null; label: string }[];
+    groupId: string;
+  } | null>(null);
 
   const history = useQuery({
     queryKey: ["director-groups", id, page?.id ?? null],
@@ -101,6 +107,7 @@ export function useDirectorWorkspace({
     setSelection(null);
     setDraft({ utterance: "", retryOfCommandId: null });
     setNotice(null);
+    setNlClarify(null);
   }, [page?.id]);
 
   // #165③ 追加：换页重置只覆盖本地状态——切换前发出的 journal 变更还在途时，
@@ -161,6 +168,100 @@ export function useDirectorWorkspace({
   const showJournalGroup = useCallback((group: DirectorCommandGroup) => {
     setPreviewState({ group, plan: null });
   }, []);
+
+  // DIR-01C: the utterance POST mints a PARSING group + DIRECTOR_PARSE job;
+  // the mutation polls the group until the worker lands a terminal parse
+  // state, then routes each outcome to its surface in onSuccess. Polling
+  // inside mutationFn keeps every transition in a mutation callback (no
+  // setState-in-effect) and fails closed on timeout.
+  const parseUtterance = useMutation({
+    mutationFn: async (): Promise<DirectorCommandGroup> => {
+      markJournalMutationStart();
+      const selectionPayload = !selection || selection.kind === "page"
+        ? undefined
+        : selection.kind === "panel"
+          ? { kind: "panel" as const, panel_id: selection.panelId }
+          : selection.kind === "dialogue"
+            ? {
+              kind: "dialogue" as const,
+              dialogue_id: selection.dialogueId,
+              ...(selection.panelId ? { panel_id: selection.panelId } : {}),
+            }
+            : { kind: "character" as const, character_id: selection.characterId };
+      const queued = await api.directorSubmitUtterance(id, {
+        utterance: draft.utterance.trim(),
+        page_id: page!.id,
+        storyboard_version: page!.storyboard_version,
+        selection: selectionPayload,
+        // jsdom-safe RFC4122 v4 fallback (same scheme as director-rules).
+        client_request_id:
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+              const random = Math.trunc(Math.random() * 16);
+              const value = char === "x" ? random : (random & 0x3) | 0x8;
+              return value.toString(16);
+            }),
+      });
+      // ~90s ceiling at 1.5s cadence; the worker-side parse is bounded by the
+      // adapter timeout, so a group still PARSING past this is abnormal.
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1500));
+        const group = await api.directorCommandGroup(id, queued.command_group_id);
+        if (group.status !== "PARSING") return group;
+      }
+      throw new Error("AI 解析超时：任务仍在进行，可稍后到命令历史查看结果");
+    },
+    onSuccess: (group) => {
+      if (!journalMutationPageStillActive()) return;
+      setNlClarify(null);
+      setPlanState(null);
+      setPreviewState({ group: null, plan: null });
+      setNotice(null);
+      if (group.status === "NEEDS_CLARIFICATION") {
+        setNlClarify({
+          reason: group.first_result?.reason ?? "需要补充信息",
+          options: group.first_result?.clarify_options ?? [],
+          groupId: group.command_group_id,
+        });
+      } else if (group.status === "STALE") {
+        setNotice(group.first_result?.reason ?? "分镜已变更，请重新发送指令");
+      } else if (group.status === "PARSE_FAILED") {
+        setNotice(group.first_result?.error?.message ?? "指令解析失败，请重试");
+      } else {
+        showJournalGroup(group);
+      }
+      invalidateAfterJournalChange();
+    },
+    onError: (error: Error) => {
+      if (!journalMutationPageStillActive()) return;
+      setNotice(error.message);
+    },
+  });
+
+  /** AI 解析：提交文字模型编译为命令组（DIR-01B 契约），轮询组终态。 */
+  const submitForParse = useCallback(() => {
+    if (!page || !draft.utterance.trim() || parseUtterance.isPending) return;
+    setNotice(null);
+    setNlClarify(null);
+    parseUtterance.mutate();
+  }, [page, draft.utterance, parseUtterance]);
+
+  /** 澄清选项命中后把目标带回作用域，用户可改口令重发（同一草稿保留）。 */
+  const applyClarifyOption = useCallback(
+    (option: { kind: string; id: string | null }) => {
+      if (option.kind === "panel" && option.id) {
+        setSelection({ kind: "panel", panelId: option.id });
+      } else if (option.kind === "dialogue" && option.id) {
+        setSelection({ kind: "dialogue", dialogueId: option.id, panelId: "" });
+      } else if (option.kind === "character" && option.id) {
+        setSelection({ kind: "character", characterId: option.id });
+      }
+      setNlClarify(null);
+      inputRef.current?.focus();
+    },
+    [],
+  );
 
   const accept = useMutation({
     mutationFn: (commandId: string) => {
@@ -337,6 +438,10 @@ export function useDirectorWorkspace({
     notice,
     setNotice,
     propose,
+    parsePending: parseUtterance.isPending,
+    nlClarify,
+    submitForParse,
+    applyClarifyOption,
     accept,
     reject,
     discard,

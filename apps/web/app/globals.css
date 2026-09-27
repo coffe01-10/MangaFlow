@@ -2208,3 +2208,15 @@ p { font-size: var(--text-body) !important; }
   .metric-strip > div:nth-child(2) { border-right: 0; }
   .metric-strip > div:nth-child(3) { border-right: 1px solid var(--line-dark); }
 }
+
+.director-preview-command {
+  border-top: 1px dashed rgba(30, 41, 59, 0.18);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+
+.director-clarify-hint {
+  color: #64748b;
+  font-size: 12px;
+  margin: 4px 0 0;
+}

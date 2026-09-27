@@ -1379,6 +1379,33 @@ export interface DirectorCommand {
   version: number;
 }
 
+// DIR-01A §6: NL-parse outcome stored on a parse group's first_result.
+export interface DirectorClarifyOption {
+  kind: string;
+  id: string | null;
+  label: string;
+}
+
+export interface DirectorParseResult {
+  kind: "ready" | "clarify" | "stale" | "error";
+  reason?: string;
+  clarify_options?: DirectorClarifyOption[] | null;
+  commands_ready?: number;
+  commands_failed?: number;
+  truncated?: boolean | null;
+  unsupported?: { reason?: string; excerpt?: string }[] | null;
+  current_version?: number;
+  model?: {
+    provider?: string | null;
+    catalog_model_id?: string | null;
+    model_id?: string | null;
+  } | null;
+  model_call_attempt_id?: string | null;
+  duration_ms?: number;
+  error?: { code?: string; message?: string } | null;
+  retryable?: boolean;
+}
+
 export interface DirectorCommandGroup {
   id: string;
   project_id: string;
@@ -1387,7 +1414,29 @@ export interface DirectorCommandGroup {
   status: string;
   idempotent_replay: boolean;
   commands: DirectorCommand[];
+  first_result?: DirectorParseResult | null;
   version: number;
+}
+
+export interface DirectorUtteranceRequest {
+  utterance: string;
+  page_id: string;
+  storyboard_version: number;
+  selection?: {
+    kind: "panel" | "dialogue" | "character";
+    panel_id?: string;
+    dialogue_id?: string;
+    character_id?: string;
+  };
+  client_request_id: string;
+  retry_of_group_id?: string;
+}
+
+export interface DirectorUtteranceQueued {
+  job_id: string;
+  job_status: string;
+  command_group_id: string;
+  idempotent_replay: boolean;
 }
 
 // Prefix a stored asset path with the API origin without the thumbnail
@@ -2170,6 +2219,11 @@ export const api = {
     method: "POST",
     body: JSON.stringify(payload),
   }),
+  directorSubmitUtterance: (projectId: string, payload: DirectorUtteranceRequest) =>
+    request<DirectorUtteranceQueued>(`/projects/${projectId}/director/utterances`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   directorProposeCommandGroup: (projectId: string, payload: { command_group_id: string; commands: DirectorCommandEnvelope[] }) =>
     request<DirectorCommandGroup>(`/projects/${projectId}/director/command-groups`, {
       method: "POST",

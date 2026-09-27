@@ -214,7 +214,7 @@ function renderDirector(overrides: Partial<DirectorProps> = {}) {
 async function previewUtterance(utterance: string) {
   const input = screen.getByLabelText("导演指令");
   fireEvent.change(input, { target: { value: utterance } });
-  fireEvent.click(screen.getByRole("button", { name: "预览" }));
+  fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
   await waitFor(() => {
     expect(proposeApi).toHaveBeenCalled();
   });
@@ -285,12 +285,12 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
   it("D2 缺作用域的口令进入澄清层，不发起 propose；点击格芯片后可重新预览", async () => {
     renderDirector();
     fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "改成近景" } });
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     const dialog = await screen.findByRole("dialog", { name: "请确认命令目标" });
     expect(proposeApi).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "格 1" }));
     expect(screen.queryByRole("dialog", { name: "请确认命令目标" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     await waitFor(() => {
       expect(proposeApi).toHaveBeenCalledTimes(1);
     });
@@ -388,7 +388,7 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     renderDirector();
     const input = screen.getByLabelText("导演指令");
     fireEvent.change(input, { target: { value: "第 1 格改成近景" } });
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     fireEvent.click(await screen.findByRole("button", { name: "确认执行" }));
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent("目标版本已过期");
@@ -426,7 +426,7 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
       expect(input.value).toBe("第 1 格改成近景");
     });
     proposeApi.mockResolvedValue(groupFixture());
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     await waitFor(() => {
       expect(proposeApi).toHaveBeenCalledTimes(2);
     });
@@ -621,7 +621,7 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     fireEvent.keyDown(window, { key: "k", ctrlKey: true });
     expect(document.activeElement).toBe(input);
     fireEvent.change(input, { target: { value: "第 1 格改成近景" } });
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     await screen.findByRole("region", { name: "命令预览" });
     fireEvent.keyDown(window, { key: "Escape", keyCode: 27 });
     await waitFor(() => {
@@ -654,7 +654,7 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
       characters: [characterFixture(), characterFixture({ id: "character-2", primary_name: "苏离" })],
     });
     fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "让她微笑" } });
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     const dialog = await screen.findByRole("dialog", { name: "请确认命令目标" });
     expect(within(dialog).getByRole("button", { name: "苏离" })).toBeInTheDocument();
     expect(proposeApi).not.toHaveBeenCalled();
@@ -663,7 +663,7 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
   it("重绘口令指向局部编辑器且不发请求（不静默整页重绘）", async () => {
     renderDirector();
     fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "重画这一格" } });
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent("局部重绘");
     });
@@ -931,7 +931,7 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
 
     // 在 page-1 上发起 propose，切到 page-2 后才返回旧页的组。
     fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "第 1 格改成近景" } });
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     await waitFor(() => {
       expect(proposeApi).toHaveBeenCalledTimes(1);
     });
@@ -1028,7 +1028,7 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     // 发起整页命令 propose 并挂起：期间丢弃当前预览组会清算掉在途命令的
     // 解析文案，落地后整页命令将退回「低：局部字段修改」的误导风险行。
     fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "改成 6 格" } });
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     await waitFor(() => {
       expect(proposeApi).toHaveBeenCalledTimes(1);
     });
@@ -1079,7 +1079,7 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     }));
     renderDirector();
     fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "改成 6 格" } });
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
     await waitFor(() => {
       expect(proposeApi).toHaveBeenCalledTimes(1);
     });
@@ -1111,5 +1111,104 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     const finalRegion = screen.getByRole("region", { name: "命令预览" });
     expect(within(finalRegion).queryByText("低：局部字段修改")).not.toBeInTheDocument();
     expect(within(finalRegion).getByText("整页布局")).toBeInTheDocument();
+  });
+});
+
+const utteranceApi = vi.spyOn(api, "directorSubmitUtterance");
+const groupApi = vi.spyOn(api, "directorCommandGroup");
+
+describe("DirectorWorkspace AI 解析（DIR-01C）", () => {
+  beforeEach(() => {
+    utteranceApi.mockReset();
+    groupApi.mockReset();
+  });
+
+  it("AI 解析落地 PREVIEWED 组，逐条确认后执行", async () => {
+    renderDirector();
+    utteranceApi.mockResolvedValue({
+      job_id: "job-1",
+      job_status: "QUEUED",
+      command_group_id: "nl-group-1",
+      idempotent_replay: false,
+    });
+    groupApi.mockResolvedValue(groupFixture({
+      command_group_id: "nl-group-1",
+      status: "PREVIEWED",
+      first_result: {
+        kind: "ready",
+        commands_ready: 1,
+        model: { provider: "vertex", catalog_model_id: "m1", model_id: "gemini-3.5-flash" },
+      },
+    }));
+    acceptApi.mockResolvedValue(groupFixture({ status: "COMMITTED" }));
+
+    const input = screen.getByLabelText("导演指令");
+    fireEvent.change(input, { target: { value: "第 1 格改成近景" } });
+    fireEvent.click(screen.getByRole("button", { name: "AI 解析" }));
+
+    await waitFor(() => expect(utteranceApi).toHaveBeenCalled());
+    expect(utteranceApi.mock.calls[0][1].utterance).toBe("第 1 格改成近景");
+    expect(utteranceApi.mock.calls[0][1].page_id).toBe("page-1");
+
+    const region = await screen.findByRole("region", { name: "命令预览" });
+    expect(region.textContent).toContain("AI 解析");
+    fireEvent.click(within(region).getByRole("button", { name: "确认执行" }));
+    await waitFor(() => expect(acceptApi).toHaveBeenCalledWith("project-1", "cmd-1"));
+  });
+
+  it("NEEDS_CLARIFICATION 渲染澄清选项并可点选目标", async () => {
+    renderDirector();
+    utteranceApi.mockResolvedValue({
+      job_id: "job-1",
+      job_status: "QUEUED",
+      command_group_id: "nl-group-2",
+      idempotent_replay: false,
+    });
+    groupApi.mockResolvedValue(groupFixture({
+      command_group_id: "nl-group-2",
+      status: "NEEDS_CLARIFICATION",
+      commands: [],
+      first_result: {
+        kind: "clarify",
+        reason: "该页有多个气泡，请确认目标",
+        clarify_options: [
+          { kind: "dialogue", id: "dialogue-1", label: "格 1 · 气泡 1：你好" },
+        ],
+      },
+    }));
+
+    const input = screen.getByLabelText("导演指令");
+    fireEvent.change(input, { target: { value: "把台词改成再见" } });
+    fireEvent.click(screen.getByRole("button", { name: "AI 解析" }));
+
+    const clarify = await screen.findByRole("dialog", { name: "请确认命令目标" });
+    expect(clarify.textContent).toContain("该页有多个气泡");
+    fireEvent.click(within(clarify).getByRole("button", { name: /气泡 1/ }));
+    // 点选后作用域芯片应激活对应气泡
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /格1·气泡1/ })).toHaveAttribute("aria-pressed", "true");
+    });
+  });
+
+  it("PARSE_FAILED 展示错误原因，不产生命令预览", async () => {
+    renderDirector();
+    utteranceApi.mockResolvedValue({
+      job_id: "job-1",
+      job_status: "COMPLETED",
+      command_group_id: "nl-group-3",
+      idempotent_replay: false,
+    });
+    groupApi.mockResolvedValue(groupFixture({
+      command_group_id: "nl-group-3",
+      status: "PARSE_FAILED",
+      commands: [],
+      first_result: { kind: "error", error: { code: "MODEL_ROUTE_UNAVAILABLE", message: "未配置文字模型" } },
+    }));
+
+    fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "改格" } });
+    fireEvent.click(screen.getByRole("button", { name: "AI 解析" }));
+
+    await waitFor(() => expect(screen.getByText(/未配置文字模型/)).toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: "命令预览" })).not.toBeInTheDocument();
   });
 });

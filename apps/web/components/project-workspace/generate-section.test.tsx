@@ -1336,7 +1336,7 @@ describe("GenerateSection 关键行为", () => {
       fireEvent.click(await screen.findByRole("button", { name: "导演" }));
       const input = await screen.findByLabelText("导演指令");
       fireEvent.change(input, { target: { value: "改成 6 格" } });
-      fireEvent.click(screen.getByRole("button", { name: "预览" }));
+      fireEvent.click(screen.getByRole("button", { name: "规则预览" }));
       await waitFor(() => {
         expect(document.querySelector(".director-shell")?.textContent).toContain("生成任务进行中");
       });
