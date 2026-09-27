@@ -121,6 +121,9 @@ export function StoryboardEditor({
   // through panel PATCH (narrative path), not the geometry PUT.
   const [sfxDrafts, setSfxDrafts] = useState<Record<string, Record<number, SoundEffectGeometry>>>({});
   const [commandStack, setCommandStack] = useState<CommandStackState>(emptyCommandStack);
+  // 层序命令的透明度脉冲（对齐原生 PulseZIndex）：token 变化让受影响格重放
+  // 一次 z-flash 关键帧；panel-meta 变更（撤销/重做/层序/粘贴 z_order）都触发。
+  const [zFlash, setZFlash] = useState<{ token: number; ids: string[] } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [gridStep, setGridStep] = useState(10);
   const [toggles, setToggles] = useState<ToolbarToggleState>({
@@ -328,10 +331,12 @@ export function StoryboardEditor({
   // --- geometry commands (from canvas gestures) ----------------------------
 
   const applyChanges = (changes: GeometryCommandChange[], direction: "before" | "after") => {
+    const metaIds: string[] = [];
     for (const change of changes) {
       if (change.kind === "panel") {
         setPanelBoundsDrafts((drafts) => ({ ...drafts, [change.id]: change[direction] }));
       } else if (change.kind === "panel-meta") {
+        metaIds.push(change.id);
         setPanelMetaDrafts((drafts) => ({ ...drafts, [change.id]: { ...drafts[change.id], ...change[direction] } }));
       } else if (change.kind === "bubble") {
         setBubbleDrafts((drafts) => ({ ...drafts, [change.id]: change[direction] }));
@@ -342,6 +347,7 @@ export function StoryboardEditor({
         }));
       }
     }
+    if (metaIds.length) setZFlash({ token: Date.now(), ids: metaIds });
   };
 
   const handleCommand = (label: string, changes: GeometryCommandChange[]) => {
@@ -878,6 +884,7 @@ export function StoryboardEditor({
           }}
           onBubbleBounce={() => setNotice(storyboardCopy.bubbleBelongs)}
           onZoomStep={(direction) => zoomManually(direction === 1 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)}
+          zFlash={zFlash}
         />
         {activePanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={620} aria-valuenow={inspectorWidth} tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) setDragInspectorWidth(clampInspectorWidth(worktable.right - event.clientX)); }} onPointerMove={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) setDragInspectorWidth(clampInspectorWidth(worktable.right - event.clientX)); }} onPointerUp={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; event.currentTarget.releasePointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); setDragInspectorWidth(null); }} onPointerCancel={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; event.currentTarget.releasePointerCapture(event.pointerId); persistInspectorWidth(inspectorWidth); setDragInspectorWidth(null); }}><span /></div>}
         {activePanel && <PanelInspector

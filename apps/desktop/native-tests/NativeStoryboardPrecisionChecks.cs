@@ -104,6 +104,7 @@ internal static class NativeStoryboardPrecisionChecks
             Require(view.BubbleCountForTest == 2, $"夹具应有 2 个气泡（1 结构化 + 1 派生），实际 {view.BubbleCountForTest}");
             Require(view.SfxCountForTest == 3, $"夹具应有 3 个拟声词节点（字符串+对象+无几何对象），实际 {view.SfxCountForTest}");
 
+            CommandMotionChecks(view);
             MultiSelectChecks(view);
             AlignDistributeChecks(view);
             SameSizeChecks(view);
@@ -184,6 +185,51 @@ internal static class NativeStoryboardPrecisionChecks
         view.DistributeForTest("x");
         Require(Near(view.PanelRectForTest(0).X, 0.02) && Near(view.PanelRectForTest(1).X, 0.32),
             "两格选中时分布不得产生任何变更（web ids<3 → 空）");
+    }
+
+    // ── 0. 命令动效（最先跑：需要「元素上无任何先验动画」的干净上下文）──
+    // 离散命令走 170ms 动画叠层（对齐 web --cmd-dur）：模型立即到目标位，
+    // 基础值停在旧位证明叠层未瞬写；手势直写瞬写接管；层序透明度脉冲；
+    // 参考线松手转淡出池。
+    private static void CommandMotionChecks(StoryboardView view)
+    {
+        Layout(view, 1400, 1000);
+        // 层序脉冲（对齐 web z-flash）：此处 p1 元素上还没有任何动画，
+        // HasAnimatedProperties 为真只能来自 Opacity 脉冲。
+        view.SelectPanelForTest(0);
+        view.ZOrderForTest("top");
+        Require(view.PanelAnimatingForTest(0), "层序命令应触发透明度脉冲（z-flash 对齐）");
+        Require(view.PanelZOrderForTest(0) == 5, "置顶应为 maxZ+1=5");
+        Undo(view);   // 回放 PanelZChange 同样脉冲；恢复档位
+
+        // 对齐命令：模型立即到目标位，基础值停在旧位 → 动画叠层未瞬写。
+        view.SelectPanelsForTest(0, 1);
+        var beforeBase = view.PanelElementBaseLeftForTest(1)!.Value;
+        view.AlignForTest("left");
+        Require(Near(view.PanelRectForTest(1).X, 0.02), "对齐后模型应立即到目标位");
+        Require(Math.Abs(view.PanelElementBaseLeftForTest(1)!.Value - beforeBase) < 1e-9,
+            "动画叠层不应改写基础值（基础值应仍是旧位）");
+        Undo(view);
+        Require(Near(view.PanelRectForTest(1).X, 0.32), "撤销后模型应立即回还原位");
+
+        // 手势瞬写接管：拖动后动画被摘除，元素位置=模型位置。
+        view.DragSelectionForTest(0.01, 0);
+        var dragged = view.PanelRectForTest(1);
+        Require(Math.Abs(view.PanelElementBaseLeftForTest(1)!.Value - dragged.X * view.PageWidthForTest) < 1e-6 &&
+            Math.Abs(view.PanelElementLeftForTest(1)!.Value - dragged.X * view.PageWidthForTest) < 1e-6,
+            "手势直写应瞬写接管（清动画+直接写值）");
+        Undo(view);
+
+        // 参考线：拖动吸附出活动线，松手转淡出池（web .leaving 对齐）。
+        view.SelectPanelForTest(0);
+        Field<ToggleButton>(view, "snapButton").IsChecked = true;
+        view.DragSelectionForTest(0.10, 0, keepGuides: true);
+        Require(view.ActiveGuideCountForTest() > 0, "吸附应产生活动参考线");
+        view.DragSelectionForTest(0, 0);
+        Require(view.ActiveGuideCountForTest() == 0 && view.FadingGuideCountForTest() > 0,
+            $"松手后参考线应转淡出池（活动 {view.ActiveGuideCountForTest()} 淡出 {view.FadingGuideCountForTest()}）");
+        Undo(view);   // 还原 +0.10 拖动
+        Field<ToggleButton>(view, "snapButton").IsChecked = false;
     }
 
     // ── 3. 同尺寸（web sameSizeRects：首个选中格为参照）──

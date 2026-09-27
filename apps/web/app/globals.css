@@ -585,15 +585,21 @@ a { color: inherit; text-decoration: none; }
 /* Auto margins center the page in both axes when it is smaller than the
    viewport; flex-shrink: 0 keeps a zoomed-in page overflowing with working
    scrollbars instead of being clamped to the viewport. */
-.canvas-page { position: relative; flex-shrink: 0; margin: auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; }
-.canvas-panel { position: absolute; border: 1.5px solid #4a453d; background: rgba(255,255,255,.04); cursor: move; touch-action: none; transition: border-color .12s ease, box-shadow .12s ease; }
+/* 画布命令动效：离散几何命令（对齐/分布/同尺寸/粘贴/数字输入/方向键/撤销重做）
+   的落位用 170ms ease-out 过渡滑到目标。手势期间 .is-gesturing 把几何过渡压到
+   0ms，保证命令式逐帧绘制仍然即写即显。层序变更走 z-flash 透明度脉冲。 */
+.canvas-page { position: relative; flex-shrink: 0; margin: auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; --cmd-dur: .17s; --cmd-ease: cubic-bezier(.2,.75,.3,1); }
+.canvas-page.is-gesturing { --cmd-dur: 0s; }
+.canvas-panel { position: absolute; border: 1.5px solid #4a453d; background: rgba(255,255,255,.04); cursor: move; touch-action: none; transition: left var(--cmd-dur) var(--cmd-ease), top var(--cmd-dur) var(--cmd-ease), width var(--cmd-dur) var(--cmd-ease), height var(--cmd-dur) var(--cmd-ease), border-color .12s ease, box-shadow .12s ease; }
+@keyframes canvas-z-flash { 0% { opacity: 1; } 40% { opacity: .45; } 100% { opacity: 1; } }
+.canvas-panel.z-flash { animation: canvas-z-flash .26s ease; }
 .canvas-panel.selected { border: 2px solid var(--vermillion); box-shadow: 0 0 0 3px rgba(211,74,47,.2); }
 .canvas-panel.bleed-panel { border-style: dashed; border-color: #9a6534; }
 .canvas-panel.bleed-panel.selected { border-color: var(--vermillion); }
 .canvas-panel.polygon-shape { border-style: dashed; cursor: default; }
 .canvas-polygon-mark { position: absolute; left: 4px; bottom: 4px; max-width: calc(100% - 8px); padding: 2px 5px; background: rgba(154,101,52,.92); color: white; font-size: 10px; }
 .canvas-reading-badge { position: absolute; padding: 1px 6px; background: var(--ink); color: white; font-family: var(--serif); font-size: 11px; pointer-events: none; }
-.canvas-bubble { position: absolute; z-index: 20; min-width: 12px; min-height: 12px; border: 1.5px solid #33302a; border-radius: 14px; background: rgba(255,255,255,.88); cursor: move; touch-action: none; transition: border-color .12s ease, box-shadow .12s ease; }
+.canvas-bubble { position: absolute; z-index: 20; min-width: 12px; min-height: 12px; border: 1.5px solid #33302a; border-radius: 14px; background: rgba(255,255,255,.88); cursor: move; touch-action: none; transition: left var(--cmd-dur) var(--cmd-ease), top var(--cmd-dur) var(--cmd-ease), width var(--cmd-dur) var(--cmd-ease), height var(--cmd-dur) var(--cmd-ease), transform var(--cmd-dur) var(--cmd-ease), border-color .12s ease, box-shadow .12s ease; }
 .canvas-bubble.ellipse { border-radius: 50%; }
 .canvas-bubble.selected { border: 2px solid var(--vermillion); box-shadow: 0 0 0 3px rgba(211,74,47,.18); }
 .canvas-tail-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 40; }
@@ -602,7 +608,11 @@ a { color: inherit; text-decoration: none; }
 .canvas-guides-layer { position: absolute; inset: 0; pointer-events: none; z-index: 30; }
 .canvas-bleed-ring { position: absolute; border: 1px dashed #9a6534; background: rgba(154,101,52,.05); }
 .canvas-safe-rect { position: absolute; border: 1px dashed #2ba6a0; background: rgba(43,166,160,.04); }
-.canvas-guide-line { position: absolute; background: #2ba6a0; }
+/* 参考线复用式淡入淡出（对齐原生 ShowGuide 签名复用）：paintGuides 按签名保留
+   存活的线，新线播 guide-in 淡入，移除的线挂 .leaving 淡出后摘除。 */
+@keyframes canvas-guide-in { from { opacity: 0; } }
+.canvas-guide-line { position: absolute; background: #2ba6a0; opacity: 1; animation: canvas-guide-in .12s ease-out; transition: opacity .14s ease; }
+.canvas-guide-line.leaving { opacity: 0; animation: none; }
 .canvas-guide-line.vertical { width: 1.5px; }
 .canvas-guide-line.horizontal { height: 1.5px; }
 .canvas-guide-line.gap { background: #c05a9e; }
@@ -613,11 +623,11 @@ a { color: inherit; text-decoration: none; }
 .canvas-grid-line.vertical { top: 0; bottom: 0; width: 1px; }
 .canvas-grid-line.horizontal { left: 0; right: 0; height: 1px; }
 .canvas-size-label { position: absolute; z-index: 55; padding: 2px 7px; border-radius: 3px; background: var(--ink); color: white; font-family: var(--serif); font-size: 11px; pointer-events: none; white-space: nowrap; }
-.canvas-sfx { position: absolute; z-index: 25; cursor: move; touch-action: none; color: #262019; font-family: var(--serif); font-weight: 900; line-height: 1.15; white-space: nowrap; user-select: none; text-shadow: 1px 1px 0 rgba(255,255,255,.75); }
+.canvas-sfx { position: absolute; z-index: 25; cursor: move; touch-action: none; color: #262019; font-family: var(--serif); font-weight: 900; line-height: 1.15; white-space: nowrap; user-select: none; text-shadow: 1px 1px 0 rgba(255,255,255,.75); transition: left var(--cmd-dur) var(--cmd-ease), top var(--cmd-dur) var(--cmd-ease), font-size var(--cmd-dur) var(--cmd-ease), transform var(--cmd-dur) var(--cmd-ease); }
 .canvas-sfx.selected { outline: 1.5px dashed var(--vermillion); outline-offset: 3px; }
 .canvas-sfx .canvas-handle { pointer-events: auto; }
 .canvas-handles { position: absolute; inset: 0; pointer-events: none; z-index: 50; }
-.canvas-handle { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid white; border-radius: 50%; background: var(--vermillion); pointer-events: auto; cursor: nwse-resize; touch-action: none; }
+.canvas-handle { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid white; border-radius: 50%; background: var(--vermillion); pointer-events: auto; cursor: nwse-resize; touch-action: none; transition: left var(--cmd-dur) var(--cmd-ease), top var(--cmd-dur) var(--cmd-ease); }
 .canvas-handle.corner { border-radius: 3px; }
 .canvas-handle.n, .canvas-handle.s { cursor: ns-resize; }
 .canvas-handle.e, .canvas-handle.w { cursor: ew-resize; }
@@ -626,6 +636,8 @@ a { color: inherit; text-decoration: none; }
 .canvas-handle.rotate { background: #3a7a98; cursor: grab; }
 .canvas-handle[aria-disabled="true"] { opacity: .4; pointer-events: none; }
 .canvas-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; color: #6f695f; font-size: 13px; text-align: center; }
+/* 减弱动效：由 V02-51B 的全局单块统一接管（transition/animation-duration
+   .01ms !important），不再单独开块——命令过渡/参考线淡出/z-flash 随之关闭。 */
 .canvas-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .canvas-object-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
 .canvas-object-panel { fill: rgba(255,255,255,.04); stroke: #4a453d; stroke-width: 1.5; vector-effect: non-scaling-stroke; }

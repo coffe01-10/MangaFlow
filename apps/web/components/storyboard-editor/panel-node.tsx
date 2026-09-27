@@ -16,6 +16,7 @@ export function PanelNode({
   panel,
   rect,
   selected,
+  flashing,
   interactive,
   onPointerDown,
   onDoubleClick,
@@ -24,6 +25,8 @@ export function PanelNode({
   panel: StoryboardPanel;
   rect: NormalizedRect;
   selected: boolean;
+  /** 层序命令的透明度脉冲：挂载 z-flash 关键帧（配合 key token 重放）。 */
+  flashing?: boolean;
   interactive: boolean;
   onPointerDown?: (panel: StoryboardPanel, event: ReactPointerEvent<HTMLDivElement>) => void;
   onDoubleClick?: () => void;
@@ -35,6 +38,7 @@ export function PanelNode({
     polygon ? "polygon-shape" : "",
     panel.bleed ? "bleed-panel" : "",
     selected ? "selected" : "",
+    flashing ? "z-flash" : "",
   ].filter(Boolean).join(" ");
   const style: CSSProperties = {
     left: `${rect.x * 100}%`,

@@ -524,4 +524,45 @@ describe("StoryboardEditor 精准编辑", () => {
     expect(patch.sound_effects[0].rotation).toBe(0);
     expect(patch.sound_effects[0].size).toBe(0.05);
   });
+
+  it("M1 命令动效：手势期间挂 is-gesturing 压零过渡，松手摘除", async () => {
+    renderEditor();
+    const canvasEl = await screen.findByTestId("canvas-page");
+    stubRect(canvasEl, 640, 903);
+    expect(canvasEl.classList.contains("is-gesturing")).toBe(false);
+    fireEvent.pointerDown(panelEl("panel-1"), { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    expect(canvasEl.classList.contains("is-gesturing")).toBe(true);
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 140, clientY: 100 });
+    expect(canvasEl.classList.contains("is-gesturing")).toBe(true);
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 140, clientY: 100 });
+    expect(canvasEl.classList.contains("is-gesturing")).toBe(false);
+  });
+
+  it("M2 命令动效：参考线带签名属性，松手挂 leaving 淡出后摘除", async () => {
+    renderEditor();
+    const canvasEl = await screen.findByTestId("canvas-page");
+    stubRect(canvasEl, 640, 903);
+    // 拖 panel-1 右缘到 panel-2 左缘（0.55）附近：+35px → 右缘 0.5547，
+    // 吸附阈值（6px≈0.009）内 → 出现吸附参考线。
+    fireEvent.pointerDown(panelEl("panel-1"), { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 135, clientY: 100 });
+    const live = document.querySelectorAll(".canvas-guide-line:not(.leaving)");
+    expect(live.length).toBeGreaterThan(0);
+    expect((live[0] as HTMLElement).dataset.guide).toBeTruthy();
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 196, clientY: 100 });
+    // 松手后参考线挂 leaving 淡出（transitionend/兜底定时器摘除），不再算活动线。
+    const leaving = document.querySelectorAll(".canvas-guide-line.leaving");
+    expect(leaving.length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".canvas-guide-line:not(.leaving)")).toHaveLength(0);
+  });
+
+  it("M3 命令动效：层序命令给受影响格挂 z-flash，撤销同样触发", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "置顶" }));
+    expect(panelEl("panel-1").classList.contains("z-flash")).toBe(true);
+    expect(panelEl("panel-2").classList.contains("z-flash")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(panelEl("panel-1").classList.contains("z-flash")).toBe(true);
+  });
 });

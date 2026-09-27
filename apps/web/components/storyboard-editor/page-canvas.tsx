@@ -12,7 +12,7 @@
 // dragged outline (no React re-render per pointermove); state is written once
 // on pointerup.
 import type { BubbleGeometryShape, CanvasInfo, MangaPage, NormalizedRect, PanelDialogue, StoryboardPanel } from "@/lib/api";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
 
 import type { GeometryCommandChange, SoundEffectGeometry } from "./command-stack";
@@ -159,6 +159,7 @@ export function PageCanvas({
   onBubbleBounce,
   onNotice,
   onZoomStep,
+  zFlash,
 }: {
   page: MangaPage;
   canvas: CanvasInfo;
@@ -188,6 +189,8 @@ export function PageCanvas({
   onBubbleBounce: () => void;
   onNotice?: (text: string) => void;
   onZoomStep: (direction: 1 | -1) => void;
+  /** 层序命令的透明度脉冲（对齐原生 PulseZIndex）：token 变化重放一次 z-flash。 */
+  zFlash?: { token: number; ids: string[] } | null;
 }) {
   const renderCountRef = useRef(0);
   // Runs once per render (no deps): exposes the render count for V02-32 tests
@@ -205,6 +208,15 @@ export function PageCanvas({
   const sizeLabelRef = useRef<HTMLDivElement | null>(null);
   const copiedGeometryRef = useRef<{ rect: NormalizedRect; rotation?: number } | SoundEffectGeometry | null>(null);
   const [gesture, setGesture] = useState<Gesture | null>(null);
+  // 手势起点即挂 is-gesturing（不等 React 首帧）：几何过渡压零，命令式逐帧
+  // 绘制立即生效；结束态由 gesture state 的 className 维持一致。
+  const beginGesture = (next: Gesture) => {
+    pageRef.current?.classList.add("is-gesturing");
+    // 新手势立即清掉上一段仍在淡出的参考线残影（S6：fresh drag 不背旧拖尾）。
+    snapGuidesRef.current?.querySelectorAll(".canvas-guide-line.leaving").forEach((line) => line.remove());
+    setGesture(next);
+  };
+  const zFlashIds = useMemo(() => new Set(zFlash?.ids ?? []), [zFlash]);
 
   const hitTestMode = panels.length + bubbles.length > HIT_TEST_OBJECT_LIMIT;
   const selectedPanelIds = selection?.kind === "panels" ? selection.ids : [];
@@ -485,13 +497,26 @@ export function PageCanvas({
     }
   };
 
+  // 参考线复用式淡入淡出（对齐原生 ShowGuide 签名复用）：按签名保留存活线避免
+  // 吸附稳定时闪断；新线播 guide-in 淡入；移除的线挂 .leaving 淡出后摘除。
   const paintGuides = (guides: SnapGuide[]) => {
     const layer = snapGuidesRef.current;
     if (!layer) return;
-    layer.textContent = "";
+    const spare = new Map<string, HTMLElement>();
+    for (const line of Array.from(layer.querySelectorAll<HTMLElement>(".canvas-guide-line"))) {
+      spare.set(line.dataset.guide ?? "", line);
+    }
     for (const guide of guides) {
-      const line = document.createElement("div");
-      line.className = `canvas-guide-line ${guide.axis === "x" ? "vertical" : "horizontal"}${guide.kind === "gap" ? " gap" : ""}`;
+      const signature = `${guide.axis}:${guide.kind ?? "edge"}:${guide.at.toFixed(4)}`;
+      let line = spare.get(signature);
+      if (!line) {
+        line = document.createElement("div");
+        line.className = `canvas-guide-line ${guide.axis === "x" ? "vertical" : "horizontal"}${guide.kind === "gap" ? " gap" : ""}`;
+        line.dataset.guide = signature;
+        layer.appendChild(line);
+      } else {
+        line.classList.remove("leaving");
+      }
       if (guide.axis === "x") {
         line.style.left = `${guide.at * 100}%`;
         line.style.top = "0";
@@ -501,7 +526,18 @@ export function PageCanvas({
         line.style.left = "0";
         line.style.right = "0";
       }
-      layer.appendChild(line);
+      spare.delete(signature);
+    }
+    for (const leftover of spare.values()) {
+      leftover.classList.add("leaving");
+      // 复活的线会再播一次淡入 transitionend——只有仍挂 .leaving 的才摘除。
+      leftover.addEventListener("transitionend", () => {
+        if (leftover.classList.contains("leaving")) leftover.remove();
+      }, { once: true });
+      // transitionend 兜底：reduced-motion/隐藏页签不派发事件，限时摘除。
+      setTimeout(() => {
+        if (leftover.classList.contains("leaving")) leftover.remove();
+      }, 260);
     }
   };
 
@@ -616,10 +652,12 @@ export function PageCanvas({
       commitGesture(gesture, pointerNorm(event));
       setGesture(null);
       restoreAfterGesture();
+      pageRef.current?.classList.remove("is-gesturing");
     };
     const cancel = () => {
       setGesture(null);
       restoreAfterGesture();
+      pageRef.current?.classList.remove("is-gesturing");
     };
     const key = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -657,13 +695,13 @@ export function PageCanvas({
     if (!movableIds.length) return;
     const origin: Record<string, NormalizedRect> = {};
     for (const id of movableIds) origin[id] = panelRects[id];
-    setGesture({ kind: "move-panels", start: pointerNorm(event), origin, ids: movableIds });
+    beginGesture({ kind: "move-panels", start: pointerNorm(event), origin, ids: movableIds });
   };
 
   const startPanelResize = (panelId: string, handle: HandleName, event: ReactPointerEvent<HTMLDivElement>) => {
     const origin = panelRects[panelId];
     if (!origin || !interactive) return;
-    setGesture({
+    beginGesture({
       kind: "resize-panel",
       handle,
       start: pointerNorm(event),
@@ -685,7 +723,7 @@ export function PageCanvas({
     for (const id of movableIds) origins[id] = panelRects[id];
     const originBbox = rectsBoundingBox(Object.values(origins));
     if (!originBbox) return;
-    setGesture({
+    beginGesture({
       kind: "resize-panels",
       handle,
       start: pointerNorm(event),
@@ -699,7 +737,7 @@ export function PageCanvas({
     if (event.button !== 0 || !interactive) return;
     event.stopPropagation();
     onSelectBubble(bubble.dialogue.id);
-    setGesture({
+    beginGesture({
       kind: "move-bubble",
       start: pointerNorm(event),
       origin: bubble.shape ?? syntheticBubbleShape(bubble),
@@ -710,7 +748,7 @@ export function PageCanvas({
 
   const startBubbleResize = (bubble: CanvasBubble, handle: HandleName, event: ReactPointerEvent<HTMLDivElement>) => {
     if (!interactive) return;
-    setGesture({
+    beginGesture({
       kind: "resize-bubble",
       handle,
       start: pointerNorm(event),
@@ -727,7 +765,7 @@ export function PageCanvas({
     const shape = bubble.shape ?? syntheticBubbleShape(bubble);
     const center = rectCenter(shape.rect);
     const pointer = pointerNorm(event);
-    setGesture({
+    beginGesture({
       kind: "rotate-bubble",
       center,
       startAngle: angleBetween(center, pointer, pageAspect()) - (shape.rotation ?? 0),
@@ -739,7 +777,7 @@ export function PageCanvas({
 
   const startBubblePoint = (bubble: CanvasBubble, point: "tail_target" | "anchor", event: ReactPointerEvent<HTMLDivElement>) => {
     if (!interactive) return;
-    setGesture({
+    beginGesture({
       kind: "move-point",
       point,
       start: pointerNorm(event),
@@ -759,7 +797,7 @@ export function PageCanvas({
     if (event.button !== 0 || !interactive) return;
     event.stopPropagation();
     onSelectSfx(item.panelId, item.index);
-    setGesture({
+    beginGesture({
       kind: "move-sfx",
       start: pointerNorm(event),
       origin: sfxGeometry(item),
@@ -774,7 +812,7 @@ export function PageCanvas({
     const origin = sfxGeometry(item);
     const center = { x: origin.x, y: origin.y };
     if (handle === "rotate") {
-      setGesture({
+      beginGesture({
         kind: "rotate-sfx",
         center,
         startAngle: angleBetween(center, pointer, pageAspect()) - origin.rotation,
@@ -787,7 +825,7 @@ export function PageCanvas({
     }
     const dx = pointer.x - center.x;
     const dy = (pointer.y - center.y) * pageAspect();
-    setGesture({
+    beginGesture({
       kind: "scale-sfx",
       center,
       startDistance: Math.max(Math.hypot(dx, dy), 1e-4),
@@ -1054,7 +1092,7 @@ export function PageCanvas({
     <div
       ref={pageRef}
       data-testid="canvas-page"
-      className="canvas-page"
+      className={gesture ? "canvas-page is-gesturing" : "canvas-page"}
       role="group"
       aria-label={storyboardCopy.canvasLabel}
       tabIndex={0}
@@ -1108,10 +1146,11 @@ export function PageCanvas({
         const rect = panelRects[panel.id];
         if (!rect) return null;
         return <PanelNode
-          key={panel.id}
+          key={zFlashIds.has(panel.id) ? `${panel.id}@${zFlash?.token}` : panel.id}
           panel={panel}
           rect={rect}
           selected={selectedPanelIds.includes(panel.id)}
+          flashing={zFlashIds.has(panel.id)}
           interactive={interactive}
           elementRef={(element) => {
             panelRefs.current[panel.id] = element;

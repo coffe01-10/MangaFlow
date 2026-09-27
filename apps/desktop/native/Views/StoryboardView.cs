@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using MangaFlow.Native.Controls;
 using MangaFlow.Native.Services;
@@ -545,7 +546,9 @@ public sealed partial class StoryboardView : WorkspaceView
         }
     }
 
-    private void UpdatePageSize()
+    // animate=true 走命令动效（web 命令 transition）：只有离散命令的提交点传，
+    // zoom/fit/手势直写/页面重建一律瞬写（对齐 web .is-gesturing 压零过渡）。
+    private void UpdatePageSize(bool animate = false)
     {
         var width = BasePageWidth * zoom;
         var height = width * pageAspect;
@@ -553,11 +556,11 @@ public sealed partial class StoryboardView : WorkspaceView
         page.Height = height;
         pageHost.Width = width + 2;
         pageHost.Height = height + 2;
-        foreach (var panel in panels) panel.ApplyPosition(page);
-        foreach (var bubble in bubbles) bubble.ApplyPosition(page);
-        foreach (var node in sfxNodes) node.ApplyPosition(page);
-        PositionResizeHandles(ActiveHandleRect());
-        PositionBubbleHandles();
+        foreach (var panel in panels) panel.ApplyPosition(page, animate);
+        foreach (var bubble in bubbles) bubble.ApplyPosition(page, animate);
+        foreach (var node in sfxNodes) node.ApplyPosition(page, animate);
+        PositionResizeHandles(ActiveHandleRect(), animate);
+        PositionBubbleHandles(animate);
         UpdateOverlaySizes();
     }
 
@@ -566,6 +569,8 @@ public sealed partial class StoryboardView : WorkspaceView
         // 事件处理器已在节点创建处挂接一次，这里只重组 Children
         page.Children.Clear();
         guideLines.Clear();
+        fadingGuides.Clear();
+        guideSignatures.Clear();
         foreach (var panel in panels) page.Children.Add(panel.Element);
         foreach (var bubble in bubbles) page.Children.Add(bubble.Element);
         foreach (var node in sfxNodes) page.Children.Add(node.Element);
@@ -604,6 +609,58 @@ public sealed partial class StoryboardView : WorkspaceView
     // ============ Gesture engine: direct element mutation, commit on release ============
     private PanelGesture? panelGesture;
     private readonly List<Line> guideLines = [];
+    // 淡出中的参考线（对齐 web .canvas-guide-line.leaving）：ClearGuides 把线挪进
+    // 这里做 140ms 淡出，同签名的新参考线可以原地复活，避免吸附点闪断。
+    private readonly List<Line> fadingGuides = [];
+    private readonly Dictionary<Line, string> guideSignatures = [];
+
+    // ============ 画布命令动效（对齐 web .canvas-page 的 170ms ease-out transition）============
+    // 离散几何命令（对齐/分布/同尺寸/粘贴/数字输入/方向键/撤销重做）的落位用
+    // DoubleAnimation 滑到目标；手势直写路径 animate=false，先 BeginAnimation(null)
+    // 摘掉在途动画，保证拖动总能立即接管。层序变更用透明度脉冲（对齐 web z-flash）。
+    private static readonly TimeSpan CommandMotionSpan = TimeSpan.FromMilliseconds(170);
+    private static readonly TimeSpan GuideFadeSpan = TimeSpan.FromMilliseconds(140);
+    private static readonly CubicEase CommandMotionEase = new() { EasingMode = EasingMode.EaseOut };
+
+    private static DoubleAnimation CommandAnimation(double to) =>
+        new(to, new Duration(CommandMotionSpan)) { EasingFunction = CommandMotionEase };
+
+    private static void AnimateOrSet(IAnimatable element, DependencyProperty property, double to, bool animate)
+    {
+        if (animate)
+        {
+            element.BeginAnimation(property, CommandAnimation(to));
+            return;
+        }
+        element.BeginAnimation(property, null);
+        ((DependencyObject)element).SetValue(property, to);
+    }
+
+    // 旋转角动画：命令路径在既有 RotateTransform 上滑 Angle；瞬写路径整体替换
+    // transform（顺带摘掉在途动画，落回 web 的 transform: rotate(deg) 语义）。
+    private static void ApplyRotation(FrameworkElement element, double angle, bool animate)
+    {
+        if (!animate)
+        {
+            element.RenderTransform = Math.Abs(angle) > 1e-9 ? new RotateTransform(angle) : null;
+            return;
+        }
+        if (element.RenderTransform is not RotateTransform rot)
+        {
+            rot = new RotateTransform(0);
+            element.RenderTransform = rot;
+        }
+        rot.BeginAnimation(RotateTransform.AngleProperty, CommandAnimation(angle));
+    }
+
+    // 层序脉冲（对齐 web .canvas-panel.z-flash 关键帧）：透明度 1→.45→1。
+    private static void PulseZIndex(IAnimatable element)
+    {
+        var anim = new DoubleAnimationUsingKeyFrames { Duration = new Duration(TimeSpan.FromMilliseconds(240)) };
+        anim.KeyFrames.Add(new LinearDoubleKeyFrame(0.45, KeyTime.FromPercent(0.4)));
+        anim.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromPercent(1)));
+        element.BeginAnimation(UIElement.OpacityProperty, anim);
+    }
 
     // 统一的手势捕获骨架（对齐 web pointermove→commitGesture 的一次性提交）：
     // moved 里只做元素级改画、参考线与尺寸标签；up/LostCapture 由 commit 一次入栈。
@@ -962,22 +1019,57 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private Point ToNormalized(Point point) => new(point.X / Math.Max(1, page.Width), point.Y / Math.Max(1, page.Height));
 
+    // 参考线淡出（对齐 web .leaving）：不立刻移除，140ms 透明度归零后再摘除；
+    // Tag 改为 leaving，测试缝/复用逻辑都不再把它当活动参考线。
     private void ClearGuides()
     {
-        foreach (var line in guideLines) page.Children.Remove(line);
+        foreach (var line in guideLines)
+        {
+            var fading = line;
+            fading.Tag = "leaving";
+            fadingGuides.Add(fading);
+            var anim = new DoubleAnimation(0, new Duration(GuideFadeSpan));
+            anim.Completed += (_, _) =>
+            {
+                page.Children.Remove(fading);
+                fadingGuides.Remove(fading);
+                guideSignatures.Remove(fading);
+            };
+            fading.BeginAnimation(UIElement.OpacityProperty, anim);
+        }
         guideLines.Clear();
     }
 
     // gap=true 画等间距参考线（web .canvas-guide-line.gap 的 #c05a9e 虚线）。
+    // 同签名（轴/类别/位置 F4）的淡出中线原地复活（对齐 web 的复用策略）：
+    // 吸附稳定时线不闪断，真正消失才淡出。
     private void ShowGuide(double at, bool vertical, bool gap = false)
     {
-        var line = new Line
+        var signature = $"{(vertical ? "v" : "h")}:{(gap ? "gap" : "edge")}:{at:F4}";
+        var line = fadingGuides.FirstOrDefault(item => guideSignatures.TryGetValue(item, out var s) && s == signature);
+        if (line != null)
         {
-            Stroke = new SolidColorBrush(gap ? Color.FromRgb(0xC0, 0x5A, 0x9E) : Color.FromRgb(0x2B, 0xA6, 0xA0)),
-            StrokeThickness = 1.5, StrokeDashArray = new DoubleCollection { 4, 3 },
-            IsHitTestVisible = false,
-            Tag = gap ? "guide-gap" : "guide",
-        };
+            fadingGuides.Remove(line);
+            line.Tag = gap ? "guide-gap" : "guide";
+            line.BeginAnimation(UIElement.OpacityProperty, null);
+            line.Opacity = 1;
+            if (line.Parent != page) page.Children.Add(line);
+        }
+        else
+        {
+            line = new Line
+            {
+                Stroke = new SolidColorBrush(gap ? Color.FromRgb(0xC0, 0x5A, 0x9E) : Color.FromRgb(0x2B, 0xA6, 0xA0)),
+                StrokeThickness = 1.5, StrokeDashArray = new DoubleCollection { 4, 3 },
+                IsHitTestVisible = false,
+                Tag = gap ? "guide-gap" : "guide",
+                Opacity = 0,
+            };
+            line.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, new Duration(GuideFadeSpan)));
+            Panel.SetZIndex(line, 30);
+            page.Children.Add(line);
+        }
+        guideSignatures[line] = signature;
         if (vertical)
         {
             line.X1 = line.X2 = at * page.Width;
@@ -988,8 +1080,6 @@ public sealed partial class StoryboardView : WorkspaceView
             line.Y1 = line.Y2 = at * page.Height;
             line.X1 = 0; line.X2 = page.Width;
         }
-        Panel.SetZIndex(line, 30);
-        page.Children.Add(line);
         guideLines.Add(line);
     }
 
@@ -1086,7 +1176,7 @@ public sealed partial class StoryboardView : WorkspaceView
         Tag = tagPrefix + name,
     };
 
-    private void PositionBubbleHandles()
+    private void PositionBubbleHandles(bool animate = false)
     {
         if (selectedBubble is not { } bubble) return;
         var center = new Point(bubble.Rect.X + bubble.Rect.Width / 2, bubble.Rect.Y + bubble.Rect.Height / 2);
@@ -1095,8 +1185,8 @@ public sealed partial class StoryboardView : WorkspaceView
         {
             // 手柄锚点随气泡 rotation 绕中心公转（对齐 web anchorPosition 的旋转分支）
             var anchor = RotatePointAround(BubbleHandleAnchor(bubble, name), center, bubble.Rotation, aspect);
-            Canvas.SetLeft(element, anchor.X * page.Width - element.Width / 2);
-            Canvas.SetTop(element, anchor.Y * page.Height - element.Height / 2);
+            AnimateOrSet(element, Canvas.LeftProperty, anchor.X * page.Width - element.Width / 2, animate);
+            AnimateOrSet(element, Canvas.TopProperty, anchor.Y * page.Height - element.Height / 2, animate);
             Panel.SetZIndex(element, 50);
             if (element.Parent != page) page.Children.Add(element);
         }
@@ -1134,14 +1224,14 @@ public sealed partial class StoryboardView : WorkspaceView
         _ => Cursors.SizeNWSE,
     };
 
-    private void PositionResizeHandles(Rect? rect)
+    private void PositionResizeHandles(Rect? rect, bool animate = false)
     {
         if (rect is not { } value) return;
         foreach (var (name, element) in resizeHandles)
         {
             var anchor = HandleAnchor(value, name);
-            Canvas.SetLeft(element, anchor.X * page.Width - element.Width / 2);
-            Canvas.SetTop(element, anchor.Y * page.Height - element.Height / 2);
+            AnimateOrSet(element, Canvas.LeftProperty, anchor.X * page.Width - element.Width / 2, animate);
+            AnimateOrSet(element, Canvas.TopProperty, anchor.Y * page.Height - element.Height / 2, animate);
         }
     }
 
@@ -1689,7 +1779,11 @@ public sealed partial class StoryboardView : WorkspaceView
         history.Push(new GeometryCommand("调整图层",
             changes.Select(c => (GeometryChange)new PanelZChange(c.Id, c.Before, c.After)).ToList()));
         foreach (var (id, _, after) in changes)
-            if (panels.FirstOrDefault(p => p.Id == id) is { } panel) panel.ZOrder = after;
+            if (panels.FirstOrDefault(p => p.Id == id) is { } panel)
+            {
+                panel.ZOrder = after;
+                PulseZIndex(panel.Element);
+            }
         UpdatePageSize();
         MarkDirty();
         RenderInspector();
@@ -1740,7 +1834,7 @@ public sealed partial class StoryboardView : WorkspaceView
             {
                 history.Push(new GeometryCommand("粘贴几何", [new SfxChange(sfx.PanelId, sfx.Index, origin, after)]));
                 sfx.ApplySnapshot(after);
-                sfx.ApplyPosition(page);
+                sfx.ApplyPosition(page, animate: true);
                 MarkDirty();
                 RenderInspector();
             }
@@ -1759,8 +1853,8 @@ public sealed partial class StoryboardView : WorkspaceView
             {
                 history.Push(new GeometryCommand("粘贴几何", [new BubbleChange(bubble.Id, origin, applied)]));
                 bubble.ApplySnapshot(applied);
-                bubble.ApplyPosition(page);
-                PositionBubbleHandles();
+                bubble.ApplyPosition(page, animate: true);
+                PositionBubbleHandles(animate: true);
                 MarkDirty();
                 RenderInspector();
             }
@@ -1798,7 +1892,7 @@ public sealed partial class StoryboardView : WorkspaceView
         if (after == panel.Rect) return;
         history.Push(new GeometryCommand("输入几何", [new PanelChange(panel.Id, panel.Rect, after)]));
         panel.Rect = after;
-        UpdatePageSize();
+        UpdatePageSize(animate: true);
         MarkDirty();
         RenderInspector();
     }
@@ -1810,7 +1904,7 @@ public sealed partial class StoryboardView : WorkspaceView
         if (next == origin) return;
         history.Push(new GeometryCommand("输入几何", [new BubbleChange(bubble.Id, origin, next)]));
         bubble.ApplySnapshot(next);
-        UpdatePageSize();
+        UpdatePageSize(animate: true);
         MarkDirty();
         RenderInspector();
     }
@@ -1823,7 +1917,7 @@ public sealed partial class StoryboardView : WorkspaceView
         if (next == origin) return;
         history.Push(new GeometryCommand("输入几何", [new BubbleChange(bubble.Id, origin, next)]));
         bubble.ApplySnapshot(next);
-        UpdatePageSize();
+        UpdatePageSize(animate: true);
         MarkDirty();
         RenderInspector();
     }
@@ -1861,7 +1955,10 @@ public sealed partial class StoryboardView : WorkspaceView
                     break;
                 case PanelZChange zChange:
                     if (panels.FirstOrDefault(p => p.Id == zChange.Id) is { } zPanel)
+                    {
                         zPanel.ZOrder = before ? zChange.Before : zChange.After;
+                        PulseZIndex(zPanel.Element);
+                    }
                     break;
                 case BubbleChange bubbleChange:
                     if (bubbles.FirstOrDefault(b => b.Id == bubbleChange.Id) is { } bubble)
@@ -1873,7 +1970,7 @@ public sealed partial class StoryboardView : WorkspaceView
                     break;
             }
         }
-        UpdatePageSize();
+        UpdatePageSize(animate: true);
     }
 
     // 叙事草稿脏判定（对齐 web dirty 公式的 narrative 部分）：任何存活对白的
@@ -2794,8 +2891,8 @@ public sealed partial class StoryboardView : WorkspaceView
                     var after = origin with { Rect = next, Moved = true };
                     history.Push(new GeometryCommand("方向键微调", [new BubbleChange(selectedBubble.Id, origin, after)]));
                     selectedBubble.ApplySnapshot(after);
-                    selectedBubble.ApplyPosition(page);
-                    PositionBubbleHandles();
+                    selectedBubble.ApplyPosition(page, animate: true);
+                    PositionBubbleHandles(animate: true);
                     MarkDirty();
                     RenderInspector();
                     e.Handled = true;
@@ -2811,7 +2908,7 @@ public sealed partial class StoryboardView : WorkspaceView
                     };
                     history.Push(new GeometryCommand("方向键微调", [new SfxChange(selectedSfx.PanelId, selectedSfx.Index, origin, after)]));
                     selectedSfx.ApplySnapshot(after);
-                    selectedSfx.ApplyPosition(page);
+                    selectedSfx.ApplyPosition(page, animate: true);
                     MarkDirty();
                     RenderInspector();
                     e.Handled = true;
@@ -2827,13 +2924,13 @@ public sealed partial class StoryboardView : WorkspaceView
                         {
                             changes.Add(new PanelChange(target.Id, target.Rect, next));
                             target.Rect = next;
-                            target.ApplyPosition(page);
+                            target.ApplyPosition(page, animate: true);
                         }
                     }
                     if (changes.Count > 0)
                     {
                         history.Push(new GeometryCommand("方向键微调", changes));
-                        PositionResizeHandles(ActiveHandleRect());
+                        PositionResizeHandles(ActiveHandleRect(), animate: true);
                         MarkDirty();
                         RenderInspector();
                     }
@@ -2994,6 +3091,21 @@ public sealed partial class StoryboardView : WorkspaceView
         if (bubbles.ElementAtOrDefault(index) is { } bubble) CommitBubbleRotationField(bubble, degrees);
     }
 
+    // 命令动效断言缝：元素当前的视觉左缘（动画在途时≠模型落位）与基础值
+    // （动画叠层时=旧位，瞬写时=新位）。配合 Rect 模型断言可判定动画叠层/接管。
+    // 动画断言缝：GetValueSource.IsAnimated 在属性系统未结算前不可靠，公开可
+    // 用的确定性判定是 HasAnimatedProperties（只在「该元素无其他动画」的干净上
+    // 下文使用）+ GetAnimationBaseValue（动画叠层时基础值仍停在旧位）。
+    internal double PageWidthForTest => page.Width;
+    internal double? PanelElementLeftForTest(int index) =>
+        panels.ElementAtOrDefault(index) is { } panel ? Canvas.GetLeft(panel.Element) : null;
+    internal double? PanelElementBaseLeftForTest(int index) =>
+        panels.ElementAtOrDefault(index) is { } panel ? (double)panel.Element.GetAnimationBaseValue(Canvas.LeftProperty) : null;
+    internal bool PanelAnimatingForTest(int index) =>
+        panels.ElementAtOrDefault(index) is { } panel && panel.Element.HasAnimatedProperties;
+    internal int ActiveGuideCountForTest() => guideLines.Count;
+    internal int FadingGuideCountForTest() => fadingGuides.Count;
+
     // 多选拖动（生产 PanelGesture 的 Compute+Commit，注入归一化位移）；
     // keepGuides=true 时保留提交时画的参考线，供检查等距/吸附参考线。
     internal void DragSelectionForTest(double dx, double dy, bool keepGuides = false)
@@ -3152,12 +3264,12 @@ public sealed partial class StoryboardView : WorkspaceView
         // 缩放手柄（web 同样不允许 bounds 被改写）。
         public bool IsPolygon => StoredGeometry.Text("type") == "polygon";
 
-        public void ApplyPosition(Canvas canvas)
+        public void ApplyPosition(Canvas canvas, bool animate = false)
         {
-            Canvas.SetLeft(Element, Rect.X * canvas.Width);
-            Canvas.SetTop(Element, Rect.Y * canvas.Height);
-            Element.Width = Math.Max(4, Rect.Width * canvas.Width);
-            Element.Height = Math.Max(4, Rect.Height * canvas.Height);
+            AnimateOrSet(Element, Canvas.LeftProperty, Rect.X * canvas.Width, animate);
+            AnimateOrSet(Element, Canvas.TopProperty, Rect.Y * canvas.Height, animate);
+            AnimateOrSet(Element, WidthProperty, Math.Max(4, Rect.Width * canvas.Width), animate);
+            AnimateOrSet(Element, HeightProperty, Math.Max(4, Rect.Height * canvas.Height), animate);
             Panel.SetZIndex(Element, 10 + ZOrder);
         }
 
@@ -3254,16 +3366,16 @@ public sealed partial class StoryboardView : WorkspaceView
             };
         }
 
-        public void ApplyPosition(Canvas canvas)
+        public void ApplyPosition(Canvas canvas, bool animate = false)
         {
-            Canvas.SetLeft(Element, Rect.X * canvas.Width);
-            Canvas.SetTop(Element, Rect.Y * canvas.Height);
-            Element.Width = Math.Max(12, Rect.Width * canvas.Width);
-            Element.Height = Math.Max(12, Rect.Height * canvas.Height);
+            AnimateOrSet(Element, Canvas.LeftProperty, Rect.X * canvas.Width, animate);
+            AnimateOrSet(Element, Canvas.TopProperty, Rect.Y * canvas.Height, animate);
+            AnimateOrSet(Element, WidthProperty, Math.Max(12, Rect.Width * canvas.Width), animate);
+            AnimateOrSet(Element, HeightProperty, Math.Max(12, Rect.Height * canvas.Height), animate);
             Panel.SetZIndex(Element, 20);
             // 旋转只改视觉不改布局（对齐 web transform: rotate(deg) 绕中心）
             Element.RenderTransformOrigin = new Point(0.5, 0.5);
-            Element.RenderTransform = Math.Abs(Rotation) > 1e-9 ? new RotateTransform(Rotation) : null;
+            ApplyRotation(Element, Rotation, animate);
         }
 
         public void SetRectDirect(Rect rect, Canvas canvas)
@@ -3429,13 +3541,13 @@ public sealed partial class StoryboardView : WorkspaceView
             ApplyPosition(canvas);
         }
 
-        public void ApplyPosition(Canvas canvas)
+        public void ApplyPosition(Canvas canvas, bool animate = false)
         {
-            Canvas.SetLeft(Element, X * canvas.Width);
-            Canvas.SetTop(Element, Y * canvas.Height);
+            AnimateOrSet(Element, Canvas.LeftProperty, X * canvas.Width, animate);
+            AnimateOrSet(Element, Canvas.TopProperty, Y * canvas.Height, animate);
             fontPx = Math.Max(Size * canvas.Height, 6);
-            label.FontSize = fontPx;
-            Element.RenderTransform = Math.Abs(Rotation) > 1e-9 ? new RotateTransform(Rotation) : null;
+            AnimateOrSet(label, TextBlock.FontSizeProperty, fontPx, animate);
+            ApplyRotation(Element, Rotation, animate);
             // 手柄在自身（已旋转的）坐标系内偏移，与 web 的 left/top em 定位同源：
             // rotate 在中心上方 1.6em、scale 在右下 (1.2em, 0.9em)。
             rotateHandle.RenderTransform = new TranslateTransform(0, -1.6 * fontPx);
