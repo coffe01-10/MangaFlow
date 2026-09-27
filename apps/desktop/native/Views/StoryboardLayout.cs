@@ -141,6 +141,16 @@ public sealed partial class StoryboardView
         };
         Add(gridStepBox);
         spreadButton.Click += async (_, _) => await ToggleSpread(); Add(spreadButton);
+        // 手绘批注开关 + 撤笔/清空组（对齐 web toolbar 的 annotate 开关与笔画操作）
+        annotateButton.Click += (_, _) => ToggleAnnotate(); Add(annotateButton);
+        annotateBar = new WrapPanel { Margin = new Thickness(0, 0, 5, 5), Visibility = Visibility.Collapsed };
+        var undoStrokeButton = Kit.Act("撤销笔画", (_, _) => UndoAnnotationStroke(), "Compact");
+        undoStrokeButton.MinHeight = 38; undoStrokeButton.Margin = new Thickness(0, 0, 4, 0);
+        annotateBar.Children.Add(undoStrokeButton);
+        var clearStrokesButton = Kit.Act("清空批注", (_, _) => ClearAnnotations(), "Compact");
+        clearStrokesButton.MinHeight = 38; clearStrokesButton.Margin = new Thickness(0, 0, 4, 0);
+        annotateBar.Children.Add(clearStrokesButton);
+        wrapped.Children.Add(annotateBar);
         // 对齐/分布/同尺寸组（对齐 web toolbar-align）：≥2 可移动选中格才显示，
         // 等距分布需要 ≥3（UpdateAlignBar 统一管可见性）。
         alignBar = new WrapPanel { Margin = new Thickness(0, 0, 5, 5), Visibility = Visibility.Collapsed };

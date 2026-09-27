@@ -783,6 +783,46 @@ describe("StoryboardEditor 精准编辑", () => {
     await waitFor(() => expect(document.body.textContent).toContain("此浏览器不支持录制导出"));
   });
 
+  it("T10 手绘批注层：自由笔画逐页存本地，不进保存载荷", async () => {
+    renderEditor();
+    const canvas = await screen.findByTestId("canvas-page");
+    stubRect(canvas, 400, 560);
+    fireEvent.click(screen.getByRole("button", { name: "批注" }));
+    expect(screen.getByText(/批注模式：按住拖动/)).toBeTruthy();
+    // 直接落在面板上起笔：批注优先于对象手势，面板不得被拖动。
+    fireEvent.pointerDown(panelEl("panel-1"), { button: 0, pointerId: 1, clientX: 40, clientY: 40 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 200, clientY: 60 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 320, clientY: 200 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 320, clientY: 200 });
+    await waitFor(() => expect(document.querySelectorAll(".annotation-stroke").length).toBe(1));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(10, 4);
+    const stored = JSON.parse(window.localStorage.getItem("mangaflow.storyboard-annotations.page-1") ?? "[]");
+    expect(stored).toHaveLength(1);
+    expect(stored[0].points[0].x).toBeCloseTo(0.1, 3);
+    expect(stored[0].points[0].y).toBeCloseTo(0.0714, 3);
+    // 撤销笔画 → 再画一笔 → 清空。
+    fireEvent.click(screen.getByRole("button", { name: "撤销笔画" }));
+    await waitFor(() => expect(document.querySelectorAll(".annotation-stroke").length).toBe(0));
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 2, clientX: 100, clientY: 300 });
+    fireEvent.pointerMove(window, { pointerId: 2, clientX: 200, clientY: 400 });
+    fireEvent.pointerUp(window, { pointerId: 2, clientX: 200, clientY: 400 });
+    await waitFor(() => expect(document.querySelectorAll(".annotation-stroke").length).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "清空批注" }));
+    await waitFor(() => expect(document.querySelectorAll(".annotation-stroke").length).toBe(0));
+    expect(window.localStorage.getItem("mangaflow.storyboard-annotations.page-1")).toBe("[]");
+    // 保存载荷不含批注：载荷类型里本就没有该字段，回归锁住字段缺席。
+    const xInput = screen.getByLabelText("X（mm）");
+    fireEvent.change(xInput, { target: { value: "91" } });
+    fireEvent.blur(xInput);
+    const payload = await savePage();
+    expect("annotations" in payload).toBe(false);
+    expect("strokes" in payload).toBe(false);
+    // 关闭批注模式后画布恢复正常选中行为。
+    fireEvent.click(screen.getByRole("button", { name: "批注" }));
+    clickPanel("panel-1");
+    expect(panelEl("panel-1").classList.contains("selected")).toBe(true);
+  });
+
   /** 读取 panel-2 气泡节点当前的 left/width（% 文本转数值比例）。 */
   function payloadBubbleAfterTemplate() {
     const element = bubbleEl("dialogue-1");

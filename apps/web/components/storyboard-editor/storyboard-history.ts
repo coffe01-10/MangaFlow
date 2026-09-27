@@ -323,3 +323,35 @@ export function parseSnapshots(raw: string): StoryboardSnapshot[] {
     return [];
   }
 }
+
+// --- freehand annotations ----------------------------------------------------
+
+/** One freehand stroke on the annotation layer. Points are page-normalized
+ * (0-1) so strokes survive zoom/resize like every other canvas element.
+ * Annotations are local marks — they persist per page in localStorage and are
+ * never part of the geometry save payload or the undo stack. */
+export interface AnnotationStroke {
+  id: string;
+  points: { x: number; y: number }[];
+}
+
+export const annotationsKey = (pageId: string) => `mangaflow.storyboard-annotations.${pageId}`;
+
+export function parseAnnotations(raw: string): AnnotationStroke[] {
+  if (!raw) return [];
+  try {
+    const list = JSON.parse(raw) as AnnotationStroke[];
+    if (!Array.isArray(list)) return [];
+    return list
+      .map((item): AnnotationStroke | null => {
+        if (!item || typeof item.id !== "string" || !Array.isArray(item.points)) return null;
+        const points = item.points
+          .filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y))
+          .map((point) => ({ x: clamp01(point.x), y: clamp01(point.y) }));
+        return points.length >= 2 ? { id: item.id, points } : null;
+      })
+      .filter((item): item is AnnotationStroke => item !== null);
+  } catch {
+    return [];
+  }
+}

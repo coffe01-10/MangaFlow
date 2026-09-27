@@ -123,6 +123,7 @@ internal static class NativeStoryboardPrecisionChecks
             LibraryChecks(view);
             await SpreadChecks(view);
             await ReplayExportChecks(view, output);
+            AnnotationChecks(view, fixture);
         }
         finally { view.Deactivate(); }
         Console.WriteLine("PASS: storyboard precision checks (multi-select/align/distribute/same-size/grid/gap-guides/numeric-fields/bubble/sfx/layers/copy-paste/group-scale/save-payload/conflict/refresh/library) all match the web contract");
@@ -774,6 +775,32 @@ internal static class NativeStoryboardPrecisionChecks
         Require(view.ReplayOpenForTest, "导出后仍应在回放模式");
         File.Delete(path);
         view.CloseReplayForTest();
+    }
+
+    private static void AnnotationChecks(StoryboardView view, Fixture fixture)
+    {
+        // 手绘批注：开批注 → 记两笔 → 逐页本地持久化 → 撤笔/清空；
+        // 批注是纯本地标记层，不进撤销栈、不进保存载荷。
+        view.ToggleAnnotateForTest();
+        Require(view.AnnotatingForTest, "批注开关应进入批注模式");
+        var undoDepth = view.HistoryDepthForTest;
+        view.StrokeForTest(new Point(0.1, 0.1), new Point(0.5, 0.2), new Point(0.8, 0.4));
+        Require(view.AnnotationCountForTest == 1 && view.StoredAnnotationCountForTest == 1,
+            "笔画应落本页 KeyValueStore 并可读回");
+        view.StrokeForTest(new Point(0.2, 0.8), new Point(0.4, 0.6));
+        Require(view.AnnotationCountForTest == 2, "第二笔应追加");
+        view.UndoAnnotationForTest();
+        Require(view.AnnotationCountForTest == 1 && view.StoredAnnotationCountForTest == 1,
+            "撤销笔画应只回退最后一笔并同步存储");
+        Require(view.HistoryDepthForTest == undoDepth, "批注不得占用几何撤销栈");
+        view.StrokeForTest(new Point(0.3, 0.3), new Point(0.7, 0.7));
+        Require(view.AnnotationCountForTest == 2, "撤笔后再画应恢复为两笔");
+        view.ClearAnnotationsForTest();
+        Require(view.AnnotationCountForTest == 0 && view.StoredAnnotationCountForTest == 0,
+            "清空批注应同时清空存储");
+        view.ToggleAnnotateForTest();
+        Require(!view.AnnotatingForTest, "再按批注应退出批注模式");
+        _ = fixture;   // 批注不触网：夹具仅作上下文存在性占位
     }
 
     // ── helpers（NativeStoryboardEditChecks 同款最小集）──
