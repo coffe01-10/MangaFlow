@@ -65,6 +65,7 @@ import { LibraryBar } from "./library-bar";
 import { PageCanvas, syntheticBubbleShape, type CanvasBubble, type CanvasSelection } from "./page-canvas";
 import { PanelInspector, type PanelDraft } from "./panel-inspector";
 import { ReplayBar } from "./replay-bar";
+import { downloadBlob, exportReplayVideo } from "./replay-export";
 import type { SfxNodeData } from "./sfx-node";
 import { SpreadPage } from "./spread-preview";
 import { storyboardCopy } from "./storyboard-copy";
@@ -327,6 +328,7 @@ export function StoryboardEditor({
   // 变化的命令(如同几何粘贴)不产生帧,其标签也随之丢弃。
   const [timeline, setTimeline] = useState<ReplayEntry[]>([]);
   const timelinePageRef = useRef<string | null>(null);
+  const [replayExporting, setReplayExporting] = useState(false);
   const pendingLabelRef = useRef<string | null>(null);
   const [replay, setReplay] = useState<{ open: boolean; index: number; playing: boolean; speed: number }>({
     open: false,
@@ -1233,6 +1235,22 @@ export function StoryboardEditor({
             }))}
             onSpeed={(speed) => setReplay((value) => ({ ...value, speed }))}
             onExit={() => setReplay((value) => ({ ...value, open: false, playing: false }))}
+            exporting={replayExporting}
+            onExport={() => {
+              // 导出只读时间线数据，不触碰画布态：canvas 帧渲染 + MediaRecorder
+              // 录成 webm；不支持的浏览器（无 captureStream/MediaRecorder）落 notice。
+              if (replayExporting) return;
+              if (timeline.length < 2) { setNotice(storyboardCopy.replayEmpty); return; }
+              setReplayExporting(true);
+              void exportReplayVideo({ timeline, canvas, speed: replay.speed })
+                .then((blob) => {
+                  if (!blob) { setNotice(storyboardCopy.replayExportUnsupported); return; }
+                  const name = downloadBlob(blob, `分镜回放-P${String(currentPage.page_number).padStart(3, "0")}.webm`);
+                  setNotice(storyboardCopy.replayExportDone(name));
+                })
+                .catch(() => setNotice(storyboardCopy.replayExportUnsupported))
+                .finally(() => setReplayExporting(false));
+            }}
           /> : snapshotA && snapshotB ? <CompareBar
             nameA={snapshotA.name}
             nameB={snapshotB.name}

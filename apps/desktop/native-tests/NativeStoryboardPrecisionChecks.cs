@@ -122,6 +122,7 @@ internal static class NativeStoryboardPrecisionChecks
             await RefreshRestoresSelectionChecks(view, fixture);
             LibraryChecks(view);
             await SpreadChecks(view);
+            await ReplayExportChecks(view, output);
         }
         finally { view.Deactivate(); }
         Console.WriteLine("PASS: storyboard precision checks (multi-select/align/distribute/same-size/grid/gap-guides/numeric-fields/bubble/sfx/layers/copy-paste/group-scale/save-payload/conflict/refresh/library) all match the web contract");
@@ -756,6 +757,23 @@ internal static class NativeStoryboardPrecisionChecks
         await view.ToggleSpreadForTest();
         Require(!view.SpreadOpenForTest && !view.SpreadLeftVisibleForTest && !view.SpreadRightVisibleForTest,
             "关闭对开应收起两侧骨架");
+    }
+
+    // ── 18. 制作回放导出：RenderTargetBitmap 逐帧渲染 + GifBitmapEncoder ──
+    // 对齐 web replay-export（canvas 帧渲染 + MediaRecorder）：时间线逐帧渲出
+    // 页画布位图，编码成可分享 GIF，导出结束回到导出前帧、不动命令栈。
+    private static async Task ReplayExportChecks(StoryboardView view, string output)
+    {
+        view.ToggleReplayForTest();
+        Require(view.ReplayOpenForTest && view.TimelineCountForTest >= 2, "导出前置：回放开启且有时间线");
+        var path = Path.Combine(output, "replay-export.gif");
+        await view.ExportReplayGifForTest(path);
+        var bytes = await File.ReadAllBytesAsync(path);
+        Require(bytes.Length > 100 && bytes[0] == 'G' && bytes[1] == 'I' && bytes[2] == 'F',
+            $"导出文件应是合法 GIF（实际头 {BitConverter.ToString(bytes.Take(3).ToArray())}，{bytes.Length}B）");
+        Require(view.ReplayOpenForTest, "导出后仍应在回放模式");
+        File.Delete(path);
+        view.CloseReplayForTest();
     }
 
     // ── helpers（NativeStoryboardEditChecks 同款最小集）──

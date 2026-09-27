@@ -770,6 +770,19 @@ describe("StoryboardEditor 精准编辑", () => {
     expect(document.querySelector(".spread-page")).toBeNull();
   });
 
+  it("T9 回放导出：回放条出导出入口，无 MediaRecorder 环境落提示", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    const xInput = screen.getByLabelText("X（mm）");
+    fireEvent.change(xInput, { target: { value: "36.4" } });
+    fireEvent.blur(xInput);
+    fireEvent.click(screen.getByRole("button", { name: "回放", pressed: false }));
+    await screen.findByRole("group", { name: "制作过程回放" });
+    // jsdom 无 MediaRecorder/captureStream：点击应落到不支持提示而不是崩。
+    fireEvent.click(screen.getByRole("button", { name: "导出视频" }));
+    await waitFor(() => expect(document.body.textContent).toContain("此浏览器不支持录制导出"));
+  });
+
   /** 读取 panel-2 气泡节点当前的 left/width（% 文本转数值比例）。 */
   function payloadBubbleAfterTemplate() {
     const element = bubbleEl("dialogue-1");

@@ -4,7 +4,7 @@
 // timeline, scrub to any frame, step through it, pick a speed. The bar sits
 // inside the canvas viewport; geometry tweening comes free from the command
 // transitions already on the page.
-import { Pause, Play, SkipBack, SkipForward, X } from "lucide-react";
+import { Download, Pause, Play, SkipBack, SkipForward, X } from "lucide-react";
 
 import { storyboardCopy } from "./storyboard-copy";
 
@@ -21,6 +21,8 @@ export function ReplayBar({
   onStep,
   onSpeed,
   onExit,
+  onExport,
+  exporting,
 }: {
   index: number;
   count: number;
@@ -33,6 +35,10 @@ export function ReplayBar({
   onStep: (delta: number) => void;
   onSpeed: (speed: number) => void;
   onExit: () => void;
+  /** 回放导出（canvas 帧渲染 + MediaRecorder → webm）；环境不支持时由
+   * 调用方落 notice。 */
+  onExport: () => void;
+  exporting: boolean;
 }) {
   return <div className="replay-bar" role="group" aria-label={storyboardCopy.replayBar} onPointerDown={(event) => event.stopPropagation()}>
     <button type="button" aria-label={storyboardCopy.replayStepBack} disabled={index <= 0} onClick={() => onStep(-1)}><SkipBack size={13} /></button>
@@ -53,6 +59,7 @@ export function ReplayBar({
     <select aria-label={storyboardCopy.replaySpeed} value={speed} onChange={(event) => onSpeed(Number(event.target.value))}>
       {SPEEDS.map((value) => <option key={value} value={value}>×{value}</option>)}
     </select>
+    <button type="button" disabled={exporting} onClick={onExport}><Download size={13} />{exporting ? storyboardCopy.replayExporting : storyboardCopy.replayExport}</button>
     <button type="button" className="replay-exit" onClick={onExit}>{<X size={13} />}{storyboardCopy.replayExit}</button>
   </div>;
 }
