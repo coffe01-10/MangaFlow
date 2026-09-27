@@ -1508,13 +1508,19 @@ public sealed partial class GenerateView : WorkspaceView
     // LeaveConfirmOverride 同一模式）；生产路径为 null。
     internal Func<Task<bool>>? LeaveConfirmOverride;
 
-    public override Task<bool> ConfirmLeaveAsync()
+    public override async Task<bool> ConfirmLeaveAsync()
     {
         // 测试缝优先：headless 检查无模态驱动拒绝/同意分支，否则卡死在 MessageBox。
-        if (LeaveConfirmOverride is { } prompt) return prompt();
-        if (!DirectorDraftActive) return Task.FromResult(true);
-        var result = new ConfirmDialog(Host, "离开确认", "导演指令尚未提交，离开会丢弃已输入的指令与预览选择。仍要离开吗？", "离开").ShowDialog();
-        return Task.FromResult(result == true);
+        var allowed = LeaveConfirmOverride is { } prompt
+            ? await prompt()
+            : !DirectorDraftActive
+              || new ConfirmDialog(Host, "离开确认", "导演指令尚未提交，离开会丢弃已输入的指令与预览选择。仍要离开吗？", "离开").ShowDialog() == true;
+        // 同意即弃稿：换章/换页的 LoadWorkbenchAsync 会用 body.Children.Clear()
+        // 把旧面板摘出视觉树，但字段残留引用让 HasDraft 继续成立——渲染门与
+        // PollTick/RefreshAsync 的 keep-drafts 守卫被永久挡住（卡死在载入中，
+        // 且每次离开都幽灵提示）。确认离开后必须连同引用一起丢弃。
+        if (allowed && directorPane is { HasDraft: true }) directorPane = null;
+        return allowed;
     }
 
     /// <summary>
@@ -1621,14 +1627,18 @@ internal sealed class DirectorPane : Border
 {
     private readonly GenerateView view;
     private readonly TextBox commandInput = new() { AcceptsReturn = true, MinHeight = 54 };
+    private readonly Button aiParse;
     private readonly StackPanel scopes = new() { Orientation = Orientation.Horizontal };
     private readonly StackPanel preview = new();
     private readonly StackPanel history = new();
     private DirectorScope? selection;
     private DirectorPlanResult? plan;
     private JsonElement previewGroup;
-    private bool busy;
+    private bool busy, nlClarify;
     private string? retryOfCommandId;
+    private int parseGeneration;
+    private readonly CancellationTokenSource parseLifetime = new();
+    private List<JsonElement> previewCharacters = [];
 
     public bool Busy => busy;
 
@@ -1650,35 +1660,44 @@ internal sealed class DirectorPane : Border
             }
         };
         var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = "DIRECTOR / 导演台 · 规则解析，非模型", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        panel.Children.Add(new TextBlock { Text = "DIRECTOR / 导演台", Style = (Style)Application.Current.FindResource("SectionIndex") });
         panel.Children.Add(new TextBlock
         {
-            Text = "先点作用域，再写短指令。预览确认后才会执行；导演台不会自动调用图片模型，也不会整页重绘。",
+            Text = "先点作用域，再写指令。「AI 解析」调用一次文本模型（产生调用费用）把整句指令编译成命令组，逐条确认后才执行；「规则预览」走本地白名单规则，不调模型。导演台不会自动调用图片模型，也不会整页重绘。",
             Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 6, 0, 10), TextWrapping = TextWrapping.Wrap,
         });
         BuildScopes();
         panel.Children.Add(scopes);
-        var commandRow = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
-        var propose = Kit.Act("预览", async (_, _) => await ProposeAsync(), "InkButton");
-        propose.MinWidth = 96;
-        DockPanel.SetDock(propose, Dock.Right);
-        commandRow.Children.Add(propose);
         System.Windows.Automation.AutomationProperties.SetName(commandInput, "导演指令");
-        commandInput.Margin = new Thickness(0, 0, 10, 0);
+        commandInput.Margin = new Thickness(0, 10, 0, 0);
         commandInput.PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape)
             {
-                plan = null; previewGroup = default; preview.Children.Clear();
+                plan = null; previewGroup = default; nlClarify = false; preview.Children.Clear();
                 e.Handled = true;
             }
         };
-        commandRow.Children.Add(commandInput);
+        panel.Children.Add(commandInput);
+        var commandRow = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+        aiParse = Kit.Act("AI 解析", async (_, _) => await ParseAsync(), "InkButton");
+        aiParse.MinWidth = 96;
+        aiParse.ToolTip = "调用文字模型把整句指令编译为命令组（产生一次文本调用费用）";
+        commandRow.Children.Add(aiParse);
+        var propose = Kit.Act("规则预览", async (_, _) => await ProposeAsync(), "Outline");
+        propose.MinWidth = 96;
+        propose.Margin = new Thickness(8, 0, 0, 0);
+        commandRow.Children.Add(propose);
+        var kbdHint = Kit.Caption("Ctrl+K 聚焦 · Esc 关闭预览");
+        kbdHint.VerticalAlignment = VerticalAlignment.Center;
+        kbdHint.Margin = new Thickness(12, 0, 0, 0);
+        commandRow.Children.Add(kbdHint);
         panel.Children.Add(commandRow);
         panel.Children.Add(preview);
         panel.Children.Add(new TextBlock { Text = "HISTORY / 命令历史", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 16, 0, 8) });
         panel.Children.Add(history);
         Child = panel;
+        Unloaded += (_, _) => parseLifetime.Cancel();
         _ = LoadHistoryAsync();
     }
 
@@ -1717,10 +1736,13 @@ internal sealed class DirectorPane : Border
     {
         if (busy || view.CurrentPage == null) return;
         busy = true;
+        nlClarify = false;
         try
         {
             var storyboard = view.Workbench.Element("storyboard");
             var characters = await view.Api2().SendAsync($"projects/{view.ProjectId2}/characters");
+            // diff 渲染用同一目录做 id→名字解析（与 AI 解析路径一致）。
+            previewCharacters = characters.ValueKind == JsonValueKind.Array ? characters.EnumerateArray().ToList() : [];
             var visibleIds = storyboard.Array("panels").SelectMany(p => p.Strings("characters")).Distinct().ToList();
             var visible = characters.EnumerateArray().Where(c => visibleIds.Contains(c.Text("id"))).ToList();
             // Scene-level commands need the real scene version (web reads it from the script).
@@ -1757,7 +1779,7 @@ internal sealed class DirectorPane : Border
     {
         preview.Children.Clear();
         preview.Margin = new Thickness(0, 12, 0, 0);
-        if (plan == null) return;
+        if (plan == null && previewGroup.ValueKind != JsonValueKind.Object) return;
         var card = new Border
         {
             BorderBrush = (Brush)Application.Current.FindResource("Ink"),
@@ -1766,91 +1788,350 @@ internal sealed class DirectorPane : Border
             Background = (Brush)Application.Current.FindResource("Surface"),
         };
         var content = new StackPanel();
-        switch (plan.Kind)
+        if (plan is { Kind: "clarify" or "blocked" or "unsupported" })
         {
-            case "clarify":
-                content.Children.Add(new TextBlock { Text = plan.Reason, TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.Bold });
-                if (plan.Options is { } options)
-                {
-                    var row = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
-                    foreach (var (kind, id, label) in options)
+            switch (plan.Kind)
+            {
+                case "clarify":
+                    content.Children.Add(new TextBlock { Text = plan.Reason + (nlClarify ? "（AI 解析）" : ""), TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.Bold });
+                    if (plan.Options is { } options)
                     {
-                        var chip = Kit.Act(label, (_, _) =>
+                        var row = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+                        foreach (var (kind, id, label) in options)
                         {
-                            selection = kind switch
+                            var chip = Kit.Act(label, (_, _) =>
                             {
-                                "page" => DirectorScope.Page(),
-                                "panel" => DirectorScope.Panel(id!),
-                                "dialogue" => DirectorScope.Dialogue(
-                                    view.Workbench.Element("storyboard").Array("panels")
-                                        .FirstOrDefault(p => p.Array("dialogues").Any(d => d.Text("id") == id)).Text("id"), id!),
-                                _ => DirectorScope.Character(id!),
-                            };
-                            BuildScopes();
-                            commandInput.Focus();
-                        }, "Ghost");
-                        chip.Margin = new Thickness(0, 0, 8, 6);
-                        row.Children.Add(chip);
+                                selection = kind switch
+                                {
+                                    "page" => DirectorScope.Page(),
+                                    "panel" => DirectorScope.Panel(id!),
+                                    "dialogue" => DirectorScope.Dialogue(
+                                        view.Workbench.Element("storyboard").Array("panels")
+                                            .FirstOrDefault(p => p.Array("dialogues").Any(d => d.Text("id") == id)).Text("id"), id!),
+                                    _ => DirectorScope.Character(id!),
+                                };
+                                nlClarify = false;
+                                BuildScopes();
+                                commandInput.Focus();
+                            }, "Ghost");
+                            chip.Margin = new Thickness(0, 0, 8, 6);
+                            // DIR-01C：NL 澄清选项里 kind 不在作用域词表内（如 value/scene）
+                            // 或缺 id 的条目是提示项，不可点选；规则路径的选项不受影响。
+                            if (nlClarify && (id == null || kind is not ("panel" or "dialogue" or "character")))
+                            {
+                                chip.IsEnabled = false;
+                                chip.ToolTip = "提示项：按说明修改指令后重发";
+                            }
+                            row.Children.Add(chip);
+                        }
+                        content.Children.Add(row);
                     }
-                    content.Children.Add(row);
-                }
-                break;
-            case "blocked" or "unsupported":
-                content.Children.Add(new TextBlock { Text = plan.Reason, TextWrapping = TextWrapping.Wrap, Foreground = (Brush)Application.Current.FindResource("Danger") });
-                break;
-            case "command":
-                content.Children.Add(new TextBlock { Text = $"命令预览 · 规则解析 · {plan.IntentLabel}", FontWeight = FontWeights.Bold });
-                content.Children.Add(new TextBlock { Text = $"作用域：{plan.ScopeLabel}", Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 4, 0, 0) });
-                content.Children.Add(new Border
-                {
-                    BorderBrush = (Brush)Application.Current.FindResource("Accent"),
-                    BorderThickness = new Thickness(3, 0, 0, 0),
-                    Padding = new Thickness(8, 0, 0, 0),
-                    Margin = new Thickness(0, 6, 0, 0),
-                    Child = new TextBlock { Text = plan.Summary, TextWrapping = TextWrapping.Wrap },
-                });
-                var risk = plan.Risk switch
-                {
-                    "high" => "高：整页命令，候选将过期", "medium" => "中：影响本页后续抽卡", _ => "低：局部字段修改",
-                };
-                content.Children.Add(new TextBlock
-                {
-                    Text = $"模型：规则解析，非模型调用 · 抽卡模型：{(view.SelectedModelAlias.Length > 0 ? view.SelectedModelAlias : "未选择")}\n费用：分镜字段修改 · 本次不调用图片模型 · 重新抽卡费用暂不可估算\n风险：{risk}",
-                    Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 8, 0, 0),
-                });
-                var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
-                actions.Children.Add(Kit.Act("确认执行", async (_, _) => await JournalAsync("accept"), "InkButton"));
-                var reject = Kit.Act("拒绝", async (_, _) => await JournalAsync("reject"), "Outline");
-                reject.Margin = new Thickness(8, 0, 0, 0);
-                actions.Children.Add(reject);
-                content.Children.Add(actions);
-                break;
+                    if (nlClarify)
+                        content.Children.Add(new TextBlock
+                        {
+                            Text = "点选目标后可直接再次点「AI 解析」，草稿不会清空。",
+                            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 8, 0, 0),
+                        });
+                    var clarifyCancel = Kit.Act("取消", (_, _) =>
+                    {
+                        plan = null; nlClarify = false; preview.Children.Clear();
+                    }, "Ghost");
+                    clarifyCancel.Margin = new Thickness(0, 10, 0, 0);
+                    content.Children.Add(clarifyCancel);
+                    break;
+                case "blocked" or "unsupported":
+                    content.Children.Add(new TextBlock { Text = plan.Reason, TextWrapping = TextWrapping.Wrap, Foreground = (Brush)Application.Current.FindResource("Danger") });
+                    break;
+            }
+        }
+        else if (previewGroup.ValueKind == JsonValueKind.Object)
+        {
+            RenderGroupPreview(content);
         }
         card.Child = content;
         preview.Children.Add(card);
     }
 
-    private async Task JournalAsync(string action)
+    /// <summary>命令组预览：规则预览单命令沿用意图文案；AI 解析组逐命令渲染（DIR-01C）。</summary>
+    private void RenderGroupPreview(StackPanel content)
     {
-        if (busy) return;
-        if (previewGroup.ValueKind != JsonValueKind.Object || previewGroup.Array("commands").Count == 0) return;
+        var commands = previewGroup.Array("commands");
+        if (commands.Count == 0) return;
+        var firstResult = previewGroup.Element("first_result");
+        var modelId = firstResult.Element("model").Text("model_id");
+        var title = previewGroup.Flag("idempotent_replay")
+            ? "历史重放"
+            : modelId.Length > 0 ? $"AI 解析 · {modelId}" : "规则解析";
+        content.Children.Add(new TextBlock
+        {
+            Text = $"命令预览 · {title} · {(commands.Count > 1 ? $"{commands.Count} 条命令" : (plan?.IntentLabel ?? Labels.Map(Labels.DirectorOperation, commands[0].Text("operation"))))}",
+            FontWeight = FontWeights.Bold,
+        });
+        if (commands.Count > 1)
+            content.Children.Add(new TextBlock
+            {
+                Text = $"AI 把指令编译成 {commands.Count} 条命令，逐条确认后才会执行。" +
+                    (firstResult.Flag("truncated") ? " 超出单次上限的命令已被截断。" : ""),
+                Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
+            });
+        foreach (var command in commands)
+        {
+            var section = new Border
+            {
+                BorderBrush = (Brush)Application.Current.FindResource("Line"), BorderThickness = new Thickness(0, 1, 0, 0),
+                Padding = new Thickness(0, 10, 0, 4), Margin = new Thickness(0, 4, 0, 0),
+            };
+            var body = new StackPanel();
+            if (commands.Count > 1)
+                body.Children.Add(new TextBlock { Text = $"命令：{Labels.Map(Labels.DirectorOperation, command.Text("operation"))}", FontWeight = FontWeights.SemiBold, FontSize = 12.5 });
+            body.Children.Add(new TextBlock { Text = $"作用域：{(commands.Count == 1 && plan != null ? plan.ScopeLabel : ScopeLabel(command))} · 状态：{Labels.Map(Labels.DirectorCommandStatus, command.Text("status", "PROPOSED"))}", Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 4, 0, 0) });
+            if (commands.Count == 1)
+                body.Children.Add(new Border
+                {
+                    BorderBrush = (Brush)Application.Current.FindResource("Accent"),
+                    BorderThickness = new Thickness(3, 0, 0, 0),
+                    Padding = new Thickness(8, 0, 0, 0),
+                    Margin = new Thickness(0, 6, 0, 0),
+                    Child = new TextBlock { Text = plan?.Summary ?? command.Element("source").Text("user_prompt"), TextWrapping = TextWrapping.Wrap },
+                });
+            var diff = command.Element("diff");
+            if (diff.ValueKind == JsonValueKind.Object)
+            {
+                var rows = diff.EnumerateObject().Where(pair => pair.Name != "text_metrics").ToList();
+                if (rows.Count > 0)
+                {
+                    var table = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+                    foreach (var pair in rows)
+                    {
+                        var change = pair.Value;
+                        table.Children.Add(new TextBlock
+                        {
+                            Text = $"{Labels.Map(Labels.DirectorDiffField, pair.Name)}：{FormatDiffValue(pair.Name, change.Element("before"))} → {FormatDiffValue(pair.Name, change.Element("after"))}",
+                            Style = (Style)Application.Current.FindResource("Micro"), TextWrapping = TextWrapping.Wrap,
+                        });
+                    }
+                    body.Children.Add(table);
+                }
+            }
+            var error = command.Element("error");
+            var errorMessage = error.Text("message");
+            if (errorMessage.Length > 0)
+            {
+                var stale = error.Text("code") == "VERSION_CONFLICT";
+                body.Children.Add(new TextBlock
+                {
+                    Text = errorMessage + (stale ? " 你的草稿已保留；请刷新页面拿到最新分镜版本后重新预览。" : ""),
+                    Foreground = (Brush)Application.Current.FindResource("Danger"),
+                    TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
+                });
+            }
+            var status = command.Text("status");
+            var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+            if (status == "PREVIEWED")
+            {
+                actions.Children.Add(Kit.Act("确认执行", async (_, _) => await JournalPreviewAsync(command.Text("command_id"), "accept"), "InkButton"));
+                var reject = Kit.Act("拒绝", async (_, _) => await JournalPreviewAsync(command.Text("command_id"), "reject"), "Outline");
+                reject.Margin = new Thickness(8, 0, 0, 0);
+                actions.Children.Add(reject);
+            }
+            else if (status == "EXECUTED")
+            {
+                actions.Children.Add(Kit.Caption("已执行 · 分镜已更新，可在历史里撤销。"));
+            }
+            else if (status is "FAILED" or "REJECTED")
+            {
+                var retry = Kit.Act("改口令重发", (_, _) => RetryCommand(command), "Outline");
+                actions.Children.Add(retry);
+            }
+            if (actions.Children.Count > 0) body.Children.Add(actions);
+            section.Child = body;
+            content.Children.Add(section);
+        }
+        var risk = plan?.Risk switch
+        {
+            "high" => "高：整页命令，候选将过期", "medium" => "中：影响本页后续抽卡", "low" => "低：局部字段修改", _ => null,
+        };
+        content.Children.Add(new TextBlock
+        {
+            Text = $"模型：{(modelId.Length > 0 ? $"文本模型 {modelId}" : "规则解析，非模型调用")} · 抽卡模型：{(view.SelectedModelAlias.Length > 0 ? view.SelectedModelAlias : "未选择")}\n费用：分镜字段修改 · 本次不调用图片模型 · 重新抽卡费用暂不可估算" + (risk != null ? $"\n风险：{risk}" : ""),
+            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 10, 0, 0),
+        });
+        var footer = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+        if (commands.Any(c => c.Text("status") == "PREVIEWED"))
+            footer.Children.Add(Kit.Act("丢弃", async (_, _) => await DiscardPreviewAsync(), "Ghost"));
+        if (commands.All(c => c.Text("status") == "EXECUTED"))
+            footer.Children.Add(Kit.Act("关闭", (_, _) =>
+            {
+                plan = null; previewGroup = default; preview.Children.Clear();
+            }, "Ghost"));
+        content.Children.Add(footer);
+    }
+
+    /// <summary>命令目标 → 作用域标签（web scopeLabelFromCommand 的原生对应）。</summary>
+    private string ScopeLabel(JsonElement command)
+    {
+        var target = command.Element("target");
+        var panels = view.Workbench.Element("storyboard").Array("panels");
+        var dialogueId = target.Text("dialogue_id");
+        var panelId = target.Text("panel_id");
+        if (dialogueId.Length > 0)
+        {
+            var panel = panels.FirstOrDefault(p => p.Text("id") == panelId);
+            var order = panel.Number("reading_order");
+            var dialogues = panel.Array("dialogues");
+            var index = dialogues.FindIndex(d => d.Text("id") == dialogueId);
+            return $"格 {(order > 0 ? order.ToString() : "?")} · 气泡 {(index >= 0 ? (index + 1).ToString() : "?")}";
+        }
+        if (panelId.Length > 0)
+        {
+            var panel = panels.FirstOrDefault(p => p.Text("id") == panelId);
+            var order = panel.Number("reading_order");
+            return $"格 {(order > 0 ? order.ToString() : "?")}";
+        }
+        if (target.Text("scene_id").Length > 0) return "主场景";
+        return "整页";
+    }
+
+    /// <summary>diff 值渲染（web formatDiffValue 的原生对应）：角色 id 解析为名字。</summary>
+    private string FormatDiffValue(string key, JsonElement value)
+    {
+        if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return "（空）";
+        if (key is "characters" or "character_presence" or "expressions")
+        {
+            var entries = new List<string>();
+            if (value.ValueKind == JsonValueKind.Array)
+                foreach (var id in value.EnumerateArray()) entries.Add(CharacterName(id.ToString()));
+            else if (value.ValueKind == JsonValueKind.Object)
+                foreach (var pair in value.EnumerateObject()) entries.Add($"{CharacterName(pair.Name)}：{pair.Value}");
+            return entries.Count == 0 ? "（空）" : string.Join("、", entries);
+        }
+        return value.ValueKind == JsonValueKind.String ? value.GetString()! : value.ToString();
+    }
+
+    private string CharacterName(string id) =>
+        previewCharacters.FirstOrDefault(c => c.Text("id") == id).Text("primary_name") is { Length: > 0 } name ? name : id;
+
+    private void RetryCommand(JsonElement command)
+    {
+        var chained = command.Text("retry_of_command_id");
+        retryOfCommandId = chained.Length > 0 ? chained : command.Text("command_id");
+        commandInput.Text = command.Element("source").Text("user_prompt");
+        selection = SelectionFromTarget(command.Element("target"));
+        plan = null;
+        previewGroup = default;
+        preview.Children.Clear();
+        BuildScopes();
+        commandInput.Focus();
+    }
+
+    /// <summary>
+    /// DIR-01B/01C：提交自然语言指令 → DIRECTOR_PARSE 任务 → 轮询命令组到终态。
+    /// 与 web parseUtterance 同一契约：PARSING 期间 1.5s 轮询、约 90s 上限；
+    /// NEEDS_CLARIFICATION/STALE/PARSE_FAILED 落到各自提示面，其余进入命令组预览。
+    /// </summary>
+    private async Task ParseAsync()
+    {
+        if (busy || view.CurrentPage == null || commandInput.Text.Trim().Length == 0) return;
+        busy = true;
+        aiParse.IsEnabled = false;
+        var generation = ++parseGeneration;
+        var token = parseLifetime.Token;
+        try
+        {
+            Dictionary<string, object?>? selectionPayload = selection switch
+            {
+                null or { Kind: "page" } => null,
+                { Kind: "panel" } => new() { ["kind"] = "panel", ["panel_id"] = selection.PanelId },
+                { Kind: "dialogue" } => selection.PanelId is { Length: > 0 } panelId
+                    ? new() { ["kind"] = "dialogue", ["dialogue_id"] = selection.DialogueId, ["panel_id"] = panelId }
+                    : new() { ["kind"] = "dialogue", ["dialogue_id"] = selection.DialogueId },
+                _ => new() { ["kind"] = "character", ["character_id"] = selection.CharacterId },
+            };
+            // 角色目录只用于 diff 里 id→名字 的显示解析，不参与提交。
+            var characters = await view.Api2().SendAsync($"projects/{view.ProjectId2}/characters", cancellation: token);
+            previewCharacters = characters.ValueKind == JsonValueKind.Array ? characters.EnumerateArray().ToList() : [];
+            var queued = await view.Api2().SendAsync($"projects/{view.ProjectId2}/director/utterances", HttpMethod.Post, new
+            {
+                utterance = commandInput.Text.Trim(),
+                page_id = view.CurrentPage.Id,
+                storyboard_version = view.CurrentPage.StoryboardVersion,
+                selection = selectionPayload,
+                client_request_id = Guid.NewGuid().ToString(),
+            }, token);
+            var groupId = queued.Text("command_group_id");
+            if (groupId.Length == 0) throw new InvalidOperationException("解析任务未返回命令组");
+            var group = default(JsonElement);
+            for (var attempt = 0; attempt < 60; attempt++)
+            {
+                if (attempt > 0) await Task.Delay(1500, token);
+                group = await view.Api2().SendAsync(
+                    $"projects/{view.ProjectId2}/director/command-groups/{groupId}", cancellation: token);
+                if (group.Text("status") != "PARSING") break;
+                if (attempt == 59)
+                    throw new InvalidOperationException("AI 解析超时：任务仍在进行，可稍后到命令历史查看结果");
+            }
+            if (token.IsCancellationRequested || generation != parseGeneration) return;
+            nlClarify = false;
+            plan = null;
+            previewGroup = default;
+            var firstResult = group.Element("first_result");
+            switch (group.Text("status"))
+            {
+                case "NEEDS_CLARIFICATION":
+                    plan = DirectorPlanResult.Clarify(
+                        firstResult.Text("reason", "需要补充信息"),
+                        firstResult.Array("clarify_options")
+                            .Select(o => (o.Text("kind"), o.Text("id") is { Length: > 0 } id ? id : null, o.Text("label")))
+                            .ToList());
+                    nlClarify = true;
+                    break;
+                case "STALE":
+                    plan = DirectorPlanResult.Blocked(firstResult.Text("reason", "分镜已变更，请重新发送指令"));
+                    break;
+                case "PARSE_FAILED":
+                    plan = DirectorPlanResult.Blocked(firstResult.Element("error").Text("message", "指令解析失败，请重试"));
+                    break;
+                default:
+                    previewGroup = group;
+                    break;
+            }
+            RenderPreview();
+            await LoadHistoryAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            if (token.IsCancellationRequested) return;
+            preview.Children.Clear();
+            preview.Children.Add(Kit.Caption("AI 解析失败：" + MediaErrors.Localize(error, "解析请求未能送达本地服务，请确认本地服务在线后重试。")));
+        }
+        finally
+        {
+            busy = false;
+            if (generation == parseGeneration) aiParse.IsEnabled = true;
+        }
+    }
+
+    /// <summary>
+    /// 预览内逐命令 accept/reject（web showJournalGroup 语义）：用应答组原地刷新
+    /// 预览，保留指令草稿；清空旧 plan 文案，避免规则解析的意图/风险行盖在
+    /// 新命令状态上（#165②）。
+    /// </summary>
+    private async Task JournalPreviewAsync(string commandId, string action)
+    {
+        if (busy || commandId.Length == 0) return;
         busy = true;
         try
         {
-            var commandId = previewGroup.Array("commands").FirstOrDefault().Text("command_id");
-            await view.Api2().SendAsync(
+            var group = await view.Api2().SendAsync(
                 $"projects/{view.ProjectId2}/director/commands/{commandId}/{action}", HttpMethod.Post);
-            // #847: accept/reject 已对预览组做出决定，草稿生命周期到此为止。旧实现
-            // 把应答组（同为 JSON 对象）赋回 previewGroup，HasDraft 从此永远为真：
-            // ReloadWorkbench 撞上渲染门被拦，工作台冻结在旧状态。按「改口令重发」
-            // 同款清理（指令/作用域/预览/重试链）后再重载。
-            commandInput.Text = "";
-            selection = null;
-            plan = null;
-            previewGroup = default;
-            retryOfCommandId = null;
-            preview.Children.Clear();
-            BuildScopes();
+            if (group.ValueKind == JsonValueKind.Object && group.Array("commands").Count > 0)
+            {
+                previewGroup = group;
+                plan = null;
+                nlClarify = false;
+                RenderPreview();
+            }
             await view.ReloadWorkbench();
             await LoadHistoryAsync();
         }
@@ -1858,6 +2139,50 @@ internal sealed class DirectorPane : Border
         {
             preview.Children.Add(Kit.Caption("执行失败：" + error.Message));
         }
+        finally { busy = false; }
+    }
+
+    private async Task DiscardPreviewAsync()
+    {
+        if (busy || previewGroup.ValueKind != JsonValueKind.Object) return;
+        var groupId = previewGroup.Text("command_group_id");
+        if (groupId.Length == 0) return;
+        busy = true;
+        try
+        {
+            await view.Api2().SendAsync(
+                $"projects/{view.ProjectId2}/director/command-groups/{groupId}/discard", HttpMethod.Post);
+            plan = null; previewGroup = default; nlClarify = false;
+            preview.Children.Clear();
+            await LoadHistoryAsync();
+        }
+        catch (Exception error)
+        {
+            preview.Children.Add(Kit.Caption("丢弃失败：" + error.Message));
+        }
+        finally { busy = false; }
+    }
+
+    /// <summary>历史区「继续预览」：把 PREVIEWED 组重新载入预览区（web reopenGroup）。</summary>
+    private async Task ReopenGroupAsync(string commandGroupId)
+    {
+        if (busy || commandGroupId.Length == 0) return;
+        busy = true;
+        try
+        {
+            var group = await view.Api2().SendAsync(
+                $"projects/{view.ProjectId2}/director/command-groups/{commandGroupId}");
+            if (group.ValueKind == JsonValueKind.Object && group.Array("commands").Count > 0)
+            {
+                var characters = await view.Api2().SendAsync($"projects/{view.ProjectId2}/characters");
+                previewCharacters = characters.ValueKind == JsonValueKind.Array ? characters.EnumerateArray().ToList() : [];
+                previewGroup = group;
+                plan = null;
+                nlClarify = false;
+                RenderPreview();
+            }
+        }
+        catch (Exception) { /* 历史入口读取失败不影响面板现有状态 */ }
         finally { busy = false; }
     }
 
@@ -1900,32 +2225,41 @@ internal sealed class DirectorPane : Border
                 if (origin.ValueKind != JsonValueKind.Object) origin = command;
                 var (undoId, redoId) = HistoryActionIds(commands);
                 var item = new StackPanel { Margin = new Thickness(0, 6, 0, 10) };
+                var groupStatus = group.Text("status", command.Text("status", "PROPOSED"));
                 var status = command.Text("status", "PROPOSED");
                 item.Children.Add(new TextBlock
                 {
-                    Text = $"{Labels.Map(Labels.DirectorOperation, command.Text("operation"))} · {Labels.Map(Labels.DirectorCommandStatus, status)}",
+                    Text = $"{(command.ValueKind == JsonValueKind.Object ? Labels.Map(Labels.DirectorOperation, command.Text("operation")) : "AI 指令")} · {Labels.Map(Labels.DirectorCommandStatus, groupStatus)}",
                     FontWeight = FontWeights.Bold, FontSize = 12.5,
                 });
-                item.Children.Add(new TextBlock
+                var prompt = origin.Element("source").Text("user_prompt");
+                if (prompt.Length > 0)
+                    item.Children.Add(new TextBlock
+                    {
+                        Text = prompt, FontStyle = FontStyles.Italic,
+                        Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 3, 0, 0),
+                    });
+                // AI 解析组可能没有命令体：澄清/过期/失败原因落在 first_result 上。
+                var firstResult = group.Element("first_result");
+                var outcome = firstResult.Text("reason") is { Length: > 0 } reason
+                    ? reason
+                    : firstResult.Element("error").Text("message");
+                if (outcome.Length > 0 && groupStatus is not "PROPOSED" and not "PREVIEWED")
+                    item.Children.Add(new TextBlock
+                    {
+                        Text = outcome, TextWrapping = TextWrapping.Wrap,
+                        Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 3, 0, 0),
+                    });
+                if (groupStatus == "PREVIEWED")
                 {
-                    Text = origin.Element("source").Text("user_prompt"), FontStyle = FontStyles.Italic,
-                    Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 3, 0, 0),
-                });
+                    var reopen = Kit.Act("继续预览", async (_, _) => await ReopenGroupAsync(group.Text("command_group_id")), "Outline");
+                    reopen.Margin = new Thickness(0, 6, 0, 0);
+                    item.Children.Add(reopen);
+                }
                 if (status is "FAILED" or "REJECTED")
                 {
                     // 改口令重发：沿用原指令与作用域，把 retry_of_command_id 链到原命令
-                    var retry = Kit.Act("改口令重发", (_, _) =>
-                    {
-                        var chained = command.Text("retry_of_command_id");
-                        retryOfCommandId = chained.Length > 0 ? chained : command.Text("command_id");
-                        commandInput.Text = command.Element("source").Text("user_prompt");
-                        selection = SelectionFromTarget(command.Element("target"));
-                        plan = null;
-                        previewGroup = default;
-                        preview.Children.Clear();
-                        BuildScopes();
-                        commandInput.Focus();
-                    }, "Outline");
+                    var retry = Kit.Act("改口令重发", (_, _) => RetryCommand(command), "Outline");
                     retry.Margin = new Thickness(0, 6, 0, 0);
                     item.Children.Add(retry);
                 }
@@ -1949,7 +2283,7 @@ internal sealed class DirectorPane : Border
                     await LoadHistoryAsync();
                 }, "Ghost");
                 discard.Margin = new Thickness(0, 6, 0, 0);
-                if (status is "PROPOSED" or "PREVIEWED") item.Children.Add(discard);
+                if (groupStatus is "PROPOSED" or "PREVIEWED") item.Children.Add(discard);
                 history.Children.Add(item);
             }
         }

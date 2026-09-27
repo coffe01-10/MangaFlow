@@ -11,7 +11,7 @@ public sealed record DirectorScope(string Kind, string? PanelId, string? Dialogu
 {
     public static DirectorScope Page() => new("page", null, null, null);
     public static DirectorScope Panel(string id) => new("panel", id, null, null);
-    public static DirectorScope Dialogue(string panelId, string dialogueId) => new("dialogue", dialogueId, panelId, null);
+    public static DirectorScope Dialogue(string panelId, string dialogueId) => new("dialogue", panelId, dialogueId, null);
     public static DirectorScope Character(string id) => new("character", null, null, id);
 }
 

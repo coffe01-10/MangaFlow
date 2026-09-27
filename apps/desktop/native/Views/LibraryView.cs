@@ -32,6 +32,7 @@ public sealed partial class LibraryView : WorkspaceView
     private int activation, exportsRead;
     private string lastProject = "";
     private string? readyChapter;
+    private WrapPanel? exportGate;
 
     public LibraryView()
     {
@@ -286,12 +287,22 @@ public sealed partial class LibraryView : WorkspaceView
     }
 
     private ChapterItem? ExportChapterSelection => chapters.FirstOrDefault(c => c.Id == Selected(chapterSelector)) ?? chapters.FirstOrDefault();
+    // WEBTOON 产物是切片 ZIP（PUB-01B 契约）；标签与扩展名集中在两处映射，
+    // 避免列表文案与下载后缀分叉。
+    internal static string ExportLabel(string exportType) => exportType switch
+    {
+        "PNG" => "原图 ZIP", "WEBTOON" => "条漫 ZIP", _ => exportType,
+    };
+    internal static string ExportExtension(string exportType) => exportType switch
+    {
+        "PNG" or "WEBTOON" => ".zip", "PDF" => ".pdf", _ => ".json",
+    };
     private async Task LoadExportsAsync()
     {
         if (Context == null || lifetime.IsCancellationRequested || populating) return;
         var request = ++exportsRead; var epoch = activation; var token = lifetime.Token;
         var chapter = ExportChapterSelection; var project = ProjectId;
-        readyChapter = null; exportDesk.Children.Clear(); exportList.Children.Clear();
+        readyChapter = null; exportGate = null; exportDesk.Children.Clear(); exportList.Children.Clear();
         bool Current() => request == exportsRead && epoch == activation && !token.IsCancellationRequested;
         async Task ReadReadiness()
         {
@@ -307,14 +318,23 @@ public sealed partial class LibraryView : WorkspaceView
                 status.Children.Add(new TextBlock { Text = "EXPORT / 整章导出门禁", Foreground = light, FontSize = 10, FontWeight = FontWeights.Bold });
                 status.Children.Add(new TextBlock { Text = $"第 {chapter.Ordinal} 章 · {chapter.Title} · {data.Number("ready_pages")}/{data.Number("total_pages")} 页生产通过", Foreground = Brushes.White, FontFamily = (FontFamily)FindResource("Serif"), FontWeight = FontWeights.Bold, FontSize = 14, Margin = new Thickness(0, 5, 0, 4) });
                 status.Children.Add(new TextBlock { Text = ready ? "全部页面已完成校对、版本确认和视觉检查" : "请完成下列页面的生产检查后再导出。", Foreground = light, FontSize = 11 });
-                var actions = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, IsEnabled = ready && !exporting };
-                foreach (var type in new[] { "PNG", "PDF", "JSON" })
+                var actions = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
+                // 手机预览不受生产门禁限制：未达标页在预览内原位给阻塞原因（PUB-01A）。
+                var mobilePreview = Kit.Act("▣ 手机预览", (_, _) => OpenMobilePreview(chapter), "Compact");
+                mobilePreview.Foreground = Brushes.White; mobilePreview.Background = Brushes.Transparent;
+                mobilePreview.BorderBrush = light; mobilePreview.Margin = new Thickness(6, 2, 0, 2);
+                mobilePreview.ToolTip = "只读预览：已采用页面按页码竖排，含切片边界与未达标页诊断";
+                actions.Children.Add(mobilePreview);
+                var gated = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, IsEnabled = ready && !exporting };
+                exportGate = gated;
+                foreach (var type in new[] { "PNG", "PDF", "JSON", "WEBTOON" })
                 {
-                    var button = Kit.Act("↓ " + (type == "PNG" ? "原图 ZIP" : type), async (_, _) => await ExportChapter(chapter.Id, type), "Compact");
+                    var button = Kit.Act("↓ " + (type == "PNG" ? "原图 ZIP" : type == "WEBTOON" ? "条漫包" : type), async (_, _) => await ExportChapter(chapter.Id, type), "Compact");
                     button.Foreground = Brushes.White; button.Background = Brushes.Transparent;
                     button.BorderBrush = light; button.Margin = new Thickness(6, 2, 0, 2);
-                    actions.Children.Add(button);
+                    gated.Children.Add(button);
                 }
+                actions.Children.Add(gated);
                 exportDesk.Children.Add(new Border { Padding = new Thickness(16), Background = ready ? new SolidColorBrush(Color.FromRgb(32, 58, 40)) : (Brush)FindResource("Ink"),
                     Child = new PageHeading(status, actions) });
                 foreach (var page in data.Array("pages").Where(p => !p.Flag("ready")).Take(4))
@@ -344,11 +364,11 @@ public sealed partial class LibraryView : WorkspaceView
                 var rows = await Api.SendAsync($"projects/{project}/exports", cancellation: token);
                 if (!Current()) return;
                 exportList.Children.Add(new TextBlock { Text = "导出文件", Style = (Style)FindResource("SectionIndex"), Margin = new Thickness(0, 14, 0, 6) });
-                if (rows.GetArrayLength() == 0) exportList.Children.Add(Kit.Caption("还没有导出文件；通过门禁后即可导出整章原图 ZIP / PDF / JSON。"));
+                if (rows.GetArrayLength() == 0) exportList.Children.Add(Kit.Caption("还没有导出文件；通过门禁后即可导出整章原图 ZIP / PDF / JSON / 条漫包。"));
                 foreach (var row in rows.EnumerateArray())
                 {
                     var item = ExportItem.From(row);
-                    var label = item.ExportType == "PNG" ? "原图 ZIP" : item.ExportType;
+                    var label = ExportLabel(item.ExportType);
                     var download = Kit.Act($"{label} · {item.PageCount} 页 · {item.SizeLabel}    ↓ 下载", async (sender, _) => await Download(item, (Button)sender), "Ghost");
                     download.HorizontalAlignment = HorizontalAlignment.Left; exportList.Children.Add(download);
                 }
@@ -379,12 +399,22 @@ public sealed partial class LibraryView : WorkspaceView
         catch (Exception error) { if (epoch == activation && !token.IsCancellationRequested) notice.Text = "导出失败，请刷新核对：" + MediaErrors.Localize(error, "导出请求未能送达本地服务，请确认本地服务在线后重试。"); }
         finally
         {
-            if (epoch == activation) { exporting = false; exportDesk.IsEnabled = true; foreach (var item in Descendants(exportDesk).OfType<WrapPanel>()) item.IsEnabled = readyChapter != null; }
+            if (epoch == activation) { exporting = false; exportDesk.IsEnabled = true; if (exportGate != null) exportGate.IsEnabled = readyChapter != null; }
         }
+    }
+    private void OpenMobilePreview(ChapterItem chapter)
+    {
+        if (Context == null || lifetime.IsCancellationRequested) return;
+        var project = ProjectId; var epoch = activation;
+        // 预览窗口内「导出条漫包」成功后回刷导出记录；窗口关闭不触发任何写操作。
+        new MobilePreviewWindow(Context, chapter, async () =>
+        {
+            if (epoch == activation && !lifetime.IsCancellationRequested) await LoadExportsAsync();
+        }).ShowDialog();
     }
     private async Task Download(ExportItem item, Button button)
     {
-        var extension = item.ExportType switch { "PNG" => ".zip", "PDF" => ".pdf", _ => ".json" };
+        var extension = ExportExtension(item.ExportType);
         var dialog = new SaveFileDialog { Title = "保存导出文件", FileName = "mangaflow-" + item.Id + extension, Filter = $"导出文件|*{extension}", DefaultExt = extension, AddExtension = true };
         if (dialog.ShowDialog(Host) != true) return;
         button.IsEnabled = false;
@@ -398,12 +428,6 @@ public sealed partial class LibraryView : WorkspaceView
         catch (OperationCanceledException) { if (epoch == activation) notice.Text = "下载超时，请重试；原有文件未被替换。"; }
         catch (Exception error) { if (epoch == activation && !token.IsCancellationRequested) notice.Text = "下载失败，可重试：" + MediaErrors.Localize(error, "导出文件下载未能送达本地服务，请确认本地服务在线后重试。"); }
         finally { button.IsEnabled = true; }
-    }
-    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
-    {
-        yield return root;
-        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
-            foreach (var item in Descendants(child)) yield return item;
     }
     public override async Task RefreshAsync()
     {

@@ -92,7 +92,7 @@ internal static class NativeIssueP2ClusterChecks
                 await ProjectSwitchClearsDirectorDraft();
                 Console.WriteLine("PASS: #847 项目切换清理导演台草稿——渲染门不再挡新项目、无幽灵离开提示");
                 await DirectorAcceptClearsDraft();
-                Console.WriteLine("PASS: #847 accept 后预览草稿清空——重载不再被 HasDraft 冻结");
+                Console.WriteLine("PASS: #847/DIR-01C accept 后预览原地刷新 EXECUTED 态、「关闭」释放预览草稿——工作台数据不冻结且无静默卡死");
                 await RestoreDrainsSaveChain();
                 Console.WriteLine("PASS: #810 恢复版本前排干保存链——恢复 POST 晚于挂起 PATCH 完成");
                 await PreserveActivationFlushesSilently();
@@ -142,9 +142,12 @@ internal static class NativeIssueP2ClusterChecks
         finally { view.Deactivate(); }
     }
 
-    // ── ② #847-2：accept 清空预览草稿 ──
-    // 失败构造（原始缺陷）：JournalAsync 把应答组赋回 previewGroup（对象 → HasDraft
-    // 永真）——「HasDraft 为假」与「重载确实发生」断言失败，工作台冻结。
+    // ── ② #847-2（DIR-01C 语义修订）：accept 后预览原地刷新 + 确定释放出口 ──
+    // 原始缺陷：旧实现把应答组赋回 previewGroup 却无任何可见出口（HasDraft 永真、
+    // 工作台静默冻结）。DIR-01C 逐条确认契约（web showJournalGroup 同款）要求
+    // accept 后预览保留并展示执行结果——冻结防护改为「预览卡给出明确的 已执行
+    // 状态与「关闭」按钮，关闭才释放草稿」。断言：accept POST 发出、工作台确实
+    // 重读（数据不冻结）、预览卡呈现 EXECUTED 状态、点「关闭」后预览组释放。
     private static async Task DirectorAcceptClearsDraft()
     {
         var fixture = new DirectorAcceptFixture();
@@ -164,12 +167,19 @@ internal static class NativeIssueP2ClusterChecks
             Require(pane.HasDraft, "前置失败：预览草稿构造未成立");
 
             var reads = fixture.WorkbenchReads;
-            await (Task)typeof(DirectorPane).GetMethod("JournalAsync", All)!.Invoke(pane, new object?[] { "accept" })!;
+            await (Task)typeof(DirectorPane).GetMethod("JournalPreviewAsync", All)!.Invoke(pane, new object?[] { "cmd-1", "accept" })!;
             await Until(() => fixture.Accepts >= 1);
             await Until(() => fixture.WorkbenchReads > reads);
 
-            Require(!pane.HasDraft, "accept 后预览草稿必须清空（HasDraft 为假，#847）");
-            Require(CommandInput(pane).Text.Length == 0, "accept 后指令输入必须清空（#847）");
+            // 预览卡必须呈现执行结果与「关闭」出口，而不是静默冻结（#847 的教训）。
+            var previewPanel = Field<StackPanel>(pane, "preview");
+            Require(Descendants(previewPanel).OfType<TextBlock>().Any(t => t.Text.Contains("已执行")),
+                "accept 后预览必须呈现已执行状态（DIR-01C 逐条确认后的结果面）");
+            var close = Descendants(previewPanel).OfType<Button>().FirstOrDefault(b => b.Content as string == "关闭");
+            Require(close != null, "accept 后预览必须给出「关闭」出口（否则预览草稿无释放路径，#847 冻结回归）");
+            close.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            var group = (JsonElement)typeof(DirectorPane).GetField("previewGroup", All)!.GetValue(pane)!;
+            Require(group.ValueKind != JsonValueKind.Object, "「关闭」必须释放预览组（previewGroup 归位）");
         }
         finally { view.Deactivate(); }
     }
@@ -466,7 +476,8 @@ internal static class NativeIssueP2ClusterChecks
             if (request.Method == HttpMethod.Post && path.Contains("/director/commands/") && path.EndsWith("/accept"))
             {
                 Accepts++;
-                return Task.FromResult(Response("""{"command_group_id":"grp-1","commands":[]}"""));
+                return Task.FromResult(Response(
+                    """{"command_group_id":"grp-1","status":"COMMITTED","commands":[{"command_id":"cmd-1","status":"EXECUTED","operation":"update_dialogue","target":{},"source":{"user_prompt":"待执行的导演指令"},"diff":{}}]}"""));
             }
             if (request.Method == HttpMethod.Get)
             {

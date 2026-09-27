@@ -274,6 +274,14 @@ public static class Labels
         ["SUPERSEDED"] = "已被更新取代",
         ["DISCARDED"] = "已丢弃",
         ["FAILED"] = "执行失败",
+        // DIR-01A/01B：命令组级状态（组内混算结果）
+        ["PARTIALLY_ACCEPTED"] = "部分已执行",
+        ["PARTIALLY_REJECTED"] = "部分已拒绝",
+        ["COMMITTED"] = "已提交",
+        ["PARSING"] = "AI 解析中",
+        ["NEEDS_CLARIFICATION"] = "待澄清",
+        ["STALE"] = "分镜已变更",
+        ["PARSE_FAILED"] = "解析失败",
     };
 
     public static readonly IReadOnlyDictionary<string, string> DirectorDiffField = new Dictionary<string, string>
