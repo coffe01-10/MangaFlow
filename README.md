@@ -35,7 +35,7 @@ This is a workflow diagram, not a product screenshot. MangaFlow is not an unatte
 ## Promo video
 
 <p align="center">
-  <a href="assets/readme/mangaflow-promo.mp4"><img src="assets/readme/mangaflow-promo-poster.jpg" width="920" alt="Play the 56-second MangaFlow animated promo, showing page candidates from the creative workflow"></a>
+  <video src="https://github.com/coffe01-10/MangaFlow/raw/master/assets/readme/mangaflow-promo.mp4" poster="https://raw.githubusercontent.com/coffe01-10/MangaFlow/master/assets/readme/mangaflow-promo-poster.jpg" width="920" controls muted loop playsinline autoplay></video>
 </p>
 
 [Watch the 56-second promo video](assets/readme/mangaflow-promo.mp4). This animation illustrates the workflow; it is not a recording of the application UI.
