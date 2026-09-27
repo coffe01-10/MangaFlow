@@ -853,6 +853,24 @@ a { color: inherit; text-decoration: none; }
 .chapter-production-blockers strong { font-size: 9px; font-weight: 650; }
 .export-list { display: grid; }
 .export-list a { min-height: 39px; padding: 0 10px; display: grid; grid-template-columns: 20px 1fr 20px; align-items: center; border-bottom: 1px solid var(--line); font-size: 8px; }
+
+/* PUB-01A 章节手机阅读预览：弹层内手机宽列 + 虚线切片边界。 */
+.mobile-preview-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.mobile-preview-toolbar label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+.mobile-preview-toolbar select { height: 28px; border: 1px solid var(--line-dark); background: var(--paper); color: var(--ink); padding: 0 6px; font-size: 10px; }
+.mobile-preview-summary { margin-left: auto; color: var(--muted); font-size: 10px; }
+.mobile-preview-stage { max-height: calc(100vh - 220px); overflow: auto; display: flex; justify-content: center; padding: 18px; border: 1px solid var(--line); background: var(--paper-deep); }
+.mobile-preview-device { flex: none; border: 1px solid var(--ink); background: var(--ink); }
+.mobile-preview-strip { position: relative; }
+.mobile-preview-page { position: absolute; left: 0; }
+.mobile-preview-page img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.mobile-preview-page.blocked { display: grid; place-content: center; gap: 6px; padding: 12px; text-align: center; border: 1px dashed var(--line-dark); border-left: 0; border-right: 0; background: rgba(244,241,233,.92); }
+.mobile-preview-page.blocked strong { font-family: var(--serif); font-size: 14px; color: var(--ink); }
+.mobile-preview-page.blocked span { color: var(--muted); font-size: 9px; line-height: 1.6; }
+.mobile-preview-slice-boundary { position: absolute; left: -14px; right: -14px; border-top: 1px dashed var(--vermillion); pointer-events: none; }
+.mobile-preview-slice-boundary em { position: absolute; right: -2px; top: -9px; padding: 1px 5px; background: var(--vermillion); color: #fff; font-size: 8px; font-style: normal; }
+.mobile-preview-oversized { position: absolute; left: -14px; right: -14px; border: 1px dashed var(--amber); pointer-events: none; }
+.mobile-preview-oversized em { position: absolute; left: 0; top: -9px; padding: 1px 5px; background: var(--amber); color: #fff; font-size: 8px; font-style: normal; }
 .library-pagination { display: flex; justify-content: center; align-items: center; gap: 10px; padding: 17px 0; }
 .library-pagination button { min-height: 31px; display: flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line-dark); background: transparent; cursor: pointer; font-size: 8px; }
 .library-pagination button:disabled { opacity: .35; cursor: not-allowed; }

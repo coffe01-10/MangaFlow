@@ -9,6 +9,7 @@ from app.api.routes.workflow.common import _page, _page_candidate_count, _page_r
 from app.config import get_settings
 from app.database import get_db
 from app.models import (
+    Asset,
     Chapter,
     GenerationBatch,
     MangaPage,
@@ -16,9 +17,11 @@ from app.models import (
     Panel,
 )
 from app.schemas import (
+    ChapterMobilePreviewRead,
     ChapterProductionReadinessRead,
     GenerationBatchRead,
     GenerationWorkbenchRead,
+    MobilePreviewPageRead,
     PageProductionReadinessRead,
     PageRead,
     PageReadinessRead,
@@ -90,6 +93,75 @@ def get_chapter_production_readiness(
         raise HTTPException(status_code=404, detail="章节不存在")
     ensure_project_scope(db, chapter, project_id, label="章节")
     return build_chapter_production_readiness(db, chapter)
+
+
+@router.get(
+    "/chapters/{chapter_id}/mobile-preview",
+    response_model=ChapterMobilePreviewRead,
+)
+def get_chapter_mobile_preview(
+    chapter_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> ChapterMobilePreviewRead:
+    chapter = db.get(Chapter, chapter_id)
+    if not chapter or chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    ensure_project_scope(db, chapter, project_id, label="章节")
+    pages = list(
+        db.scalars(
+            select(MangaPage)
+            .where(MangaPage.chapter_id == chapter_id)
+            .order_by(MangaPage.page_number, MangaPage.revision_no)
+        )
+    )
+    states = {
+        entry.page_id: entry
+        for entry in build_chapter_production_readiness(db, chapter).pages
+    }
+    candidate_ids = {
+        entry.selected_candidate_id
+        for entry in states.values()
+        if entry.ready and entry.selected_candidate_id
+    }
+    candidates = {
+        candidate.id: candidate
+        for candidate in db.scalars(
+            select(PageCandidate).where(PageCandidate.id.in_(candidate_ids))
+        )
+    } if candidate_ids else {}
+    asset_ids = {candidate.asset_id for candidate in candidates.values() if candidate.asset_id}
+    assets = {
+        asset.id: asset
+        for asset in db.scalars(select(Asset).where(Asset.id.in_(asset_ids)))
+    } if asset_ids else {}
+    items: list[MobilePreviewPageRead] = []
+    for page in pages:
+        entry = states[page.id]
+        candidate = candidates.get(entry.selected_candidate_id) if entry.ready else None
+        asset = assets.get(candidate.asset_id) if candidate and candidate.asset_id else None
+        items.append(
+            MobilePreviewPageRead(
+                page_id=page.id,
+                page_number=page.page_number,
+                state=entry.state,
+                ready=entry.ready,
+                image_url=(
+                    f"/api/v1/assets/{asset.id}/thumbnail/640" if asset else None
+                ),
+                full_image_url=(
+                    f"/api/v1/pages/{page.id}/export.png" if entry.ready else None
+                ),
+                width=asset.width if asset else None,
+                height=asset.height if asset else None,
+                blockers=entry.blockers,
+            )
+        )
+    return ChapterMobilePreviewRead(
+        chapter_id=chapter.id,
+        title=chapter.title,
+        pages=items,
+    )
 
 
 @router.get(

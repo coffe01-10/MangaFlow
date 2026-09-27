@@ -1056,6 +1056,24 @@ class ChapterProductionReadinessRead(BaseModel):
     pages: list[PageProductionReadinessRead] = Field(default_factory=list)
 
 
+class MobilePreviewPageRead(BaseModel):
+    page_id: str
+    page_number: int
+    state: str
+    ready: bool
+    image_url: str | None = None
+    full_image_url: str | None = None
+    width: int | None = None
+    height: int | None = None
+    blockers: list[ProductionBlocker] = Field(default_factory=list)
+
+
+class ChapterMobilePreviewRead(BaseModel):
+    chapter_id: str
+    title: str
+    pages: list[MobilePreviewPageRead] = Field(default_factory=list)
+
+
 class GenerationWorkbenchRead(BaseModel):
     page: PageRead
     storyboard: StoryboardRead

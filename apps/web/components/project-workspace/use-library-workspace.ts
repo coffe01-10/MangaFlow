@@ -49,6 +49,7 @@ export function useLibraryWorkspace({
   activeChapterId: string | null;
 }) {
   const queryClient = useQueryClient();
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [favoriteOnly, setFavoriteOnly] = useState(false);
   const [libraryChapter, setLibraryChapter] = useState("");
   const [libraryCharacter, setLibraryCharacter] = useState("");
@@ -91,6 +92,9 @@ export function useLibraryWorkspace({
   });
 
   return {
+    activeChapterId,
+    previewOpen,
+    setPreviewOpen,
     favoriteOnly,
     setFavoriteOnly,
     libraryChapter,

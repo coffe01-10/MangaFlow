@@ -662,6 +662,24 @@ export interface ChapterProductionReadiness {
   pages: PageProductionReadiness[];
 }
 
+export interface MobilePreviewPage {
+  page_id: string;
+  page_number: number;
+  state: PageProductionReadiness["state"];
+  ready: boolean;
+  image_url: string | null;
+  full_image_url: string | null;
+  width: number | null;
+  height: number | null;
+  blockers: ProductionBlocker[];
+}
+
+export interface ChapterMobilePreview {
+  chapter_id: string;
+  title: string;
+  pages: MobilePreviewPage[];
+}
+
 export interface GenerationBatch {
   id: string;
   project_id: string;
@@ -1676,6 +1694,8 @@ export const api = {
     request<PageProductionReadiness>(`/pages/${pageId}/production-readiness`),
   chapterProductionReadiness: (chapterId: string) =>
     request<ChapterProductionReadiness>(`/chapters/${chapterId}/production-readiness`),
+  chapterMobilePreview: (chapterId: string) =>
+    request<ChapterMobilePreview>(`/chapters/${chapterId}/mobile-preview`),
   generationWorkbench: (pageId: string) =>
     request<GenerationWorkbench>(`/pages/${pageId}/generation-workbench`),
   storyboard: (pageId: string) => request<Storyboard>(`/pages/${pageId}/storyboard`),
