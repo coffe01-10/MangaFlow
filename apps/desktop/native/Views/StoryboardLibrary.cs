@@ -71,6 +71,10 @@ public sealed partial class StoryboardView
     // ---- 快照对比幽灵 --------------------------------------------------------
     private string? compareSnapshotId;
     private CanvasState? compareState;
+    // A/B 版式对比：两份快照各标一侧（A 紫 / B 青），选择条采用其一为普通命令。
+    private string? compareSideAId, compareSideBId;
+    private Border compareBarElement = new() { Visibility = Visibility.Collapsed };
+    private TextBlock compareBarText = new();
     private readonly List<FrameworkElement> ghostElements = [];
 
     private List<StoryboardSnapshot> snapshots = [];
@@ -291,12 +295,18 @@ public sealed partial class StoryboardView
     private void DeleteSnapshot(string id)
     {
         if (compareSnapshotId == id) { compareSnapshotId = null; compareState = null; RenderGhosts(); }
+        if (compareSideAId == id) compareSideAId = null;
+        if (compareSideBId == id) compareSideBId = null;
+        RenderGhosts();
         WriteSnapshots(LoadSnapshots().Where(s => s.Id != id).ToList());
         Notice("已删除快照");
     }
 
     private void ToggleCompareSnapshot(string id)
     {
+        // 单份对比与 A/B 对比共用同一叠层：进入其一清空另一侧标记。
+        compareSideAId = null;
+        compareSideBId = null;
         compareSnapshotId = compareSnapshotId == id ? null : id;
         compareState = compareSnapshotId == null
             ? null
@@ -304,25 +314,69 @@ public sealed partial class StoryboardView
         RenderGhosts();
     }
 
-    /// <summary>幽灵轮廓：快照态面板/气泡以紫色虚线叠在当前画布上（对齐 web
-    /// .canvas-ghost）。随 UpdatePageSize 重定位，随 RenderCanvas 重建挂载。</summary>
+    /// <summary>把快照标到 A/B 某一侧（再点同侧取消）。有任意一侧存活即进
+    /// A/B 模式：单份对比的 compareSnapshotId 被清掉，双色幽灵立刻叠上。</summary>
+    private void MarkCompareSide(string id, bool sideA)
+    {
+        compareSnapshotId = null;
+        compareState = null;
+        if (sideA) compareSideAId = compareSideAId == id ? null : id;
+        else compareSideBId = compareSideBId == id ? null : id;
+        RenderGhosts();
+    }
+
+    /// <summary>采用某一侧快照：走普通快照恢复命令（撤销栈接管回滚），
+    /// 采用后退出 A/B 对比。</summary>
+    private void AdoptCompareSide(bool sideA)
+    {
+        var id = sideA ? compareSideAId : compareSideBId;
+        var snapshot = id == null ? null : LoadSnapshots().FirstOrDefault(s => s.Id == id);
+        if (snapshot == null) return;
+        RunSnapshotRestore(snapshot);
+        compareSideAId = null;
+        compareSideBId = null;
+        RenderGhosts();
+        Notice($"已采用「{snapshot.Name}」版式，可撤销");
+    }
+
+    private void ExitCompareAB()
+    {
+        compareSideAId = null;
+        compareSideBId = null;
+        RenderGhosts();
+    }
+
+    /// <summary>幽灵轮廓：快照态面板/气泡以虚线叠在当前画布上（对齐 web
+    /// .canvas-ghost）。单份对比为紫色；A/B 模式 A 侧紫、B 侧青。
+    /// 随 UpdatePageSize 重定位，随 RenderCanvas 重建挂载。</summary>
     private void RenderGhosts()
     {
         foreach (var element in ghostElements) page.Children.Remove(element);
         ghostElements.Clear();
-        if (compareState == null || page.Width <= 0) return;
-        foreach (var (id, panel) in compareState.Panels) AddGhost(panel.Rect, $"panel:{id}");
-        foreach (var (id, bubble) in compareState.Bubbles) AddGhost(bubble.Rect, $"bubble:{id}", ellipse: true);
+        var snapA = compareSideAId == null ? null : snapshots.FirstOrDefault(s => s.Id == compareSideAId);
+        var snapB = compareSideBId == null ? null : snapshots.FirstOrDefault(s => s.Id == compareSideBId);
+        UpdateCompareBar(snapA, snapB);
+        if (page.Width <= 0) return;
+        if (compareState is { } single) AddStateGhosts(single, "ghost", VioletBrush);
+        if (snapA?.State is { } stateA) AddStateGhosts(stateA, "ghost:a", VioletBrush);
+        if (snapB?.State is { } stateB) AddStateGhosts(stateB, "ghost:b", TealBrush);
 
-        void AddGhost(Rect rect, string key, bool ellipse = false)
+        void AddStateGhosts(CanvasState state, string tagPrefix, Brush color)
+        {
+            foreach (var (id, panel) in state.Panels) AddGhost(panel.Rect, $"{tagPrefix}:panel:{id}", color);
+            foreach (var (id, bubble) in state.Bubbles) AddGhost(bubble.Rect, $"{tagPrefix}:bubble:{id}", color, ellipse: true);
+        }
+
+        void AddGhost(Rect rect, string key, Brush color, bool ellipse = false)
         {
             Shape shape = ellipse ? new Ellipse() : new Rectangle();
-            shape.Stroke = new SolidColorBrush(Color.FromRgb(0x7a, 0x5f, 0xb8));
+            shape.Stroke = color;
             shape.StrokeThickness = 1.5;
             shape.StrokeDashArray = new DoubleCollection([4, 3]);
-            shape.Fill = new SolidColorBrush(Color.FromArgb(18, 0x7a, 0x5f, 0xb8));
+            var c = ((SolidColorBrush)color).Color;
+            shape.Fill = new SolidColorBrush(Color.FromArgb(18, c.R, c.G, c.B));
             shape.IsHitTestVisible = false;
-            shape.Tag = $"ghost:{key}";
+            shape.Tag = key;
             shape.Width = rect.Width * page.Width;
             shape.Height = rect.Height * page.Height;
             Canvas.SetLeft(shape, rect.X * page.Width);
@@ -331,6 +385,48 @@ public sealed partial class StoryboardView
             ghostElements.Add(shape);
             page.Children.Add(shape);
         }
+    }
+
+    private static readonly SolidColorBrush VioletBrush = new(Color.FromRgb(0x7a, 0x5f, 0xb8));
+    private static readonly SolidColorBrush TealBrush = new(Color.FromRgb(0x2b, 0x7a, 0x78));
+
+    /// <summary>A/B 选择条：两侧都标了才出现（对齐 web compare-bar），叠在画布
+    /// 顶部居中；回放条在底部、回放开启时 A/B 已被清场，互不遮挡。</summary>
+    private void UpdateCompareBar(StoryboardSnapshot? snapA, StoryboardSnapshot? snapB)
+    {
+        var open = snapA != null && snapB != null;
+        compareBarElement.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        if (open) compareBarText.Text = $"A {snapA!.Name}  ↔  B {snapB!.Name}";
+    }
+
+    private Border BuildCompareBar()
+    {
+        compareBarText = new TextBlock { FontSize = 11, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        panel.Children.Add(compareBarText);
+        Button Make(string text, RoutedEventHandler onClick)
+        {
+            var button = new Button { Content = text, Style = (Style)Application.Current.FindResource("Compact"), MinHeight = 30, Margin = new Thickness(0, 0, 6, 0) };
+            button.Click += onClick;
+            panel.Children.Add(button);
+            return button;
+        }
+        Make("采用 A", (_, _) => AdoptCompareSide(true));
+        Make("采用 B", (_, _) => AdoptCompareSide(false));
+        Make("退出对比", (_, _) => ExitCompareAB());
+        return new Border
+        {
+            Child = panel,
+            Padding = new Thickness(12, 6, 12, 6),
+            Background = new SolidColorBrush(Color.FromArgb(242, 0xff, 0xfd, 0xf8)),
+            BorderBrush = AssetPageUi.Brush("Ink"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 14, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
     }
 
     // ============================ 制作回放 ===================================
@@ -400,6 +496,8 @@ public sealed partial class StoryboardView
         SelectPanels([]);
         compareSnapshotId = null;
         compareState = null;
+        compareSideAId = null;
+        compareSideBId = null;
         RenderGhosts();
         replayReturnState = CaptureCanvasState();
         replayOpen = true;
@@ -497,6 +595,8 @@ public sealed partial class StoryboardView
         CloseReplay();
         compareSnapshotId = null;
         compareState = null;
+        compareSideAId = null;
+        compareSideBId = null;
         snapshots = [];
         RenderGhosts();
     }
@@ -549,12 +649,18 @@ public sealed partial class StoryboardView
             var item = new MenuItem { Header = stamp.Length > 0 ? $"{snapshot.Name}  {stamp}" : snapshot.Name };
             var restore = new MenuItem { Header = "恢复" };
             var compare = new MenuItem { Header = "对比", IsCheckable = true, IsChecked = compareSnapshotId == snapshot.Id };
+            var markA = new MenuItem { Header = "标为 A", IsCheckable = true, IsChecked = compareSideAId == snapshot.Id };
+            var markB = new MenuItem { Header = "标为 B", IsCheckable = true, IsChecked = compareSideBId == snapshot.Id };
             var delete = new MenuItem { Header = "删除" };
             restore.Click += (_, _) => RunSnapshotRestore(captured);
             compare.Click += (_, _) => ToggleCompareSnapshot(captured.Id);
+            markA.Click += (_, _) => MarkCompareSide(captured.Id, sideA: true);
+            markB.Click += (_, _) => MarkCompareSide(captured.Id, sideA: false);
             delete.Click += (_, _) => DeleteSnapshot(captured.Id);
             item.Items.Add(restore);
             item.Items.Add(compare);
+            item.Items.Add(markA);
+            item.Items.Add(markB);
             item.Items.Add(delete);
             menu.Items.Add(item);
         }
@@ -650,6 +756,16 @@ public sealed partial class StoryboardView
         snapshots = LoadSnapshots();
         if (snapshots.ElementAtOrDefault(index) is { } snapshot) ToggleCompareSnapshot(snapshot.Id);
     }
+    internal void MarkCompareForTest(int index, bool sideA)
+    {
+        snapshots = LoadSnapshots();
+        if (snapshots.ElementAtOrDefault(index) is { } snapshot) MarkCompareSide(snapshot.Id, sideA);
+    }
+    internal void AdoptCompareForTest(bool sideA) => AdoptCompareSide(sideA);
+    internal void ExitCompareABForTest() => ExitCompareAB();
+    internal bool CompareBarOpenForTest => compareBarElement.Visibility == Visibility.Visible;
+    internal int GhostTaggedCountForTest(string prefix) =>
+        ghostElements.Count(el => el.Tag is string tag && tag.StartsWith(prefix, StringComparison.Ordinal));
     internal void DeleteSnapshotForTest(int index)
     {
         if (LoadSnapshots().ElementAtOrDefault(index) is { } snapshot) DeleteSnapshot(snapshot.Id);

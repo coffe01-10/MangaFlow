@@ -68,11 +68,14 @@ public sealed partial class StoryboardView
         viewport.Content = new Border { Child = pageHost, Margin = new Thickness(32), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         viewport.BorderBrush = AssetPageUi.Brush("Ink"); viewport.BorderThickness = new Thickness(1); viewport.PreviewMouseWheel += OnViewportWheel;
         viewport.SizeChanged += (_, _) => { if ((fitPending || fitToViewport) && currentPage != null && viewport.ActualWidth > 100 && viewport.ActualHeight > 100) { fitPending = false; FitViewport(); } };
-        // V02-33 回放控制条叠在画布层底部居中（对齐 web replay-bar 的 absolute 定位）
+        // V02-33 回放控制条叠在画布层底部居中（对齐 web replay-bar 的 absolute 定位）；
+        // A/B 选择条叠在顶部居中，两者同在 canvasLayer。
         replayBarElement = BuildReplayBar();
+        compareBarElement = BuildCompareBar();
         var canvasLayer = new Grid();
         canvasLayer.Children.Add(viewport);
         canvasLayer.Children.Add(replayBarElement);
+        canvasLayer.Children.Add(compareBarElement);
         worktable.Children.Add(canvasLayer); Grid.SetColumn(directorSplitter, 1); worktable.Children.Add(directorSplitter);
         inspector.Background = AssetPageUi.Brush("Surface"); directorScroll.Content = inspector; directorScroll.Background = AssetPageUi.Brush("Surface"); directorScroll.BorderBrush = AssetPageUi.Brush("Ink"); directorScroll.BorderThickness = new Thickness(1); Grid.SetColumn(directorScroll, 2); worktable.Children.Add(directorScroll);
         Grid.SetRow(worktable, 6); main.Children.Add(worktable);

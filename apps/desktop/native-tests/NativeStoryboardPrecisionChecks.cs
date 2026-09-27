@@ -646,6 +646,37 @@ internal static class NativeStoryboardPrecisionChecks
         Require(view.SnapshotCountForTest == 1 && view.SnapshotNameForTest(0) == "基准版式",
             "删除快照应只移除目标条目");
 
+        // A/B 版式对比：两份快照各标一侧（A 紫 / B 青），双色幽灵同屏；
+        // 采用其一为普通撤销命令，采用后退出对比。
+        view.SaveSnapshotForTest("方案 A");
+        view.CommitPanelRectForTest(0, new Rect(0.30, 0.10, 0.20, 0.20));
+        view.SaveSnapshotForTest("方案 B");
+        view.CommitPanelRectForTest(0, new Rect(0.45, 0.45, 0.20, 0.20));   // 当前态偏离两侧
+        view.MarkCompareForTest(1, sideA: true);
+        view.MarkCompareForTest(2, sideA: false);
+        Require(view.GhostTaggedCountForTest("ghost:a") == 6 &&
+                view.GhostTaggedCountForTest("ghost:b") == 6,
+            $"A/B 对比应各叠 6 个幽灵（A {view.GhostTaggedCountForTest("ghost:a")} / B {view.GhostTaggedCountForTest("ghost:b")}）");
+        Require(view.CompareBarOpenForTest, "两侧标记齐全后应出现 A/B 选择条");
+        view.AdoptCompareForTest(false);   // 采用 B
+        Require(!view.CompareBarOpenForTest && view.GhostCountForTest == 0,
+            "采用后应退出 A/B 对比并清空幽灵层");
+        Require(Near(view.PanelRectForTest(0), new Rect(0.30, 0.10, 0.20, 0.20)),
+            $"采用 B 应落到 B 快照态（实际 {view.PanelRectForTest(0)}）");
+        Undo(view);
+        Require(Near(view.PanelRectForTest(0).X, 0.45), "采用快照应可撤销");
+        // 单侧标记：幽灵叠层在但选择条不出；退出清空。
+        view.MarkCompareForTest(1, sideA: true);
+        Require(view.GhostTaggedCountForTest("ghost:a") == 6 && !view.CompareBarOpenForTest,
+            "只有单侧标记时应只叠幽灵不出选择条");
+        view.ExitCompareABForTest();
+        Require(view.GhostCountForTest == 0, "退出对比应清空幽灵层");
+        view.DeleteSnapshotForTest(2);
+        view.DeleteSnapshotForTest(1);
+        Require(view.SnapshotCountForTest == 1, "A/B 用快照删除后应回到单份");
+        Undo(view);   // 回退 0.45 探测提交
+        Undo(view);   // 回退 0.30 提交，panel0 回到基准
+
         // 模板：内置预设按 reading_order 落位（preset-two-column = 索引 4），
         // 气泡随宿主格做同仿射映射，多余格不动；套用可撤销。
         var panel0Before = view.PanelRectForTest(0);

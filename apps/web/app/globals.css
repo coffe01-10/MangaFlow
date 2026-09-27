@@ -639,9 +639,18 @@ a { color: inherit; text-decoration: none; }
 /* 减弱动效：由 V02-51B 的全局单块统一接管（transition/animation-duration
    .01ms !important），不再单独开块——命令过渡/参考线淡出/z-flash 随之关闭。 */
 .canvas-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-/* 快照对比幽灵轮廓（V02-33）：虚线框标出快照态位置，纯展示不吃指针。 */
+/* 快照对比幽灵轮廓（V02-33）：虚线框标出快照态位置，纯展示不吃指针。
+   A/B 对比时 B 侧用青色区分（A 侧沿用紫色）。 */
 .canvas-ghost { position: absolute; z-index: 30; border: 1.5px dashed #7a5fb8; background: rgba(122,95,184,.07); pointer-events: none; }
 .canvas-ghost.ellipse { border-radius: 50%; }
+.canvas-ghost.variant-b { border-color: #2b7a78; background: rgba(43,122,120,.07); }
+/* A/B 选择条：复用回放条外观，侧标与幽灵同色系。 */
+.compare-bar { flex-wrap: wrap; }
+.compare-bar .compare-tag { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; font-size: 10px; font-weight: 800; color: #fff; background: #7a5fb8; }
+.compare-bar .compare-tag.b { background: #2b7a78; }
+.compare-bar .compare-name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; color: var(--ink); }
+.library-item .compare-mark { padding: 3px 7px; font-size: 10px; font-weight: 700; border: 1px solid transparent; }
+.library-item .compare-mark.active { border-color: #7a5fb8; color: #5d4699; background: rgba(122,95,184,.12); }
 /* 模板/快照弹层与回放条 */
 .library-popover { min-width: 240px; padding: 6px; display: grid; gap: 2px; }
 .library-section { display: grid; gap: 2px; }
