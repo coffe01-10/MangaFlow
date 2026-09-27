@@ -9,7 +9,6 @@ import hashlib
 import json
 import logging
 
-from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -30,7 +29,11 @@ from app.models import (
     utcnow,
 )
 from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
-from app.services.media import create_thumbnails, remove_thumbnails
+from app.services.media import (
+    create_thumbnails,
+    inspect_image_bytes,
+    remove_thumbnails,
+)
 from app.services.model_router import model_supports_resolution
 from app.services.prompt_compiler import STRUCTURED_BLOCK_MAX_CHARS, _bound_structured_block
 from app.services.worker_handlers import execution, provider
@@ -86,22 +89,30 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
     )
     if existing:
         return existing
+    try:
+        width, height, mime_type, suffix = inspect_image_bytes(
+            data,
+            max_pixels=settings.max_image_pixels,
+            max_side=settings.max_image_side,
+        )
+    except ValueError as error:
+        # #1010: deterministic bad output must die here as INVALID_OUTPUT —
+        # the previous code persisted undecodable bytes and let
+        # create_thumbnails re-raise them, which the worker classified as a
+        # retryable WORKER_ERROR and re-billed the provider call up to
+        # max_attempts times.
+        raise ProviderAdapterError(
+            "INVALID_OUTPUT", "模型返回了无效图片", retryable=False
+        ) from error
     destination = (
         settings.storage_root
         / "generated"
         / project_id
         / candidate.batch_id
-        / f"{candidate.id}.png"
+        / f"{candidate.id}{suffix}"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
-    try:
-        with Image.open(destination) as image:
-            width, height = image.size
-            mime_type = Image.MIME.get(image.format or "PNG", "image/png")
-    except OSError:
-        width = height = None
-        mime_type = "image/png"
     try:
         with db.begin_nested():
             asset = Asset(
@@ -109,7 +120,7 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
                 kind=kind,
                 original_name=(
                     f"{kind}-{candidate.variant.lower()}-"
-                    f"{candidate.ordinal}.png"
+                    f"{candidate.ordinal}{suffix}"
                 ),
                 storage_key=destination.relative_to(settings.storage_root).as_posix(),
                 mime_type=mime_type,
@@ -175,7 +186,7 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
                 max_side=settings.max_image_side,
             )
             deleted.original_name = (
-                f"{kind}-{candidate.variant.lower()}-{candidate.ordinal}.png"
+                f"{kind}-{candidate.variant.lower()}-{candidate.ordinal}{suffix}"
             )
             deleted.storage_key = destination.relative_to(
                 settings.storage_root

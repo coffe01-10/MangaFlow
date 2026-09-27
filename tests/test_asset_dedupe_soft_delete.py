@@ -28,7 +28,10 @@ from app.services.worker_handlers.page_generate import _save_generated_asset
 
 
 def _png_bytes(color: bytes) -> bytes:
-    """Build a minimal valid one-pixel PNG with the given RGB color."""
+    """Build a minimal valid 8x8 PNG with the given RGB color.
+
+    8 px is the media floor (_MIN_IMAGE_SIDE): generated output below it is
+    rejected as degenerate before persistence (#1010)."""
 
     def chunk(tag: bytes, payload: bytes) -> bytes:
         return (
@@ -38,8 +41,8 @@ def _png_bytes(color: bytes) -> bytes:
             + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
         )
 
-    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
-    idat = zlib.compress(b"\x00" + color)
+    ihdr = struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)
+    idat = zlib.compress((b"\x00" + color * 8) * 8)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 

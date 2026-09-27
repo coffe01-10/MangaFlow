@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 from collections.abc import Callable
@@ -39,6 +40,24 @@ MIN_ORPHAN_GRACE_SECONDS = 3600.0
 _REFERENCE_QUERY_BATCH = 500
 
 
+def _inspected_image_fields(
+    image: Image.Image, *, max_pixels: int, max_side: int
+) -> tuple[int, int, str, str]:
+    width, height = image.size
+    fmt = (image.format or "").upper()
+    if width <= 0 or height <= 0 or width > max_side or height > max_side:
+        raise ValueError("图片宽高超过上限")
+    if min(width, height) < _MIN_IMAGE_SIDE:
+        raise ValueError("图片尺寸过小")
+    if width * height > max_pixels:
+        raise ValueError("图片像素数超过上限")
+    mapped = IMAGE_FORMAT_MIME.get(fmt)
+    if mapped is None:
+        raise ValueError("不支持的图片格式")
+    mime, suffix = mapped
+    return width, height, mime, suffix
+
+
 def inspect_upload_image(
     path: Path,
     *,
@@ -61,25 +80,43 @@ def inspect_upload_image(
             # verify() deliberately skips entropy data; load() forces the
             # full decode so truncated bodies raise instead of passing.
             image.load()
-            width, height = image.size
-            fmt = (image.format or "").upper()
+            return _inspected_image_fields(
+                image, max_pixels=max_pixels, max_side=max_side
+            )
     except DecompressionBombError as error:
         raise ValueError("图片像素数超过上限") from error
     except (UnidentifiedImageError, OSError, SyntaxError) as error:
         # Pillow raises SyntaxError for corrupt chunk CRCs in otherwise
         # well-formed PNGs; without this it escapes upload handling as a 500.
         raise ValueError("图片文件损坏或格式不符") from error
-    if width <= 0 or height <= 0 or width > max_side or height > max_side:
-        raise ValueError("图片宽高超过上限")
-    if min(width, height) < _MIN_IMAGE_SIDE:
-        raise ValueError("图片尺寸过小")
-    if width * height > max_pixels:
-        raise ValueError("图片像素数超过上限")
-    mapped = IMAGE_FORMAT_MIME.get(fmt)
-    if mapped is None:
-        raise ValueError("不支持的图片格式")
-    mime, suffix = mapped
-    return width, height, mime, suffix
+
+
+def inspect_image_bytes(
+    data: bytes,
+    *,
+    max_pixels: int,
+    max_side: int,
+) -> tuple[int, int, str, str]:
+    """The ``inspect_upload_image`` contract for bytes already held in memory.
+
+    Paid provider output clears the same decode/format/bounds gates as user
+    uploads before it is persisted: an undecodable or off-whitelist blob is a
+    deterministic INVALID_OUTPUT, not something to save and retry on
+    (issue #1010). Returns width, height, MIME and a dotted suffix.
+    """
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.verify()
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            return _inspected_image_fields(
+                image, max_pixels=max_pixels, max_side=max_side
+            )
+    except DecompressionBombError as error:
+        raise ValueError("图片像素数超过上限") from error
+    except (UnidentifiedImageError, OSError, SyntaxError) as error:
+        raise ValueError("图片文件损坏或格式不符") from error
 
 
 def create_thumbnails(

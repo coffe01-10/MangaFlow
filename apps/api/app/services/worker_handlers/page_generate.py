@@ -7,11 +7,9 @@ lease checks stay owned by the execution shell via ``execution`` helpers.
 
 import copy
 import hashlib
-import io
 import json
 import logging
 
-from PIL import Image
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -38,7 +36,11 @@ from app.models import (
     utcnow,
 )
 from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
-from app.services.media import create_thumbnails, remove_thumbnails
+from app.services.media import (
+    create_thumbnails,
+    inspect_image_bytes,
+    remove_thumbnails,
+)
 from app.services.model_capabilities import (
     REGION_EDIT_SURFACE_LABELS,
     model_region_edit_surface,
@@ -333,25 +335,24 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
     if existing:
         return existing
     try:
-        with Image.open(io.BytesIO(data)) as image:
-            width, height = image.size
-            image_format = image.format
-    except OSError as error:
-        raise ProviderAdapterError("INVALID_OUTPUT", "模型返回了无效图片") from error
-    image_types = {
-        "PNG": ("image/png", "png"),
-        "JPEG": ("image/jpeg", "jpg"),
-        "WEBP": ("image/webp", "webp"),
-    }
-    if image_format not in image_types:
-        raise ProviderAdapterError("INVALID_OUTPUT", "模型返回了不支持的图片格式")
-    mime_type, suffix = image_types[image_format]
+        width, height, mime_type, suffix = inspect_image_bytes(
+            data,
+            max_pixels=settings.max_image_pixels,
+            max_side=settings.max_image_side,
+        )
+    except ValueError as error:
+        # #1010: deterministic bad output must die here as INVALID_OUTPUT —
+        # letting it reach create_thumbnails turned it into a retryable
+        # WORKER_ERROR and re-billed the provider call max_attempts times.
+        raise ProviderAdapterError(
+            "INVALID_OUTPUT", "模型返回了无效图片", retryable=False
+        ) from error
     destination = (
         settings.storage_root
         / "generated"
         / chapter.project_id
         / candidate.batch_id
-        / f"{candidate.id}.{suffix}"
+        / f"{candidate.id}{suffix}"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
@@ -360,7 +361,7 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
             asset = Asset(
                 project_id=chapter.project_id,
                 kind="page_candidate",
-                original_name=f"page-{page.page_number}-candidate-{candidate.ordinal}.{suffix}",
+                original_name=f"page-{page.page_number}-candidate-{candidate.ordinal}{suffix}",
                 storage_key=destination.relative_to(settings.storage_root).as_posix(),
                 mime_type=mime_type,
                 byte_size=len(data),
@@ -426,7 +427,7 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
                 max_side=settings.max_image_side,
             )
             deleted.original_name = (
-                f"page-{page.page_number}-candidate-{candidate.ordinal}.png"
+                f"page-{page.page_number}-candidate-{candidate.ordinal}{suffix}"
             )
             deleted.storage_key = destination.relative_to(
                 settings.storage_root
