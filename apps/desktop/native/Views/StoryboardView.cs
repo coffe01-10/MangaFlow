@@ -44,12 +44,14 @@ public sealed partial class StoryboardView : WorkspaceView
     // 共用同一份归一化坐标；网格开启才把线并入吸附目标。
     private readonly ToggleButton gridButton = new() { Content = "网格", Style = (Style)Application.Current.FindResource("Pill") };
     private readonly ComboBox gridStepBox = new() { MinHeight = 38, MinWidth = 78, Visibility = Visibility.Collapsed };
+    private readonly ToggleButton annotateButton = new() { Content = "批注", Style = (Style)Application.Current.FindResource("Pill") };
     private int gridStepMm = 10;
     private readonly List<double> gridX = [], gridY = [];
     private readonly List<(double At, bool Vertical, Line Element)> gridLineElements = [];
     // 对齐/分布工具组（对齐 web toolbar-align）：可移动选中格 ≥2 才显示，
     // 等距分布需要 ≥3。
     private WrapPanel? alignBar;
+    private WrapPanel? annotateBar;
     private readonly List<Button> distributeButtons = [];
     // 实时尺寸标签（对齐 web canvas-size-label）：手势期间跟随对象右下角
     // 显示 W×H mm / 旋转角 / 拟声词字号，松手隐藏。
@@ -146,6 +148,11 @@ public sealed partial class StoryboardView : WorkspaceView
                 e.Handled = true;
             }
         };
+        // 批注笔画走 Preview 隧道事件：批注开启时按下即 handled，面板/气泡
+        // 的拖动处理器根本收不到这次按下（对齐 web annotating 时对象失焦）。
+        page.PreviewMouseLeftButtonDown += OnAnnotateDown;
+        page.PreviewMouseMove += OnAnnotateMove;
+        page.PreviewMouseLeftButtonUp += OnAnnotateUp;
     }
 
     // 画布可能尚未挂进视觉树（如无头回归检查），此时 Focus 无效，跳过即可。
@@ -425,6 +432,8 @@ public sealed partial class StoryboardView : WorkspaceView
             var serverVersion = storyboard.Element("page").Number("storyboard_version");
             currentPage = serverVersion > 0 && serverVersion != item.StoryboardVersion ? item with { StoryboardVersion = serverVersion } : item;
             KeyValueStore.Set("storyboard:page:" + ProjectId, item.Id);
+            // 批注笔画按页本地留存：换页后重读新页的 KeyValueStore 键。
+            annotationStrokes = LoadAnnotations();
             var canvasInfo = storyboard.Element("page").Element("canvas");
             // 对齐 web：canvasKnown = Boolean(page.canvas)（只看字段存在）；
             // 尺寸回落 defaultCanvas 的 182×257 / 出血 3mm / 安全 5mm。
@@ -568,6 +577,7 @@ public sealed partial class StoryboardView : WorkspaceView
         PositionBubbleHandles(animate);
         UpdateOverlaySizes();
         RenderGhosts();
+        RenderAnnotations();
         // 回放帧录制（V02-33）：所有几何落地都汇聚到 UpdatePageSize，
         // 在这里统一录时间线；回放期间的写回被 RecordFrame 自身门禁拦掉。
         RecordFrame();
@@ -589,6 +599,7 @@ public sealed partial class StoryboardView : WorkspaceView
         RenderGuidesOverlay();
         RenderResizeHandles();
         RenderGhosts();
+        RenderAnnotations();
     }
 
     private void RenderOrderBadges()
@@ -3038,6 +3049,7 @@ public sealed partial class StoryboardView : WorkspaceView
     internal int BubbleCountForTest => bubbles.Count;
     internal Rect PanelRectForTest(int index) => panels.ElementAtOrDefault(index)?.Rect ?? Rect.Empty;
     internal bool CanUndoForTest => history.CanUndo;
+    internal int HistoryDepthForTest => history.Index;
     internal bool NarrativeDirtyForTest => NarrativeDirty;
     internal int HandleCountForTest => resizeHandles.Count;
     internal string? SelectedPanelIdForTest => selected?.Id;

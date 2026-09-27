@@ -46,6 +46,7 @@ import {
 } from "./geometry";
 import { BubbleNode } from "./bubble-node";
 import { GuidesOverlay, ReadingOrderOverlay } from "./guides-overlay";
+import type { AnnotationStroke } from "./storyboard-history";
 import { PanelNode } from "./panel-node";
 import { SfxNode, type SfxNodeData } from "./sfx-node";
 import { TransformHandles, handlePositions, type HandleName } from "./transform-handles";
@@ -160,6 +161,9 @@ export function PageCanvas({
   onNotice,
   onZoomStep,
   zFlash,
+  annotating = false,
+  annotations,
+  onAnnotateStroke,
   ghosts,
   overlay,
   beforePage,
@@ -195,6 +199,11 @@ export function PageCanvas({
   onZoomStep: (direction: 1 | -1) => void;
   /** 层序命令的透明度脉冲（对齐原生 PulseZIndex）：token 变化重放一次 z-flash。 */
   zFlash?: { token: number; ids: string[] } | null;
+  /** 手绘批注模式：开启后按下拖动画自由笔画，面板/气泡手势停用。 */
+  annotating?: boolean;
+  /** 本页已存的批注笔画（逐页本地持久化，渲染在对象之上）。 */
+  annotations?: AnnotationStroke[];
+  onAnnotateStroke?: (points: GeometryPoint[]) => void;
   /** 版本快照对比（V02-33）：幽灵轮廓画在当前画布上，纯展示不响应指针。
    *  A/B 对比时 variant 区分两侧配色（a=紫、b=青）。 */
   ghosts?: { key: string; rect: NormalizedRect; ellipse?: boolean; variant?: "a" | "b" }[] | null;
@@ -221,6 +230,9 @@ export function PageCanvas({
   const sizeLabelRef = useRef<HTMLDivElement | null>(null);
   const copiedGeometryRef = useRef<{ rect: NormalizedRect; rotation?: number } | SoundEffectGeometry | null>(null);
   const [gesture, setGesture] = useState<Gesture | null>(null);
+  // 批注笔画草稿：pointermove 期间同步 React state（笔画是低频输入，不像格
+  // 子手势那样要求逐帧免重渲染）；松手 commit 给父级持久化。
+  const [draftStroke, setDraftStroke] = useState<GeometryPoint[] | null>(null);
   // 手势起点即挂 is-gesturing（不等 React 首帧）：几何过渡压零，命令式逐帧
   // 绘制立即生效；结束态由 gesture state 的 className 维持一致。
   const beginGesture = (next: Gesture) => {
@@ -230,6 +242,8 @@ export function PageCanvas({
     setGesture(next);
   };
   const zFlashIds = useMemo(() => new Set(zFlash?.ids ?? []), [zFlash]);
+  // 批注模式下画布对象不接管指针，否则落笔会顺手拖动面板/气泡。
+  const effectiveInteractive = interactive && !annotating;
 
   const hitTestMode = panels.length + bubbles.length > HIT_TEST_OBJECT_LIMIT;
   const selectedPanelIds = selection?.kind === "panels" ? selection.ids : [];
@@ -1042,6 +1056,26 @@ export function PageCanvas({
       return;
     }
     if (event.button !== 0) return;
+    // 批注模式优先于选中/手势：按下开始记点，移动追加，松手提交一笔。
+    if (annotating) {
+      event.preventDefault();
+      const points: GeometryPoint[] = [{ x: clamp01(pointerNorm(event).x), y: clamp01(pointerNorm(event).y) }];
+      setDraftStroke(points.slice());
+      const move = (moveEvent: PointerEvent) => {
+        const point = pointerNorm(moveEvent);
+        points.push({ x: clamp01(point.x), y: clamp01(point.y) });
+        setDraftStroke(points.slice());
+      };
+      const stop = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", stop);
+        setDraftStroke(null);
+        if (points.length >= 2) onAnnotateStroke?.(points);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", stop);
+      return;
+    }
     if (!hitTestMode) {
       onClearSelection();
       return;
@@ -1106,7 +1140,7 @@ export function PageCanvas({
     <div
       ref={pageRef}
       data-testid="canvas-page"
-      className={gesture ? "canvas-page is-gesturing" : "canvas-page"}
+      className={`canvas-page${gesture ? " is-gesturing" : ""}${annotating ? " annotating" : ""}`}
       role="group"
       aria-label={storyboardCopy.canvasLabel}
       tabIndex={0}
@@ -1165,7 +1199,7 @@ export function PageCanvas({
           rect={rect}
           selected={selectedPanelIds.includes(panel.id)}
           flashing={zFlashIds.has(panel.id)}
-          interactive={interactive}
+          interactive={effectiveInteractive}
           elementRef={(element) => {
             panelRefs.current[panel.id] = element;
           }}
@@ -1201,7 +1235,7 @@ export function PageCanvas({
           shapeType={bubble.shapeType}
           rotation={bubble.shape?.rotation ?? 0}
           selected={bubble.dialogue.id === selectedBubbleId}
-          interactive={interactive}
+          interactive={effectiveInteractive}
           elementRef={(element) => {
             bubbleRefs.current[bubble.dialogue.id] = element;
           }}
@@ -1218,7 +1252,7 @@ export function PageCanvas({
           sfx={item}
           fontPx={sfxFontPx(item.size)}
           selected={key === selectedSfxKey}
-          interactive={interactive}
+          interactive={effectiveInteractive}
           elementRef={(element) => {
             sfxRefs.current[key] = element;
           }}
@@ -1258,7 +1292,7 @@ export function PageCanvas({
       {selectedPanel && selectionRect && !isPolygonPanel(selectedPanel) && <TransformHandles
         rect={selectionRect}
         kind="panel"
-        disabled={!interactive}
+        disabled={!effectiveInteractive}
         innerRef={handlesRef}
         onHandlePointerDown={(handle, event) => {
           if (handle === "tail" || handle === "anchor" || handle === "rotate") return;
@@ -1268,7 +1302,7 @@ export function PageCanvas({
       {groupBbox && selectedPanelIds.length > 1 && <TransformHandles
         rect={groupBbox}
         kind="panel"
-        disabled={!interactive}
+        disabled={!effectiveInteractive}
         innerRef={handlesRef}
         onHandlePointerDown={(handle, event) => {
           if (handle === "tail" || handle === "anchor" || handle === "rotate") return;
@@ -1278,7 +1312,7 @@ export function PageCanvas({
       {selectedBubble && selectionRect && <TransformHandles
         rect={selectionRect}
         kind="bubble"
-        disabled={!interactive}
+        disabled={!effectiveInteractive}
         rotation={selectedBubble.shape?.rotation ?? 0}
         aspect={canvasAspect}
         innerRef={handlesRef}
@@ -1291,6 +1325,26 @@ export function PageCanvas({
           else startBubbleResize(selectedBubble, handle, event);
         }}
       />}
+      {((annotations?.length ?? 0) > 0 || draftStroke) && <svg
+        className="annotation-layer"
+        viewBox="0 0 1000 1000"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        {(annotations ?? []).map((stroke) => (
+          <polyline
+            key={stroke.id}
+            className="annotation-stroke"
+            points={stroke.points.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" ")}
+          />
+        ))}
+        {draftStroke && draftStroke.length >= 2 && (
+          <polyline
+            className="annotation-stroke draft"
+            points={draftStroke.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" ")}
+          />
+        )}
+      </svg>}
     </div>
     {afterPage}
     {overlay}

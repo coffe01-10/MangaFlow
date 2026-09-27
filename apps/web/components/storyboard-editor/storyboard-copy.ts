@@ -124,6 +124,12 @@ export const storyboardCopy = {
   replayExporting: "导出中…",
   replayExportDone: (name: string) => `回放已导出 ${name}`,
   replayExportUnsupported: "此浏览器不支持录制导出（需要 canvas.captureStream 与 MediaRecorder）",
+  annotate: "批注",
+  annotateHint: "批注模式：按住拖动自由画线（圈改/箭头），笔画只存本页本地，不进保存载荷",
+  annotateUndo: "撤销笔画",
+  annotateClear: "清空批注",
+  annotateUndoDone: "已撤销上一笔",
+  annotateCleared: "已清空本页批注",
 } as const;
 
 export const handleCornerLabels: Record<string, string> = {

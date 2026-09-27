@@ -27,6 +27,7 @@ public sealed partial class StoryboardView
     // 存储键与 web 同名（客户端本地存储：web=localStorage，原生=KeyValueStore）
     private const string TemplatesKey = "mangaflow.storyboard-templates";
     private static string SnapshotsKey(string pageId) => $"mangaflow.storyboard-snapshots.{pageId}";
+    private static string AnnotationsKey(string pageId) => $"mangaflow.storyboard-annotations.{pageId}";
 
     // ---- 状态模型（对齐 web CanvasState：round4 归一化的有效几何）------------
     private sealed record PanelState(Rect Rect, int ZOrder);
@@ -50,6 +51,8 @@ public sealed partial class StoryboardView
         Dictionary<string, BubbleStateDto> Bubbles,
         Dictionary<string, Dictionary<int, SfxStateDto>> Sfx);
     private sealed record SnapshotDto(string Id, string Name, long CreatedAt, CanvasStateDto State);
+    private sealed record StrokeDto(string Id, List<PointDto> Points);
+    private sealed record AnnotationStroke(string Id, List<Point> Points);   // 归一化 0-1 点列
 
     // ---- 回放时间线：每个已应用命令后的完整状态 ------------------------------
     // pendingCommandLabel 由 CommandStack.OnPush 供标签（Push 先于应用），
@@ -79,6 +82,13 @@ public sealed partial class StoryboardView
     private readonly List<FrameworkElement> ghostElements = [];
 
     private List<StoryboardSnapshot> snapshots = [];
+
+    // ---- 手绘批注层 --------------------------------------------------------
+    private bool annotating;
+    private List<AnnotationStroke> annotationStrokes = [];
+    private readonly List<FrameworkElement> annotationElements = [];
+    private Polyline? annotationDraft;
+    private List<Point>? annotationDraftNorm;
 
     // ============================ 状态捕获与 diff ==============================
 
@@ -571,6 +581,135 @@ public sealed partial class StoryboardView
         };
     }
 
+    // ============================ 手绘批注层 ==================================
+    // 自由笔画（圈改/箭头）逐页存 KeyValueStore，渲染为 page 上最上层
+    // Polyline。纯本地标记：不进几何保存载荷、不进撤销栈与回放时间线。
+    // 输入走 page 的 Preview 隧道事件——批注开启时按下即 handled，面板/气泡
+    // 的拖动手势根本收不到这次按下（对齐 web annotating 时对象 interactive=false）。
+
+    private void ToggleAnnotate()
+    {
+        annotating = !annotating;
+        annotateButton.IsChecked = annotating;
+        if (annotateBar != null) annotateBar.Visibility = annotating ? Visibility.Visible : Visibility.Collapsed;
+        page.Cursor = annotating ? Cursors.Cross : Cursors.Arrow;
+        Notice(annotating ? "批注模式：按住左键自由画线（圈改/箭头），笔画只存本页本地" : "退出批注模式");
+    }
+
+    private void OnAnnotateDown(object? sender, MouseButtonEventArgs e)
+    {
+        if (!annotating) return;
+        e.Handled = true;
+        var norm = ClampNorm(e.GetPosition(page));
+        annotationDraftNorm = [norm];
+        annotationDraft = MakeStroke();
+        annotationDraft.Opacity = 0.55;
+        annotationDraft.Points.Add(new Point(norm.X * page.Width, norm.Y * page.Height));
+        Panel.SetZIndex(annotationDraft, 48);
+        page.Children.Add(annotationDraft);
+        page.CaptureMouse();
+    }
+
+    private void OnAnnotateMove(object? sender, MouseEventArgs e)
+    {
+        if (annotationDraft == null || annotationDraftNorm == null) return;
+        e.Handled = true;
+        var norm = ClampNorm(e.GetPosition(page));
+        annotationDraftNorm.Add(norm);
+        annotationDraft.Points.Add(new Point(norm.X * page.Width, norm.Y * page.Height));
+    }
+
+    private void OnAnnotateUp(object? sender, MouseButtonEventArgs e)
+    {
+        if (annotationDraft == null || annotationDraftNorm == null) return;
+        e.Handled = true;
+        page.ReleaseMouseCapture();
+        page.Children.Remove(annotationDraft);
+        annotationDraft = null;
+        var points = annotationDraftNorm;
+        annotationDraftNorm = null;
+        if (points.Count >= 2)
+        {
+            annotationStrokes = [.. annotationStrokes, new AnnotationStroke(Guid.NewGuid().ToString("N"), points)];
+            WriteAnnotations(annotationStrokes);
+            RenderAnnotations();
+        }
+    }
+
+    private Point ClampNorm(Point at) => new(
+        Math.Clamp(at.X / Math.Max(1, page.Width), 0, 1),
+        Math.Clamp(at.Y / Math.Max(1, page.Height), 0, 1));
+
+    private static Polyline MakeStroke() => new()
+    {
+        Stroke = new SolidColorBrush(Color.FromRgb(0xC4, 0x43, 0x2A)),
+        StrokeThickness = 2.5,
+        StrokeLineJoin = PenLineJoin.Round,
+        StrokeStartLineCap = PenLineCap.Round,
+        StrokeEndLineCap = PenLineCap.Round,
+        Opacity = 0.85,
+        IsHitTestVisible = false,
+    };
+
+    private void RenderAnnotations()
+    {
+        foreach (var element in annotationElements) page.Children.Remove(element);
+        annotationElements.Clear();
+        if (page.Width <= 0) return;
+        foreach (var stroke in annotationStrokes)
+        {
+            var line = MakeStroke();
+            line.Tag = $"annotation:{stroke.Id}";
+            foreach (var point in stroke.Points)
+                line.Points.Add(new Point(point.X * page.Width, point.Y * page.Height));
+            Panel.SetZIndex(line, 48);
+            annotationElements.Add(line);
+            page.Children.Add(line);
+        }
+    }
+
+    private List<AnnotationStroke> LoadAnnotations()
+    {
+        if (currentPage == null) return [];
+        try
+        {
+            var list = JsonSerializer.Deserialize<List<StrokeDto>>(KeyValueStore.Get(AnnotationsKey(currentPage.Id))) ?? [];
+            return list
+                .Where(dto => dto.Points is { Count: >= 2 })
+                .Select(dto => new AnnotationStroke(dto.Id,
+                    dto.Points.Select(p => new Point(Math.Clamp(p.X, 0, 1), Math.Clamp(p.Y, 0, 1))).ToList()))
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private void WriteAnnotations(List<AnnotationStroke> list)
+    {
+        if (currentPage == null) return;
+        annotationStrokes = list;
+        KeyValueStore.Set(AnnotationsKey(currentPage.Id),
+            JsonSerializer.Serialize(list.Select(s => new StrokeDto(s.Id, s.Points.Select(p => new PointDto(p.X, p.Y)).ToList()))));
+    }
+
+    private void UndoAnnotationStroke()
+    {
+        if (annotationStrokes.Count == 0) return;
+        WriteAnnotations(annotationStrokes.Take(annotationStrokes.Count - 1).ToList());
+        RenderAnnotations();
+        Notice("已撤销上一笔");
+    }
+
+    private void ClearAnnotations()
+    {
+        if (annotationStrokes.Count == 0) return;
+        WriteAnnotations([]);
+        RenderAnnotations();
+        Notice("已清空本页批注");
+    }
+
     // ============================ 制作回放 ===================================
 
     private Border BuildReplayBar()
@@ -1000,6 +1139,20 @@ public sealed partial class StoryboardView
     {
         if (LoadTemplates().ElementAtOrDefault(index) is { } template) RunTemplate(template);
     }
+    internal bool AnnotatingForTest => annotating;
+    internal int AnnotationCountForTest => annotationStrokes.Count;
+    internal int StoredAnnotationCountForTest => LoadAnnotations().Count;
+    internal void ToggleAnnotateForTest() => ToggleAnnotate();
+    /// <summary>提交一笔（绕过鼠标捕获路径，走同一持久化与渲染管线）。</summary>
+    internal void StrokeForTest(params Point[] normalized)
+    {
+        if (normalized.Length < 2) return;
+        annotationStrokes = [.. annotationStrokes, new AnnotationStroke(Guid.NewGuid().ToString("N"), normalized.ToList())];
+        WriteAnnotations(annotationStrokes);
+        RenderAnnotations();
+    }
+    internal void UndoAnnotationForTest() => UndoAnnotationStroke();
+    internal void ClearAnnotationsForTest() => ClearAnnotations();
 }
 
 /// <summary>单行名称输入对话框（模板/快照命名共用）。</summary>

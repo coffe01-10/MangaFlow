@@ -36,6 +36,7 @@ import type { DialogueDraft } from "./dialogue-card";
 import {
   alignRects,
   BASE_PAGE_WIDTH,
+  clamp01,
   defaultSfxPosition,
   distributeRects,
   gridLinesFor,
@@ -53,6 +54,7 @@ import {
   newRequestId,
   panelGeometry,
   panelRect,
+  round4,
   toPayloadBubble,
   toPayloadRect,
   type AlignMode,
@@ -70,8 +72,10 @@ import type { SfxNodeData } from "./sfx-node";
 import { SpreadPage } from "./spread-preview";
 import { storyboardCopy } from "./storyboard-copy";
 import {
+  annotationsKey,
   BUILT_IN_TEMPLATES,
   captureCanvasState,
+  parseAnnotations,
   parseSnapshots,
   parseUserTemplates,
   sameCanvasState,
@@ -79,6 +83,7 @@ import {
   stateChanges,
   TEMPLATES_KEY,
   templateChanges,
+  type AnnotationStroke,
   type LayoutTemplate,
   type ReplayEntry,
 } from "./storyboard-history";
@@ -152,6 +157,7 @@ export function StoryboardEditor({
     safe: false,
     grid: false,
     spread: false,
+    annotate: false,
   });
   const [rebuild, setRebuild] = useState<{ open: boolean; panelCount: number; layoutMode: "dynamic" | "balanced" }>({
     open: false,
@@ -319,6 +325,9 @@ export function StoryboardEditor({
 
   const snapshotsRaw = useLocalStorageValue(snapshotsKey(currentPage?.id ?? ""), "");
   const snapshots = useMemo(() => parseSnapshots(snapshotsRaw), [snapshotsRaw]);
+  // 手绘批注：逐页 localStorage，换页自动换 key 重读；不进几何保存载荷。
+  const annotationsRaw = useLocalStorageValue(annotationsKey(currentPage?.id ?? ""), "");
+  const annotations = useMemo(() => parseAnnotations(annotationsRaw), [annotationsRaw]);
   const [compareId, setCompareId] = useState<string | null>(null);
   // A/B 版式对比：两份快照各标一侧后双色幽灵叠层同屏，选择条采用其一。
   const [compareAB, setCompareAB] = useState<{ a: string | null; b: string | null } | null>(null);
@@ -640,6 +649,20 @@ export function StoryboardEditor({
 
   const deleteTemplate = (id: string) => {
     writeTemplates(userTemplates.filter((item) => item.id !== id));
+  };
+
+  const writeAnnotations = (list: AnnotationStroke[]) => {
+    if (currentPage) writeLocalStorage(annotationsKey(currentPage.id), JSON.stringify(list));
+  };
+  // 批注是本地标记层：只写 localStorage，不落命令栈、不进几何保存载荷。
+  const addAnnotationStroke = (points: { x: number; y: number }[]) => {
+    writeAnnotations([
+      ...annotations,
+      {
+        id: newRequestId(),
+        points: points.map((point) => ({ x: round4(clamp01(point.x)), y: round4(clamp01(point.y)) })),
+      },
+    ]);
   };
 
   const writeSnapshots = (list: ReturnType<typeof parseSnapshots>) => {
@@ -1160,7 +1183,7 @@ export function StoryboardEditor({
       canRedo={commandStack.index < commandStack.stack.length}
       canSave={commandStack.index > 0}
       saving={canvasBusy}
-      overlayHint={!canvasKnown ? storyboardCopy.canvasMissing : null}
+      overlayHint={toggles.annotate ? storyboardCopy.annotateHint : !canvasKnown ? storyboardCopy.canvasMissing : null}
       onZoomIn={() => zoomManually(zoom * ZOOM_STEP)}
       onZoomOut={() => zoomManually(zoom / ZOOM_STEP)}
       onFit={fitAndFollow}
@@ -1179,6 +1202,15 @@ export function StoryboardEditor({
       onSameSize={runSameSize}
       gridStep={gridStep}
       onGridStep={setGridStep}
+      annotationCount={annotations.length}
+      onUndoAnnotation={() => {
+        writeAnnotations(annotations.slice(0, -1));
+        setNotice(storyboardCopy.annotateUndoDone);
+      }}
+      onClearAnnotations={() => {
+        writeAnnotations([]);
+        setNotice(storyboardCopy.annotateCleared);
+      }}
       endSlot={<LibraryBar
         templates={templates}
         snapshots={snapshots}
@@ -1219,6 +1251,9 @@ export function StoryboardEditor({
           showBleed={toggles.bleed}
           showSafe={toggles.safe}
           interactive={!canvasBusy && !replay.open}
+          annotating={toggles.annotate}
+          annotations={annotations}
+          onAnnotateStroke={addAnnotationStroke}
           ghosts={ghosts}
           overlay={replay.open ? <ReplayBar
             index={Math.min(replay.index, Math.max(timeline.length - 1, 0))}

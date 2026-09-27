@@ -17,6 +17,7 @@ export interface ToolbarToggleState {
   grid: boolean;
   /** 对开预览：邻页版面骨架按印刷对开位置拼在画布两侧（roadmap 已选定 2/5）。 */
   spread: boolean;
+  annotate: boolean;
 }
 
 const GRID_STEPS = [5, 10, 20];
@@ -46,6 +47,9 @@ export function StoryboardToolbar({
   onSameSize,
   gridStep,
   onGridStep,
+  annotationCount = 0,
+  onUndoAnnotation,
+  onClearAnnotations,
   endSlot,
 }: {
   zoomLabel: string;
@@ -74,6 +78,10 @@ export function StoryboardToolbar({
   onSameSize?: (mode: SameSizeMode) => void;
   gridStep?: number;
   onGridStep?: (step: number) => void;
+  /** 手绘批注（逐页本地存储）：批注开关打开时提供撤笔/清空。 */
+  annotationCount?: number;
+  onUndoAnnotation?: () => void;
+  onClearAnnotations?: () => void;
   /** 末尾插槽（V02-33）：模板/快照/回放的 LibraryBar 由 index 组装传入。 */
   endSlot?: ReactNode;
 }) {
@@ -136,6 +144,11 @@ export function StoryboardToolbar({
         value={gridStep}
         onChange={(event) => onGridStep(Number(event.target.value))}
       >{GRID_STEPS.map((step) => <option key={step} value={step}>{step}mm</option>)}</select>}
+      <button type="button" aria-pressed={toggles.annotate} className={toggles.annotate ? "active" : ""} onClick={() => onToggle("annotate")}>{storyboardCopy.annotate}</button>
+      {toggles.annotate && <>
+        <button type="button" disabled={!annotationCount} onClick={onUndoAnnotation}>{storyboardCopy.annotateUndo}</button>
+        <button type="button" disabled={!annotationCount} onClick={onClearAnnotations}>{storyboardCopy.annotateClear}</button>
+      </>}
     </div>
     {alignCount >= 2 && <div className="toolbar-group toolbar-align" role="group" aria-label="对齐与分布">
       {(["left", "centerX", "right", "top", "middleY", "bottom"] as AlignMode[]).map((mode) => (
