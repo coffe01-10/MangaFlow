@@ -19,8 +19,11 @@ namespace MangaFlow.Native.Views;
 public sealed partial class StoryboardView : WorkspaceView
 {
     private const double BasePageWidth = 640;
-    private const double MinSize = 0.03, MinBubble = 0.02, SnapThreshold = 0.012;
+    private const double MinSize = 0.03, MinBubble = 0.02, MinSfx = 0.01;
+    // 吸附阈值与 web 同为 6px（归一化由页宽折算）；旋转吸附 15°，角度域 (-360,360]。
+    private const double RotationSnapDeg = 15, MaxRotation = 360;
     private static readonly double[] PageGuides = [0, 0.5, 1];
+    private static readonly int[] GridSteps = [5, 10, 20];
 
     private readonly ComboBox chapterSelector = Selector("章节选择", 240);
     private readonly StackPanel pageBar = new() { Orientation = Orientation.Vertical };
@@ -36,6 +39,38 @@ public sealed partial class StoryboardView : WorkspaceView
     private readonly Button redoButton = new() { Content = "重做", IsEnabled = false, Style = (Style)Application.Current.FindResource("Compact") };
     private readonly TextBlock zoomLabel = new() { Text = "100%", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 8, 0) };
     private readonly Border conflictBar = new();
+    // 网格（对齐 web toolbar 的 grid 开关 + gridStep 下拉）：叠层线与吸附目标
+    // 共用同一份归一化坐标；网格开启才把线并入吸附目标。
+    private readonly ToggleButton gridButton = new() { Content = "网格", Style = (Style)Application.Current.FindResource("Pill") };
+    private readonly ComboBox gridStepBox = new() { MinHeight = 38, MinWidth = 78, Visibility = Visibility.Collapsed };
+    private int gridStepMm = 10;
+    private readonly List<double> gridX = [], gridY = [];
+    private readonly List<(double At, bool Vertical, Line Element)> gridLineElements = [];
+    // 对齐/分布工具组（对齐 web toolbar-align）：可移动选中格 ≥2 才显示，
+    // 等距分布需要 ≥3。
+    private WrapPanel? alignBar;
+    private readonly List<Button> distributeButtons = [];
+    // 实时尺寸标签（对齐 web canvas-size-label）：手势期间跟随对象右下角
+    // 显示 W×H mm / 旋转角 / 拟声词字号，松手隐藏。
+    private readonly Border sizeLabel = new()
+    {
+        Tag = "size-label", IsHitTestVisible = false, Visibility = Visibility.Collapsed,
+        Background = new SolidColorBrush(Color.FromRgb(0x15, 0x15, 0x12)),
+        CornerRadius = new CornerRadius(3), Padding = new Thickness(7, 2, 7, 2),
+        Child = new TextBlock { Foreground = Brushes.White, FontSize = 11 },
+    };
+    private Point sizeLabelAt;
+    // 气泡手柄（对齐 web transform-handles kind="bubble"）：四角缩放 + 旋转 +
+    // 可选锚点/尾巴终点；仅气泡选中时挂载，位置随 rotation 绕中心公转。
+    private readonly List<(string Name, Border Element)> bubbleHandles = [];
+    private readonly List<SfxNode> sfxNodes = [];
+    private SfxNode? selectedSfx;
+    // 多选格集合（对齐 web selection.ids）：有序，末位为主格；气泡/拟声词
+    // 选中时收缩为宿主格单元素，面板手势只认 selectedBubble==null 状态。
+    private readonly List<string> selectedIds = [];
+    // Ctrl+C 复制出的几何：Rect（面板）/ (Rect,Rotation)（气泡）/ SfxGeometry。
+    private object? copiedGeometry;
+    private string lastNotice = "";
     // 对齐 web StoryboardToolbar 的两组开关：出血框/安全区默认关闭，页缺 canvas
     // 字段时禁用；专注模式对齐 focus-mode CSS（隐藏页面条）；重算按钮对齐
     // storyboard-status 行的「从本页重新计算」。
@@ -168,6 +203,7 @@ public sealed partial class StoryboardView : WorkspaceView
                 currentPage = null;
                 panels = [];
                 bubbles.Clear();
+                sfxNodes.Clear();
                 storyboard = default;
                 dialogueDrafts.Clear();
                 history.Clear();
@@ -363,9 +399,11 @@ public sealed partial class StoryboardView : WorkspaceView
         // overlay：叙事 CRUD 会升 panel.version 与页栅栏，锚点必须刷新，但画布上
         // 未保存的几何不允许被这次重载吞掉）。
         var panelRectDrafts = preserveDrafts ? panels.ToDictionary(p => p.Id, p => p.Rect) : null;
-        var bubbleDraftSnapshot = preserveDrafts ? bubbles.ToDictionary(b => b.Id, b => (b.Rect, b.Moved)) : null;
-        var selectedPanelId = preserveDrafts ? selected?.Id : null;
+        var bubbleDraftSnapshot = preserveDrafts ? bubbles.ToDictionary(b => b.Id, b => b.Snapshot()) : null;
+        var sfxDraftSnapshot = preserveDrafts ? sfxNodes.ToDictionary(n => (n.PanelId, n.Index), n => n.Snapshot()) : null;
+        var selectedPanelIdsDraft = preserveDrafts ? selectedIds.ToList() : null;
         var selectedBubbleId = preserveDrafts ? selectedBubble?.Id : null;
+        var selectedSfxKeyDraft = preserveDrafts && selectedSfx is { } sfx ? (sfx.PanelId, sfx.Index) : ((string, int)?)null;
         // 作用域守卫（net10 迟到失败窗口，LoadPagesAsync 同款）：跨项目切换的空档里
         // 旧项目的整页分镜迟到失败不得画进新项目。
         var requestLifetime = lifetime;
@@ -402,6 +440,7 @@ public sealed partial class StoryboardView : WorkspaceView
             foreach (var panel in panels)
                 panel.Element.MouseLeftButtonDown += (s, e) => BeginPanelDrag(s, e, panel);
             RebuildBubbles();
+            RebuildSfx();
             if (!preserveDrafts)
             {
                 history.Clear();
@@ -416,6 +455,8 @@ public sealed partial class StoryboardView : WorkspaceView
                 // 真删旧页气泡（服务端 DELETE），inspector 也须按新页数据重渲。
                 selected = null;
                 selectedBubble = null;
+                selectedSfx = null;
+                selectedIds.Clear();
                 conflictBar.Visibility = Visibility.Collapsed;   // 新数据落地即冲突解除
                 MarkDirty();
             }
@@ -424,9 +465,20 @@ public sealed partial class StoryboardView : WorkspaceView
                 foreach (var panel in panels)
                     if (panelRectDrafts!.TryGetValue(panel.Id, out var rect)) panel.Rect = rect;
                 foreach (var bubble in bubbles)
-                    if (bubbleDraftSnapshot!.TryGetValue(bubble.Id, out var draft)) { bubble.Rect = draft.Rect; bubble.Moved = draft.Moved; }
-                selected = panels.FirstOrDefault(p => p.Id == selectedPanelId);
+                    if (bubbleDraftSnapshot!.TryGetValue(bubble.Id, out var draft)) bubble.ApplySnapshot(draft);
+                foreach (var node in sfxNodes)
+                    if (sfxDraftSnapshot!.TryGetValue((node.PanelId, node.Index), out var draft)) node.ApplySnapshot(draft);
+                // 选中集必须先清再还原：不清就叠加会留下重复 id（panel-1,panel-2
+                // 变成 p1,p2,p1,p2），层序/微调的 selectedIds 语义随之失真。
+                selectedIds.Clear();
+                if (selectedPanelIdsDraft != null) selectedIds.AddRange(selectedPanelIdsDraft.Where(id => panels.Any(p => p.Id == id)));
+                selected = panels.FirstOrDefault(p => selectedIds.Count > 0 && p.Id == selectedIds[^1]);
                 selectedBubble = bubbles.FirstOrDefault(b => b.Id == selectedBubbleId);
+                selectedSfx = sfxNodes.FirstOrDefault(n => selectedSfxKeyDraft is { } key && n.PanelId == key.Item1 && n.Index == key.Item2);
+                // 节点全部重建过，选中高亮要在新元素上重挂（RenderCanvas 只重建手柄）
+                foreach (var panel in panels) panel.SetSelected(selectedIds.Contains(panel.Id));
+                foreach (var bubble in bubbles) bubble.SetSelected(bubble == selectedBubble);
+                foreach (var node in sfxNodes) node.SetSelected(node == selectedSfx);
                 MarkDirty();   // 撤销栈/气泡删除/叙事草稿照旧参与脏判定（不因重载清零）
                 // #371：按重载后的真实状态重估冲突条。preserve 重载已把服务器锚点
                 // 换成最新（上方 currentPage 的页栅栏、重建 panels/bubbles 的
@@ -474,6 +526,25 @@ public sealed partial class StoryboardView : WorkspaceView
         }
     }
 
+    private void RebuildSfx()
+    {
+        sfxNodes.Clear();
+        foreach (var panel in panels)
+        {
+            var index = 0;
+            foreach (var entry in panel.SoundEffects)
+            {
+                if (SfxNode.From(entry, panel, index++) is { } node)
+                {
+                    node.HitArea.MouseLeftButtonDown += (s, e) => BeginSfxMove(s, e, node);
+                    node.RotateHandle.MouseLeftButtonDown += (s, e) => BeginSfxHandle(s, e, node, "rotate");
+                    node.ScaleHandle.MouseLeftButtonDown += (s, e) => BeginSfxHandle(s, e, node, "scale");
+                    sfxNodes.Add(node);
+                }
+            }
+        }
+    }
+
     private void UpdatePageSize()
     {
         var width = BasePageWidth * zoom;
@@ -484,7 +555,9 @@ public sealed partial class StoryboardView : WorkspaceView
         pageHost.Height = height + 2;
         foreach (var panel in panels) panel.ApplyPosition(page);
         foreach (var bubble in bubbles) bubble.ApplyPosition(page);
-        PositionResizeHandles(selected?.Rect);
+        foreach (var node in sfxNodes) node.ApplyPosition(page);
+        PositionResizeHandles(ActiveHandleRect());
+        PositionBubbleHandles();
         UpdateOverlaySizes();
     }
 
@@ -492,8 +565,12 @@ public sealed partial class StoryboardView : WorkspaceView
     {
         // 事件处理器已在节点创建处挂接一次，这里只重组 Children
         page.Children.Clear();
+        guideLines.Clear();
         foreach (var panel in panels) page.Children.Add(panel.Element);
         foreach (var bubble in bubbles) page.Children.Add(bubble.Element);
+        foreach (var node in sfxNodes) page.Children.Add(node.Element);
+        RenderGridOverlay();
+        page.Children.Add(sizeLabel);
         RenderOrderBadges();
         RenderGuidesOverlay();
         RenderResizeHandles();
@@ -525,37 +602,15 @@ public sealed partial class StoryboardView : WorkspaceView
     }
 
     // ============ Gesture engine: direct element mutation, commit on release ============
-    private abstract class Gesture
-    {
-        public abstract void Move(Point pagePoint);
-        public abstract void Commit(StoryboardView view);
-    }
-
     private PanelGesture? panelGesture;
     private readonly List<Line> guideLines = [];
 
-    private void BeginPanelDrag(object sender, MouseButtonEventArgs e, PanelNode panel)
+    // 统一的手势捕获骨架（对齐 web pointermove→commitGesture 的一次性提交）：
+    // moved 里只做元素级改画、参考线与尺寸标签；up/LostCapture 由 commit 一次入栈。
+    private void CaptureGesture(FrameworkElement element, MouseButtonEventArgs e, Action<Point> onMove, Action onCommit)
     {
-        if (e.ChangedButton != MouseButton.Left) return;
-        SelectPanel(panel);
-        var start = ToNormalized(e.GetPosition(page));
-        panelGesture = new PanelGesture(Keyboard.Modifiers == ModifierKeys.Shift ? [.. panels] : [panel]);
-        var element = (FrameworkElement)sender;
         element.CaptureMouse();
-        MouseEventHandler moved = (_, me) =>
-        {
-            if (panelGesture == null) return;
-            var current = ToNormalized(me.GetPosition(page));
-            panelGesture.Offset = new Point(current.X - start.X, current.Y - start.Y);
-            foreach (var target in panelGesture.Group)
-            {
-                var anchor = panelGesture.Origins[target.Id];   // 用手势开始时的快照，不用已被改写的 target.Rect
-                var rect = new Rect(anchor.X + panelGesture.Offset.X, anchor.Y + panelGesture.Offset.Y, anchor.Width, anchor.Height);
-                target.SetRectDirect(rect, page);
-            }
-            // 选中格的手柄跟随拖动实时移动（对齐 web 手势期的 paintHandles）
-            if (selected != null) PositionResizeHandles(selected.Rect);
-        };
+        MouseEventHandler moved = (_, me) => onMove(ToNormalized(me.GetPosition(page)));
         MouseButtonEventHandler up = null!;
         MouseEventHandler lost = null!;
         var committed = false;   // up 与 LostMouseCapture 都会触发时只提交一次
@@ -566,9 +621,9 @@ public sealed partial class StoryboardView : WorkspaceView
             Mouse.RemoveLostMouseCaptureHandler(element, lost);
             if (committed) return;
             committed = true;
-            panelGesture?.Commit(this);
-            panelGesture = null;
+            onCommit();
             ClearGuides();
+            HideSizeLabel();
         }
         up = (_, _) =>
         {
@@ -580,61 +635,321 @@ public sealed partial class StoryboardView : WorkspaceView
         Mouse.AddMouseUpHandler(element, up);
         Mouse.AddLostMouseCaptureHandler(element, lost);
         e.Handled = true;
+    }
+
+    private void BeginPanelDrag(object sender, MouseButtonEventArgs e, PanelNode panel)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        // Shift+按下 = 加选/保留多选（对齐 web startPanelMove 的 additive）：
+        // 已选中的格保持整组拖动；无修饰键回到单选。
+        var additive = Keyboard.Modifiers == ModifierKeys.Shift && selectedBubble == null && selectedSfx == null;
+        var ids = additive && selectedIds.Count > 0
+            ? (selectedIds.Contains(panel.Id) ? new List<string>(selectedIds) : [.. selectedIds, panel.Id])
+            : [panel.Id];
+        SelectPanels(ids);
+        // 多边形格只读：保持选中但不进移动组（web 排除 isPolygonPanel 同款）。
+        var movable = panels.Where(item => ids.Contains(item.Id) && !item.IsPolygon).ToList();
+        if (movable.Count == 0) { e.Handled = true; return; }
+        var start = ToNormalized(e.GetPosition(page));
+        panelGesture = new PanelGesture(movable);
+        var element = (FrameworkElement)sender;
+        CaptureGesture(element, e,
+            onMove: pointer =>
+            {
+                if (panelGesture == null) return;
+                panelGesture.Offset = new Point(pointer.X - start.X, pointer.Y - start.Y);
+                var movedRects = panelGesture.Compute(this);
+                foreach (var target in movable) target.SetRectDirect(movedRects[target.Id], page);
+                // 手柄跟随拖动实时移动（对齐 web 手势期的 paintHandles）
+                PositionResizeHandles(ActiveHandleRect());
+                PositionBubbleHandles();
+            },
+            onCommit: () =>
+            {
+                panelGesture?.Commit(this);
+                panelGesture = null;
+            });
     }
 
     private void BeginBubbleDrag(object sender, MouseButtonEventArgs e, BubbleNode bubble)
     {
         if (e.ChangedButton != MouseButton.Left) return;
         SelectBubble(bubble);
-        var start = e.GetPosition(page);
-        var origin = bubble.Rect;
-        var movedBeforeGesture = bubble.Moved;
+        var start = ToNormalized(e.GetPosition(page));
+        var origin = bubble.Snapshot();
+        var host = panels.FirstOrDefault(p => p.Id == bubble.PanelId);
         var element = (FrameworkElement)sender;
-        element.CaptureMouse();
-        MouseEventHandler moved = (_, me) =>
-        {
-            var current = me.GetPosition(page);
-            var dx = (current.X - start.X) / page.Width;
-            var dy = (current.Y - start.Y) / page.Height;
-            var next = new Rect(origin.X + dx, origin.Y + dy, origin.Width, origin.Height);
-            var host = panels.FirstOrDefault(p => p.Id == bubble.PanelId);
-            if (host != null) next = ClampInto(next, host.Rect);
-            bubble.SetRectDirect(next, page);
-        };
-        MouseButtonEventHandler up = null!;
-        MouseEventHandler lost = null!;
-        var committed = false;   // up 与 LostMouseCapture 都会触发时只提交一次
-        void Finish()
-        {
-            Mouse.RemoveMouseMoveHandler(element, moved);
-            Mouse.RemoveMouseUpHandler(element, up);
-            Mouse.RemoveLostMouseCaptureHandler(element, lost);
-            if (committed) return;
-            committed = true;
-            var final = bubble.Rect;
-            var host = panels.FirstOrDefault(p => p.Id == bubble.PanelId);
-            if (host != null && !Covers(host.Rect, final))
+        CaptureGesture(element, e,
+            onMove: pointer =>
             {
-                bubble.SetRectDirect(origin, page);  // bubbles never leave their panel
-                bubble.Moved = movedBeforeGesture;   // 回弹后还原到手势前的定位语义
-            }
-            else if (final != origin)
+                var next = new Rect(origin.Rect.X + pointer.X - start.X, origin.Rect.Y + pointer.Y - start.Y, origin.Rect.Width, origin.Rect.Height);
+                if (host != null) next = ClampInto(next, host.Rect);
+                bubble.SetGeometryDirect(origin with { Rect = next, Moved = true }, page);
+                PositionBubbleHandles();
+                ShowSizeLabel(RectSizeLabel(next), next.Right, next.Bottom);
+            },
+            onCommit: () =>
             {
-                history.Push(new GeometryCommand("拖动气泡", [new BubbleChange(bubble.Id, origin, final)]));
-                MarkDirty();
-            }
-        }
-        up = (_, _) =>
-        {
-            element.ReleaseMouseCapture();
-            Finish();
-        };
-        lost = (_, _) => Finish();
-        Mouse.AddMouseMoveHandler(element, moved);
-        Mouse.AddMouseUpHandler(element, up);
-        Mouse.AddLostMouseCaptureHandler(element, lost);
-        e.Handled = true;
+                var final = bubble.Snapshot();
+                if (host != null && !Covers(host.Rect, final.Rect))
+                {
+                    // 气泡不出格（bubbles never leave their panel）：连旋转/锚点一起回弹。
+                    bubble.ApplySnapshot(origin);
+                    bubble.ApplyPosition(page);
+                }
+                else if (final.Rect != origin.Rect)
+                {
+                    history.Push(new GeometryCommand("拖动气泡", [new BubbleChange(bubble.Id, origin, final)]));
+                    MarkDirty();
+                }
+                RenderInspector();
+            });
     }
+
+    // ============ 气泡手柄：缩放 / 旋转 / 锚点·尾巴 ============
+    // （对齐 web startBubbleResize / startBubbleRotate / startBubblePoint）
+
+    private void BeginBubbleResize(object sender, MouseButtonEventArgs e, BubbleNode bubble, string handle)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        var origin = bubble.Snapshot();
+        var host = panels.FirstOrDefault(p => p.Id == bubble.PanelId);
+        var ratioLock = Keyboard.Modifiers == ModifierKeys.Shift;
+        var fromCenter = Keyboard.Modifiers == ModifierKeys.Alt;
+        var element = (FrameworkElement)sender;
+        CaptureGesture(element, e,
+            onMove: pointer =>
+            {
+                var next = ApplyResize(origin.Rect, handle, pointer, ratioLock, fromCenter, MinBubble);
+                if (host != null) next = ClampInto(next, host.Rect);
+                bubble.SetGeometryDirect(origin with { Rect = next, Moved = true }, page);
+                PositionBubbleHandles();
+                ShowSizeLabel(RectSizeLabel(next), next.Right, next.Bottom);
+            },
+            onCommit: () => CommitBubbleGeometry(bubble, origin, "缩放气泡"));
+    }
+
+    private void BeginBubbleRotate(object sender, MouseButtonEventArgs e, BubbleNode bubble)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        var origin = bubble.Snapshot();
+        var center = new Point(origin.Rect.X + origin.Rect.Width / 2, origin.Rect.Y + origin.Rect.Height / 2);
+        var aspect = page.Height / Math.Max(1, page.Width);
+        var startPointer = ToNormalized(e.GetPosition(page));
+        // web startBubbleRotate：按下角度与存角之差做零点，移动中保持同偏差。
+        var startAngle = AngleBetween(center, startPointer, aspect) - origin.Rotation;
+        // web 同款：15° 吸附由手势启动时的 Shift 状态锁定，不按移动中的实时修饰键。
+        var snap = Keyboard.Modifiers == ModifierKeys.Shift;
+        var element = (FrameworkElement)sender;
+        CaptureGesture(element, e,
+            onMove: pointer =>
+            {
+                var rotation = NormalizeRotation(origin.Rotation + AngleBetween(center, pointer, aspect) - startAngle);
+                if (snap) rotation = NormalizeRotation(Math.Round(rotation / RotationSnapDeg) * RotationSnapDeg);
+                bubble.SetGeometryDirect(origin with { Rotation = rotation, Moved = true }, page);
+                PositionBubbleHandles();
+                ShowSizeLabel($"{rotation:F0}°", origin.Rect.Right, origin.Rect.Y);
+            },
+            onCommit: () => CommitBubbleGeometry(bubble, origin, "旋转气泡"));
+    }
+
+    private void BeginBubblePoint(object sender, MouseButtonEventArgs e, BubbleNode bubble, string kind)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        var origin = bubble.Snapshot();
+        var element = (FrameworkElement)sender;
+        CaptureGesture(element, e,
+            onMove: pointer =>
+            {
+                var point = new Point(Math.Clamp(pointer.X, 0, 1), Math.Clamp(pointer.Y, 0, 1));
+                bubble.SetGeometryDirect(kind == "anchor"
+                    ? origin with { Anchor = point, Moved = true }
+                    : origin with { TailTarget = point, Moved = true }, page);
+                PositionBubbleHandles();
+            },
+            onCommit: () => CommitBubbleGeometry(bubble, origin, "调整气泡尾巴"));
+    }
+
+    private void CommitBubbleGeometry(BubbleNode bubble, BubbleGeometry origin, string label)
+    {
+        var final = bubble.Snapshot();
+        if (final != origin)
+        {
+            history.Push(new GeometryCommand(label, [new BubbleChange(bubble.Id, origin, final)]));
+            MarkDirty();
+        }
+        RenderInspector();
+    }
+
+    // ============ 拟声词手势（对齐 web startSfxMove / startSfxRotate / startSfxScale）============
+
+    private void BeginSfxMove(object sender, MouseButtonEventArgs e, SfxNode node)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        SelectSfx(node);
+        var start = ToNormalized(e.GetPosition(page));
+        var origin = node.Snapshot();
+        var element = (FrameworkElement)sender;
+        CaptureGesture(element, e,
+            onMove: pointer =>
+            {
+                node.SetGeometryDirect(origin with
+                {
+                    X = Math.Clamp(origin.X + pointer.X - start.X, 0, 1),
+                    Y = Math.Clamp(origin.Y + pointer.Y - start.Y, 0, 1),
+                    Moved = true,
+                }, page);
+                ShowSizeLabel($"{node.Size * canvasHeightMm:F1} mm", node.X, node.Y);
+            },
+            onCommit: () => CommitSfxGeometry(node, origin, "移动拟声词"));
+    }
+
+    private void BeginSfxHandle(object sender, MouseButtonEventArgs e, SfxNode node, string kind)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        var origin = node.Snapshot();
+        var center = new Point(node.X, node.Y);
+        var aspect = page.Height / Math.Max(1, page.Width);
+        var startPointer = ToNormalized(e.GetPosition(page));
+        var startAngle = AngleBetween(center, startPointer, aspect) - origin.Rotation;
+        var snap = Keyboard.Modifiers == ModifierKeys.Shift;
+        var startDistance = Math.Max(0.01, Math.Sqrt(Math.Pow(startPointer.X - center.X, 2) + Math.Pow((startPointer.Y - center.Y) * aspect, 2)));
+        var element = (FrameworkElement)sender;
+        CaptureGesture(element, e,
+            onMove: pointer =>
+            {
+                if (kind == "rotate")
+                {
+                    var rotation = NormalizeRotation(origin.Rotation + AngleBetween(center, pointer, aspect) - startAngle);
+                    if (snap) rotation = NormalizeRotation(Math.Round(rotation / RotationSnapDeg) * RotationSnapDeg);
+                    node.SetGeometryDirect(origin with { Rotation = rotation, Moved = true }, page);
+                    ShowSizeLabel($"{rotation:F0}°", node.X, node.Y);
+                }
+                else
+                {
+                    // web startSfxScale：size = origin.size ×（当前指针距 / 起始指针距），
+                    // 纵横比修正后按页高归一化，clamp 到 [0.01, 0.5]。
+                    var distance = Math.Max(0.01, Math.Sqrt(Math.Pow(pointer.X - center.X, 2) + Math.Pow((pointer.Y - center.Y) * aspect, 2)));
+                    var size = Math.Clamp(origin.Size * distance / startDistance, MinSfx, 0.5);
+                    node.SetGeometryDirect(origin with { Size = size, Moved = true }, page);
+                    ShowSizeLabel($"{size * canvasHeightMm:F1} mm", node.X, node.Y);
+                }
+            },
+            onCommit: () => CommitSfxGeometry(node, origin, kind == "rotate" ? "旋转拟声词" : "缩放拟声词"));
+    }
+
+    private void CommitSfxGeometry(SfxNode node, SfxGeometry origin, string label)
+    {
+        var final = node.Snapshot();
+        if (final != origin)
+        {
+            history.Push(new GeometryCommand(label, [new SfxChange(node.PanelId, node.Index, origin, final)]));
+            MarkDirty();
+        }
+        RenderInspector();
+    }
+
+    // ============ 多选组缩放（对齐 web startGroupResize → scaleRectWithBounds）============
+
+    private void BeginGroupHandleDrag(object sender, MouseButtonEventArgs e, string handle)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        var movable = MovableSelected();
+        if (movable.Count < 2 || BoundingBox(movable.Select(p => p.Rect)) is not { } originBox) return;
+        var origins = movable.ToDictionary(p => p.Id, p => p.Rect);
+        var ratioLock = Keyboard.Modifiers == ModifierKeys.Shift;
+        var element = (FrameworkElement)sender;
+        CaptureGesture(element, e,
+            onMove: pointer =>
+            {
+                var resized = ComputeGroupBox(originBox, handle, pointer, ratioLock);
+                foreach (var (id, origin) in origins)
+                    if (panels.FirstOrDefault(p => p.Id == id) is { } target)
+                        target.SetRectDirect(ScaleRectWithBounds(origin, originBox, resized, MinSize), page);
+                PositionResizeHandles(resized);
+                ShowSizeLabel(RectSizeLabel(resized), resized.Right, resized.Bottom);
+            },
+            onCommit: () =>
+            {
+                var changes = new List<GeometryChange>();
+                foreach (var (id, origin) in origins)
+                    if (panels.FirstOrDefault(p => p.Id == id) is { } target && target.Rect != origin)
+                        changes.Add(new PanelChange(id, origin, target.Rect));
+                if (changes.Count > 0)
+                {
+                    history.Push(new GeometryCommand("缩放多格", changes));
+                    MarkDirty();
+                }
+                UpdatePageSize();
+                RenderInspector();
+            });
+    }
+
+    // 组 bounding box 自身的 resize：ApplyResize + 吸附（对齐 web 的
+    // snapRect(resized, targets)——吸附移动的是整个 bbox 原点）。
+    private Rect ComputeGroupBox(Rect originBox, string handle, Point pointer, bool ratioLock)
+    {
+        var resized = ApplyResize(originBox, handle, pointer, ratioLock, false, MinSize);
+        if (snapButton.IsChecked != true) return resized;
+        var xs = new List<double>(); var ys = new List<double>();
+        CollectSnapTargets(null, xs, ys, excludeAllSelected: true);
+        var threshold = SnapThresholdPx();
+        var bestX = BestSnapDelta([resized.X, resized.X + resized.Width / 2, resized.Right], xs, resized.X);
+        var bestY = BestSnapDelta([resized.Y, resized.Y + resized.Height / 2, resized.Bottom], ys, resized.Y);
+        ClearGuides();
+        if (Math.Abs(bestX.Delta) <= threshold) ShowGuide(bestX.Guide, true);
+        if (Math.Abs(bestY.Delta) <= threshold) ShowGuide(bestY.Guide, false);
+        var x = Math.Abs(bestX.Delta) <= threshold ? Math.Clamp(resized.X + bestX.Delta, 0, 1 - resized.Width) : resized.X;
+        var y = Math.Abs(bestY.Delta) <= threshold ? Math.Clamp(resized.Y + bestY.Delta, 0, 1 - resized.Height) : resized.Y;
+        return new Rect(x, y, resized.Width, resized.Height);
+    }
+
+    // web scaleRectWithBounds 的直译：成员格相对组 bbox 等比映射到新 bbox，
+    // 结果各自 clampRect 到页内与最小尺寸。
+    private static Rect ScaleRectWithBounds(Rect origin, Rect from, Rect to, double minSize)
+    {
+        if (from.Width <= 0 || from.Height <= 0) return origin;
+        var scaleX = to.Width / from.Width;
+        var scaleY = to.Height / from.Height;
+        return ClampRect(new Rect(
+            to.X + (origin.X - from.X) * scaleX,
+            to.Y + (origin.Y - from.Y) * scaleY,
+            origin.Width * scaleX,
+            origin.Height * scaleY), minSize);
+    }
+
+    private static Rect? BoundingBox(IEnumerable<Rect> rects)
+    {
+        var list = rects.ToList();
+        if (list.Count == 0) return null;
+        var x = list.Min(r => r.X); var y = list.Min(r => r.Y);
+        return new Rect(x, y, list.Max(r => r.Right) - x, list.Max(r => r.Bottom) - y);
+    }
+
+    // web rotatePointAround / angleBetween：角度在纵横比修正的页空间里计算。
+    private static double NormalizeRotation(double degrees)
+    {
+        var normalized = degrees % MaxRotation;
+        if (normalized <= -MaxRotation) normalized += MaxRotation;
+        if (normalized > MaxRotation) normalized -= MaxRotation;
+        return normalized;
+    }
+
+    private static Point RotatePointAround(Point point, Point center, double degrees, double aspect)
+    {
+        if (Math.Abs(degrees) < 1e-9) return point;
+        var radians = degrees * Math.PI / 180;
+        var dx = point.X - center.X;
+        var dy = (point.Y - center.Y) * aspect;
+        var cos = Math.Cos(radians);
+        var sin = Math.Sin(radians);
+        return new Point(
+            center.X + dx * cos - dy * sin,
+            center.Y + (dx * sin + dy * cos) / Math.Max(0.0001, aspect));
+    }
+
+    private static double AngleBetween(Point center, Point point, double aspect) =>
+        Math.Atan2((point.Y - center.Y) * aspect, point.X - center.X) * 180 / Math.PI;
 
     private static bool Covers(Rect host, Rect inner) =>
         inner.X >= host.X - 0.0005 && inner.Y >= host.Y - 0.0005 &&
@@ -653,9 +968,16 @@ public sealed partial class StoryboardView : WorkspaceView
         guideLines.Clear();
     }
 
-    private void ShowGuide(double at, bool vertical)
+    // gap=true 画等间距参考线（web .canvas-guide-line.gap 的 #c05a9e 虚线）。
+    private void ShowGuide(double at, bool vertical, bool gap = false)
     {
-        var line = new Line { Stroke = new SolidColorBrush(Color.FromRgb(0x2B, 0xA6, 0xA0)), StrokeThickness = 1.5, StrokeDashArray = new DoubleCollection { 4, 3 } };
+        var line = new Line
+        {
+            Stroke = new SolidColorBrush(gap ? Color.FromRgb(0xC0, 0x5A, 0x9E) : Color.FromRgb(0x2B, 0xA6, 0xA0)),
+            StrokeThickness = 1.5, StrokeDashArray = new DoubleCollection { 4, 3 },
+            IsHitTestVisible = false,
+            Tag = gap ? "guide-gap" : "guide",
+        };
         if (vertical)
         {
             line.X1 = line.X2 = at * page.Width;
@@ -673,14 +995,30 @@ public sealed partial class StoryboardView : WorkspaceView
 
     // ============ 面板缩放手柄（对齐 web transform-handles + geometry.applyResize）============
 
-    // web 面板手柄全集：四角 + 四边；只在「恰好单选一个矩形格」时挂载。
+    // web 面板手柄全集：四角 + 四边；单选一个矩形格挂格手柄，多选 ≥2 挂组
+    // bounding box 手柄，气泡选中换成气泡手柄（对齐 web TransformHandles 分支）。
     private static readonly string[] PanelHandleNames = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+    private bool handlesAreGroup;
 
     private void RenderResizeHandles()
     {
         foreach (var (_, element) in resizeHandles) page.Children.Remove(element);
         resizeHandles.Clear();
-        if (selected is not { } panel || selectedBubble != null || panel.IsPolygon) return;
+        foreach (var (_, element) in bubbleHandles) page.Children.Remove(element);
+        bubbleHandles.Clear();
+        handlesAreGroup = false;
+        if (selectedSfx != null) return;   // 拟声词手柄挂在节点自身
+        if (selectedBubble is { } bubble) { RenderBubbleHandles(bubble); return; }
+        if (selectedIds.Count == 1 && selected is { IsPolygon: false } single)
+            BuildHandleSet(single.Rect, group: false);
+        else if (selectedIds.Count >= 2 && MovableSelected() is { Count: >= 2 } movable
+            && BoundingBox(movable.Select(p => p.Rect)) is { } box)
+            BuildHandleSet(box, group: true);
+    }
+
+    private void BuildHandleSet(Rect rect, bool group)
+    {
+        handlesAreGroup = group;
         foreach (var name in PanelHandleNames)
         {
             var handle = new Border
@@ -692,15 +1030,100 @@ public sealed partial class StoryboardView : WorkspaceView
                 BorderThickness = new Thickness(2),
                 CornerRadius = new CornerRadius(name.Length == 2 ? 3 : 999),
                 Cursor = HandleCursor(name),
-                Tag = "resize-handle:" + name,
+                Tag = (group ? "group-handle:" : "resize-handle:") + name,
             };
             var captured = name;
-            handle.MouseLeftButtonDown += (s, e) => BeginHandleDrag(s, e, panel, captured);
+            handle.MouseLeftButtonDown += group
+                ? (s, e) => BeginGroupHandleDrag(s, e, captured)
+                : (s, e) => BeginHandleDrag(s, e, selected!, captured);
             Panel.SetZIndex(handle, 50);
             page.Children.Add(handle);
             resizeHandles.Add((name, handle));
         }
-        PositionResizeHandles(panel.Rect);
+        PositionResizeHandles(rect);
+    }
+
+    // 气泡手柄集（对齐 web transform-handles kind="bubble"）：四角缩放 + rotate +
+    // 仅当服务端形状带 anchor/tail_target 时才挂对应点手柄。
+    private void RenderBubbleHandles(BubbleNode bubble)
+    {
+        foreach (var name in new[] { "nw", "ne", "se", "sw" })
+        {
+            var handle = MakeBubbleHandle(name, HandleCursor(name), "bubble-handle:");
+            var captured = name;
+            handle.MouseLeftButtonDown += (s, e) => BeginBubbleResize(s, e, bubble, captured);
+            bubbleHandles.Add((name, handle));
+        }
+        var rotate = MakeBubbleHandle("rotate", Cursors.Hand, "bubble-handle:");
+        rotate.Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x7A, 0x98));
+        rotate.MouseLeftButtonDown += (s, e) => BeginBubbleRotate(s, e, bubble);
+        bubbleHandles.Add(("rotate", rotate));
+        if (bubble.Anchor != null)
+        {
+            var anchor = MakeBubbleHandle("anchor", Cursors.Hand, "bubble-handle:");
+            anchor.Background = new SolidColorBrush(Color.FromRgb(0x33, 0x30, 0x2A));
+            anchor.MouseLeftButtonDown += (s, e) => BeginBubblePoint(s, e, bubble, "anchor");
+            bubbleHandles.Add(("anchor", anchor));
+        }
+        if (bubble.TailTarget != null)
+        {
+            var tail = MakeBubbleHandle("tail", Cursors.Cross, "bubble-handle:");
+            tail.Background = new SolidColorBrush(Color.FromRgb(0x33, 0x30, 0x2A));
+            tail.MouseLeftButtonDown += (s, e) => BeginBubblePoint(s, e, bubble, "tail");
+            bubbleHandles.Add(("tail", tail));
+        }
+        PositionBubbleHandles();
+    }
+
+    private static Border MakeBubbleHandle(string name, Cursor cursor, string tagPrefix) => new()
+    {
+        Width = 14, Height = 14,
+        Background = (Brush)Application.Current.FindResource("Accent"),
+        BorderBrush = Brushes.White,
+        BorderThickness = new Thickness(2),
+        CornerRadius = new CornerRadius(999),
+        Cursor = cursor,
+        Tag = tagPrefix + name,
+    };
+
+    private void PositionBubbleHandles()
+    {
+        if (selectedBubble is not { } bubble) return;
+        var center = new Point(bubble.Rect.X + bubble.Rect.Width / 2, bubble.Rect.Y + bubble.Rect.Height / 2);
+        var aspect = page.Height / Math.Max(1, page.Width);
+        foreach (var (name, element) in bubbleHandles)
+        {
+            // 手柄锚点随气泡 rotation 绕中心公转（对齐 web anchorPosition 的旋转分支）
+            var anchor = RotatePointAround(BubbleHandleAnchor(bubble, name), center, bubble.Rotation, aspect);
+            Canvas.SetLeft(element, anchor.X * page.Width - element.Width / 2);
+            Canvas.SetTop(element, anchor.Y * page.Height - element.Height / 2);
+            Panel.SetZIndex(element, 50);
+            if (element.Parent != page) page.Children.Add(element);
+        }
+    }
+
+    private static Point BubbleHandleAnchor(BubbleNode bubble, string name)
+    {
+        var rect = bubble.Rect;
+        return name switch
+        {
+            // web anchorPosition rotate：居中上方 0.045 归一化，贴近页顶时收回页内。
+            "rotate" => new Point(rect.X + rect.Width / 2, Math.Max(0, rect.Y - 0.045)),
+            "anchor" => bubble.Anchor ?? new Point(rect.X + rect.Width / 2, rect.Bottom),
+            "tail" => bubble.TailTarget ?? new Point(rect.Right, rect.Bottom),
+            _ => new Point(name.Contains('w') ? rect.X : rect.Right, name.Contains('n') ? rect.Y : rect.Bottom),
+        };
+    }
+
+    // 当前手柄组跟随的矩形：单选=选中格；多选=可移动选中格的 bounding box。
+    private Rect? ActiveHandleRect()
+    {
+        if (selectedBubble != null || selectedSfx != null) return null;
+        if (selectedIds.Count == 1)
+            return panels.FirstOrDefault(p => p.Id == selectedIds[0] && !p.IsPolygon)?.Rect;
+        if (selectedIds.Count >= 2 && MovableSelected() is { Count: >= 2 } movable)
+            return BoundingBox(movable.Select(p => p.Rect));
+        return null;
     }
 
     private static Cursor HandleCursor(string name) => name switch
@@ -737,36 +1160,19 @@ public sealed partial class StoryboardView : WorkspaceView
         if (selected != panel) SelectPanel(panel);
         var origin = panel.Rect;
         var element = (FrameworkElement)sender;
-        element.CaptureMouse();
-        MouseEventHandler moved = (_, me) =>
-        {
-            var next = ComputeResized(origin, handle, ToNormalized(me.GetPosition(page)), panel, Keyboard.Modifiers);
-            panel.SetRectDirect(next, page);
-            PositionResizeHandles(next);
-        };
-        MouseButtonEventHandler up = null!;
-        MouseEventHandler lost = null!;
-        var committed = false;   // up 与 LostMouseCapture 都会触发时只提交一次
-        void Finish()
-        {
-            Mouse.RemoveMouseMoveHandler(element, moved);
-            Mouse.RemoveMouseUpHandler(element, up);
-            Mouse.RemoveLostMouseCaptureHandler(element, lost);
-            if (committed) return;
-            committed = true;
-            CommitResize(panel, origin);
-            ClearGuides();
-        }
-        up = (_, _) =>
-        {
-            element.ReleaseMouseCapture();
-            Finish();
-        };
-        lost = (_, _) => Finish();
-        Mouse.AddMouseMoveHandler(element, moved);
-        Mouse.AddMouseUpHandler(element, up);
-        Mouse.AddLostMouseCaptureHandler(element, lost);
-        e.Handled = true;
+        CaptureGesture(element, e,
+            onMove: pointer =>
+            {
+                var next = ComputeResized(origin, handle, pointer, panel, Keyboard.Modifiers);
+                panel.SetRectDirect(next, page);
+                PositionResizeHandles(next);
+                ShowSizeLabel(RectSizeLabel(next), next.Right, next.Bottom);
+            },
+            onCommit: () =>
+            {
+                CommitResize(panel, origin);
+                RenderInspector();
+            });
     }
 
     // web resize 手势的几何核心：applyResize（最小尺寸 MinSize=0.03 / Shift 锁
@@ -780,14 +1186,10 @@ public sealed partial class StoryboardView : WorkspaceView
         var resized = ApplyResize(origin, handle, pointer,
             modifiers == ModifierKeys.Shift, modifiers == ModifierKeys.Alt, MinSize);
         if (snapButton.IsChecked != true) return resized;
-        var threshold = 6 / Math.Max(1, page.Width);
-        var xTargets = new List<double>(PageGuides);
-        var yTargets = new List<double>(PageGuides);
-        foreach (var other in panels.Where(p => !ReferenceEquals(p, self)))
-        {
-            xTargets.Add(other.Rect.X); xTargets.Add(other.Rect.X + other.Rect.Width / 2); xTargets.Add(other.Rect.Right);
-            yTargets.Add(other.Rect.Y); yTargets.Add(other.Rect.Y + other.Rect.Height / 2); yTargets.Add(other.Rect.Bottom);
-        }
+        var threshold = SnapThresholdPx();
+        var xTargets = new List<double>();
+        var yTargets = new List<double>();
+        CollectSnapTargets(self, xTargets, yTargets);
         var bestX = BestSnapDelta([resized.X, resized.X + resized.Width / 2, resized.Right], xTargets, resized.X);
         var bestY = BestSnapDelta([resized.Y, resized.Y + resized.Height / 2, resized.Bottom], yTargets, resized.Y);
         ClearGuides();
@@ -952,29 +1354,477 @@ public sealed partial class StoryboardView : WorkspaceView
             frame.Width = page.Width * (1 - 2 * x);
             frame.Height = page.Height * (1 - 2 * y);
         }
+        PositionGridLines();
+        PositionSizeLabel();
     }
 
-    private void SelectPanel(PanelNode? panel)
+    // ============ 网格叠层（对齐 web gridLinesFor + canvas-grid）============
+    // 叠层线与吸附目标共用同一份归一化坐标：物理间距 stepMm 沿宽/高铺满一页，
+    // 位置 round4；网格开启才把线并入吸附目标。页缺 canvas 字段时按回落的
+    // defaultCanvas 尺寸计算（与 web canvas ?? defaultCanvas 同源）。
+    private void RenderGridOverlay()
     {
-        foreach (var candidate in panels) candidate.SetSelected(candidate == panel);
+        foreach (var (_, _, element) in gridLineElements) page.Children.Remove(element);
+        gridLineElements.Clear();
+        gridX.Clear();
+        gridY.Clear();
+        if (gridButton.IsChecked != true || canvasWidthMm <= 0 || canvasHeightMm <= 0)
+        {
+            gridStepBox.Visibility = Visibility.Collapsed;
+            return;
+        }
+        gridStepBox.Visibility = Visibility.Visible;
+        for (var pos = (double)gridStepMm; pos < canvasWidthMm - 1e-6; pos += gridStepMm)
+            gridX.Add(Math.Round(pos / canvasWidthMm, 4));
+        for (var pos = (double)gridStepMm; pos < canvasHeightMm - 1e-6; pos += gridStepMm)
+            gridY.Add(Math.Round(pos / canvasHeightMm, 4));
+        foreach (var at in gridX) AddGridLine(at, vertical: true);
+        foreach (var at in gridY) AddGridLine(at, vertical: false);
+        PositionGridLines();
+    }
+
+    private void AddGridLine(double at, bool vertical)
+    {
+        var line = new Line
+        {
+            Stroke = new SolidColorBrush(Color.FromArgb(0x38, 0x44, 0x3F, 0x38)),
+            StrokeThickness = 1, IsHitTestVisible = false,
+        };
+        Panel.SetZIndex(line, 4);
+        gridLineElements.Add((at, vertical, line));
+        page.Children.Add(line);
+    }
+
+    private void PositionGridLines()
+    {
+        foreach (var (at, vertical, line) in gridLineElements)
+            if (vertical) { line.X1 = line.X2 = at * page.Width; line.Y1 = 0; line.Y2 = page.Height; }
+            else { line.Y1 = line.Y2 = at * page.Height; line.X1 = 0; line.X2 = page.Width; }
+    }
+
+    // ============ 实时尺寸标签（对齐 web canvas-size-label）============
+    // 手势期间跟随对象右下角（web 偏移 +8px/+6px），越界翻转到左上侧；
+    // 松手隐藏。内容：矩形 W×H mm / 旋转角 / 拟声词字号。
+    private void ShowSizeLabel(string text, double normalizedX, double normalizedY)
+    {
+        ((TextBlock)sizeLabel.Child).Text = text;
+        sizeLabelAt = new Point(normalizedX, normalizedY);
+        sizeLabel.Visibility = Visibility.Visible;
+        PositionSizeLabel();
+    }
+
+    private void PositionSizeLabel()
+    {
+        if (sizeLabel.Visibility != Visibility.Visible) return;
+        sizeLabel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var size = sizeLabel.DesiredSize;
+        var x = sizeLabelAt.X * page.Width + 8;
+        var y = sizeLabelAt.Y * page.Height + 6;
+        if (x + size.Width > page.Width) x = sizeLabelAt.X * page.Width - size.Width - 8;
+        if (y + size.Height > page.Height) y = sizeLabelAt.Y * page.Height - size.Height - 6;
+        Canvas.SetLeft(sizeLabel, Math.Max(0, x));
+        Canvas.SetTop(sizeLabel, Math.Max(0, y));
+    }
+
+    private void HideSizeLabel() => sizeLabel.Visibility = Visibility.Collapsed;
+
+    private string RectSizeLabel(Rect rect) =>
+        $"{rect.Width * canvasWidthMm:F1} × {rect.Height * canvasHeightMm:F1} mm";
+
+    // ============ 吸附目标与等间距参考线（对齐 web snapTargets + equalGapSnap）============
+    // 目标集 = 页参考线 + 其他格的边/中线 + （网格开启时的）网格线。
+    // excludeAllSelected 用于组缩放/等距场景：其余选中格也在动，不能作吸附目标。
+    private void CollectSnapTargets(PanelNode? exclude, List<double> xs, List<double> ys, bool excludeAllSelected = false)
+    {
+        xs.AddRange(PageGuides);
+        ys.AddRange(PageGuides);
+        foreach (var other in panels)
+        {
+            if (excludeAllSelected ? selectedIds.Contains(other.Id) : ReferenceEquals(other, exclude)) continue;
+            xs.Add(other.Rect.X); xs.Add(other.Rect.X + other.Rect.Width / 2); xs.Add(other.Rect.Right);
+            ys.Add(other.Rect.Y); ys.Add(other.Rect.Y + other.Rect.Height / 2); ys.Add(other.Rect.Bottom);
+        }
+        if (gridButton.IsChecked == true) { xs.AddRange(gridX); ys.AddRange(gridY); }
+    }
+
+    // web equalGapSnap 的单轴直译：左边界的右侧间距与右边界的左侧间距相等时，
+    // 把格推到两邻格正中；返回位移，命中的邻边作为 gap 参考线画出。
+    private double EqualGapDelta(Rect rect, List<Rect> others, bool vertical, List<(double At, bool Vertical)> guides)
+    {
+        var delta = 0.0;
+        if (vertical)
+        {
+            var leftEdges = others.Where(o => o.Right <= rect.X + SnapThresholdPx()).ToList();
+            var rightEdges = others.Where(o => o.X >= rect.Right - SnapThresholdPx()).ToList();
+            foreach (var left in leftEdges)
+                foreach (var right in rightEdges)
+                {
+                    var candidate = (left.Right + right.X - rect.Width) / 2;
+                    var next = candidate - rect.X;
+                    if (Math.Abs(next) <= SnapThresholdPx() && Math.Abs(next) > 1e-9)
+                    {
+                        delta = next;
+                        guides.Add((Math.Round(left.Right, 4), true));
+                        guides.Add((Math.Round(right.X, 4), true));
+                    }
+                }
+        }
+        else
+        {
+            var topEdges = others.Where(o => o.Bottom <= rect.Y + SnapThresholdPx()).ToList();
+            var bottomEdges = others.Where(o => o.Y >= rect.Bottom - SnapThresholdPx()).ToList();
+            foreach (var top in topEdges)
+                foreach (var bottom in bottomEdges)
+                {
+                    var candidate = (top.Bottom + bottom.Y - rect.Height) / 2;
+                    var next = candidate - rect.Y;
+                    if (Math.Abs(next) <= SnapThresholdPx() && Math.Abs(next) > 1e-9)
+                    {
+                        delta = next;
+                        guides.Add((Math.Round(top.Bottom, 4), false));
+                        guides.Add((Math.Round(bottom.Y, 4), false));
+                    }
+                }
+        }
+        return delta;
+    }
+
+    private double SnapThresholdPx() => 6 / Math.Max(1, page.Width);
+
+    // ============ 选择模型（对齐 web selection { ids, bubble, sfx }）============
+    // selectedIds 有序，末位是主格（对齐时的参照格）；气泡/拟声词选中时收缩为
+    // 宿主格单元素。selected/selectedBubble 保持原语义不变。
+    private void SelectPanel(PanelNode? panel) => SelectPanels(panel == null ? [] : [panel.Id]);
+
+    private void SelectPanels(IReadOnlyList<string> ids)
+    {
+        selectedIds.Clear();
+        selectedIds.AddRange(ids.Where(id => panels.Any(p => p.Id == id)));
+        foreach (var candidate in panels) candidate.SetSelected(selectedIds.Contains(candidate.Id));
         foreach (var bubble in bubbles) bubble.SetSelected(false);
-        selected = panel;
+        foreach (var node in sfxNodes) node.SetSelected(false);
+        selected = panels.FirstOrDefault(p => selectedIds.Count > 0 && p.Id == selectedIds[^1]);
         selectedBubble = null;
+        selectedSfx = null;
         FocusCanvas();   // 选中即聚焦画布：键盘快捷键（Tab/方向键/Delete）随之可用
         RenderResizeHandles();
+        UpdateAlignBar();
         RenderInspector();
     }
 
     private void SelectBubble(BubbleNode bubble)
     {
+        selectedIds.Clear();
+        selectedIds.Add(bubble.PanelId);
         foreach (var candidate in panels) candidate.SetSelected(candidate.Id == bubble.PanelId);
         foreach (var bubbleNode in bubbles) bubbleNode.SetSelected(bubbleNode == bubble);
+        foreach (var node in sfxNodes) node.SetSelected(false);
         selected = panels.FirstOrDefault(p => p.Id == bubble.PanelId);
         selectedBubble = bubble;
+        selectedSfx = null;
         FocusCanvas();
-        // 气泡选中不挂面板缩放手柄（对齐 web：气泡选中时 TransformHandles 换成
-        // 气泡手柄；桌面未实现气泡缩放，先清空面板手柄）
+        // 气泡选中时挂气泡手柄而非面板手柄（对齐 web TransformHandles 分支）
         RenderResizeHandles();
+        UpdateAlignBar();
+        RenderInspector();
+    }
+
+    private void SelectSfx(SfxNode node)
+    {
+        selectedIds.Clear();
+        selectedIds.Add(node.PanelId);
+        foreach (var candidate in panels) candidate.SetSelected(candidate.Id == node.PanelId);
+        foreach (var bubble in bubbles) bubble.SetSelected(false);
+        foreach (var other in sfxNodes) other.SetSelected(other == node);
+        selected = panels.FirstOrDefault(p => p.Id == node.PanelId);
+        selectedBubble = null;
+        selectedSfx = node;
+        FocusCanvas();
+        RenderResizeHandles();
+        UpdateAlignBar();
+        RenderInspector();
+    }
+
+    // 可移动选中格（对齐 web movableIds → panels.filter(!isPolygonPanel)）。
+    private List<PanelNode> MovableSelected() =>
+        panels.Where(p => selectedIds.Contains(p.Id) && !p.IsPolygon).ToList();
+
+    // 对齐 web toolbar-align 的可见性：≥2 个可移动选中格才显示整组，
+    // 等距分布需要 ≥3。
+    private void UpdateAlignBar()
+    {
+        if (alignBar == null) return;
+        var count = (selectedBubble == null && selectedSfx == null) ? MovableSelected().Count : 0;
+        alignBar.Visibility = count >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var button in distributeButtons)
+            button.Visibility = count >= 3 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ============ 精准编辑命令（对齐 web alignRects/distributeRects/sameSizeRects/
+    //              reorderPanels/geometry clipboard）============
+
+    // 对齐：非主格向选中组 bounding box 的对应边/中线收拢；round4 消浮点尾差。
+    private void RunAlign(string mode)
+    {
+        var targets = MovableSelected();
+        if (targets.Count < 2 || BoundingBox(targets.Select(p => p.Rect)) is not { } box) return;
+        var changes = new List<GeometryChange>();
+        foreach (var panel in targets)
+        {
+            var rect = panel.Rect;
+            var after = mode switch
+            {
+                "left" => rect with { X = box.X },
+                "centerX" => rect with { X = Math.Round(box.X + (box.Width - rect.Width) / 2, 4) },
+                "right" => rect with { X = Math.Round(box.Right - rect.Width, 4) },
+                "top" => rect with { Y = box.Y },
+                "middleY" => rect with { Y = Math.Round(box.Y + (box.Height - rect.Height) / 2, 4) },
+                "bottom" => rect with { Y = Math.Round(box.Bottom - rect.Height, 4) },
+                _ => rect,
+            };
+            if (after != rect) changes.Add(new PanelChange(panel.Id, rect, after));
+        }
+        CommitPanelChanges("对齐格子", changes);
+    }
+
+    // 分布（≥3，web distributeRects 直译）：按轴位置排序，最外两格不动，
+    // 相邻格间距相等——gap = (span - totalSize)/(n-1)，中间格顺次落位。
+    private void RunDistribute(string axis)
+    {
+        var targets = MovableSelected();
+        if (targets.Count < 3) return;
+        var horizontal = axis == "x";
+        var sorted = targets.OrderBy(p => horizontal ? p.Rect.X : p.Rect.Y).ToList();
+        var first = sorted[0].Rect;
+        var last = sorted[^1].Rect;
+        var span = (horizontal ? last.Right : last.Bottom) - (horizontal ? first.X : first.Y);
+        var totalSize = sorted.Sum(p => horizontal ? p.Rect.Width : p.Rect.Height);
+        var gap = (span - totalSize) / (sorted.Count - 1);
+        var changes = new List<GeometryChange>();
+        var cursor = (horizontal ? first.Right : first.Bottom) + gap;
+        for (var i = 1; i < sorted.Count - 1; i++)
+        {
+            var rect = sorted[i].Rect;
+            var after = horizontal
+                ? rect with { X = Math.Round(cursor, 4) }
+                : rect with { Y = Math.Round(cursor, 4) };
+            cursor += (horizontal ? rect.Width : rect.Height) + gap;
+            if (after != rect) changes.Add(new PanelChange(sorted[i].Id, rect, after));
+        }
+        CommitPanelChanges(horizontal ? "水平等距" : "垂直等距", changes);
+    }
+
+    // 同尺寸：向首个选中的可移动格对齐（web sameSizeRects 的 ids[0] 参照——
+    // ids 是点击序，selectedIds 同序），溢出页界时 clampRect 回挪原点。
+    private void RunSameSize(string mode)
+    {
+        var targets = selectedIds
+            .Select(id => panels.FirstOrDefault(p => p.Id == id))
+            .Where(p => p is { IsPolygon: false }).Cast<PanelNode>().ToList();
+        if (targets.Count < 2) return;
+        var reference = targets[0].Rect;
+        var changes = new List<GeometryChange>();
+        foreach (var panel in targets.Skip(1))
+        {
+            var rect = panel.Rect;
+            var width = mode is "width" or "size" ? reference.Width : rect.Width;
+            var height = mode is "height" or "size" ? reference.Height : rect.Height;
+            var after = ClampRect(new Rect(rect.X, rect.Y, width, height), MinSize);
+            after = new Rect(Math.Round(after.X, 4), Math.Round(after.Y, 4), Math.Round(after.Width, 4), Math.Round(after.Height, 4));
+            if (after != rect) changes.Add(new PanelChange(panel.Id, rect, after));
+        }
+        CommitPanelChanges(mode switch { "width" => "同宽", "height" => "同高", _ => "同大小" }, changes);
+    }
+
+    private void CommitPanelChanges(string label, List<GeometryChange> changes)
+    {
+        if (changes.Count == 0) return;
+        history.Push(new GeometryCommand(label, changes));
+        ApplyChanges(changes, before: false);
+        MarkDirty();
+        RenderInspector();
+    }
+
+    // 层序（web zOrderChanges 的直译）：up/down 与最近邻交换档位，top → maxZ+1，
+    // bottom → minZ-1（minZ-1<1 时其余格整体上移一档、目标落 1，z_order 恒 ≥1）。
+    // 元数据变更与几何同栈撤销，随整页 PUT 的 geometry.z_order 落库；
+    // 目标格 = 单选格或检查器当前格（对齐 web targetId 取值）。
+    private void RunZOrder(string op)
+    {
+        var targetId = selectedIds.Count == 1 ? selectedIds[0] : selected?.Id;
+        if (targetId == null || panels.FirstOrDefault(p => p.Id == targetId) is not { } target) return;
+        var zOrders = panels.ToDictionary(p => p.Id, p => p.ZOrder);
+        var current = zOrders[targetId];
+        var ids = zOrders.Keys.ToList();
+        var maxZ = ids.Max(id => zOrders[id]);
+        var minZ = ids.Min(id => zOrders[id]);
+        var changes = new List<(string Id, int Before, int After)>();
+        switch (op)
+        {
+            case "top":
+                if (!(current == maxZ && ids.Count(id => zOrders[id] == maxZ) == 1))
+                    changes.Add((targetId, current, maxZ + 1));
+                break;
+            case "bottom":
+                if (minZ - 1 >= 1) changes.Add((targetId, current, minZ - 1));
+                else
+                {
+                    foreach (var id in ids.Where(id => id != targetId))
+                        changes.Add((id, zOrders[id], zOrders[id] + 1));
+                    changes.Add((targetId, current, 1));
+                }
+                break;
+            default:
+                var neighbour = op == "up"
+                    ? ids.Where(id => id != targetId && zOrders[id] > current).OrderBy(id => zOrders[id]).FirstOrDefault()
+                    : ids.Where(id => id != targetId && zOrders[id] < current).OrderByDescending(id => zOrders[id]).FirstOrDefault();
+                if (neighbour != null)
+                {
+                    changes.Add((targetId, current, zOrders[neighbour]));
+                    changes.Add((neighbour, zOrders[neighbour], current));
+                }
+                break;
+        }
+        if (changes.Count == 0) return;
+        history.Push(new GeometryCommand("调整图层",
+            changes.Select(c => (GeometryChange)new PanelZChange(c.Id, c.Before, c.After)).ToList()));
+        foreach (var (id, _, after) in changes)
+            if (panels.FirstOrDefault(p => p.Id == id) is { } panel) panel.ZOrder = after;
+        UpdatePageSize();
+        MarkDirty();
+        RenderInspector();
+    }
+
+    // ============ 几何剪贴板（对齐 web copyGeometry/pasteGeometry + Ctrl+C/V）============
+    // 跨型别粘贴按 web 语义降维：面板/气泡共享 rect（气泡附带 rotation）；
+    // 拟声词只取中心点与旋转；面板不吸收拟声词的 size。
+    private sealed record CopiedBubble(Rect Rect, double Rotation);
+
+    private void CopySelectionGeometry()
+    {
+        if (selectedSfx is { } sfx)
+        {
+            var g = sfx.Snapshot();
+            copiedGeometry = new SfxGeometry(g.X, g.Y, g.Rotation, g.Size, true);
+            Notice($"复制几何：{sfx.Text}");
+            return;
+        }
+        if (selectedBubble is { } bubble)
+        {
+            copiedGeometry = new CopiedBubble(bubble.Rect, bubble.Rotation);
+            Notice("复制几何：气泡");
+            return;
+        }
+        if (selectedIds.Count == 1 && panels.FirstOrDefault(p => p.Id == selectedIds[0]) is { IsPolygon: false } panel)
+        {
+            copiedGeometry = panel.Rect;
+            Notice("复制几何：本页");
+        }
+    }
+
+    private bool PasteSelectionGeometry()
+    {
+        if (!AnySelection()) { Notice("先选中一个格再按 Ctrl+C 复制几何"); return false; }
+        if (copiedGeometry == null) return false;
+        if (selectedSfx is { } sfx)
+        {
+            var origin = sfx.Snapshot();
+            SfxGeometry after = copiedGeometry switch
+            {
+                SfxGeometry g => g with { Moved = true },
+                CopiedBubble b => origin with { X = b.Rect.X + b.Rect.Width / 2, Y = b.Rect.Y + b.Rect.Height / 2, Rotation = b.Rotation, Moved = true },
+                Rect r => origin with { X = r.X + r.Width / 2, Y = r.Y + r.Height / 2, Moved = true },
+                _ => origin,
+            };
+            if (after != origin)
+            {
+                history.Push(new GeometryCommand("粘贴几何", [new SfxChange(sfx.PanelId, sfx.Index, origin, after)]));
+                sfx.ApplySnapshot(after);
+                sfx.ApplyPosition(page);
+                MarkDirty();
+                RenderInspector();
+            }
+            return true;
+        }
+        if (selectedBubble is { } bubble)
+        {
+            var origin = bubble.Snapshot();
+            BubbleGeometry? after = copiedGeometry switch
+            {
+                CopiedBubble b => origin with { Rect = ClampRect(b.Rect, MinBubble), Rotation = b.Rotation, Moved = true },
+                Rect r => origin with { Rect = ClampRect(r, MinBubble), Moved = true },
+                _ => null,
+            };
+            if (after is { } applied && applied != origin)
+            {
+                history.Push(new GeometryCommand("粘贴几何", [new BubbleChange(bubble.Id, origin, applied)]));
+                bubble.ApplySnapshot(applied);
+                bubble.ApplyPosition(page);
+                PositionBubbleHandles();
+                MarkDirty();
+                RenderInspector();
+            }
+            return true;
+        }
+        if (copiedGeometry is Rect || copiedGeometry is CopiedBubble)
+        {
+            var pasted = copiedGeometry is CopiedBubble b2 ? b2.Rect : (Rect)copiedGeometry!;
+            var changes = new List<GeometryChange>();
+            foreach (var panel in MovableSelected())
+            {
+                var after = ClampRect(pasted, MinSize);
+                if (after != panel.Rect) changes.Add(new PanelChange(panel.Id, panel.Rect, after));
+            }
+            CommitPanelChanges("粘贴几何", changes);
+            return true;
+        }
+        return false;
+    }
+
+    private void Notice(string text)
+    {
+        lastNotice = text;
+        if (Context != null) State.Status = text;
+        UpdateStatus(text);
+    }
+
+    // ============ 数字几何提交（对齐 web commitRect/commitBubbleRect/commitRotation）============
+
+    private void CommitPanelRect(PanelNode panel, Rect after)
+    {
+        // clamp 下沉到提交点（对齐 web commitRect 内部的 clampRect）：
+        // 数字字段已夹过，测试缝/将来其他调用点走同一防线。
+        after = ClampRect(after, MinSize);
+        if (after == panel.Rect) return;
+        history.Push(new GeometryCommand("输入几何", [new PanelChange(panel.Id, panel.Rect, after)]));
+        panel.Rect = after;
+        UpdatePageSize();
+        MarkDirty();
+        RenderInspector();
+    }
+
+    private void CommitBubbleRectField(BubbleNode bubble, Rect after)
+    {
+        var origin = bubble.Snapshot();
+        var next = origin with { Rect = ClampRect(after, MinBubble), Moved = true };
+        if (next == origin) return;
+        history.Push(new GeometryCommand("输入几何", [new BubbleChange(bubble.Id, origin, next)]));
+        bubble.ApplySnapshot(next);
+        UpdatePageSize();
+        MarkDirty();
+        RenderInspector();
+    }
+
+    private void CommitBubbleRotationField(BubbleNode bubble, double rotation)
+    {
+        var origin = bubble.Snapshot();
+        // 数字输入用 web commitRotation 的 clamp（±360 + round4），非手势的取模归一化
+        var next = origin with { Rotation = Math.Round(Math.Clamp(rotation, -MaxRotation, MaxRotation), 4), Moved = true };
+        if (next == origin) return;
+        history.Push(new GeometryCommand("输入几何", [new BubbleChange(bubble.Id, origin, next)]));
+        bubble.ApplySnapshot(next);
+        UpdatePageSize();
+        MarkDirty();
         RenderInspector();
     }
 
@@ -1003,19 +1853,24 @@ public sealed partial class StoryboardView : WorkspaceView
     {
         foreach (var change in changes)
         {
-            if (change is PanelChange panelChange)
+            switch (change)
             {
-                var panel = panels.FirstOrDefault(p => p.Id == panelChange.Id);
-                if (panel != null) panel.Rect = before ? panelChange.Before : panelChange.After;
-            }
-            else if (change is BubbleChange bubbleChange)
-            {
-                var bubble = bubbles.FirstOrDefault(b => b.Id == bubbleChange.Id);
-                if (bubble != null)
-                {
-                    var rect = before ? bubbleChange.Before : bubbleChange.After;
-                    bubble.Rect = rect;
-                }
+                case PanelChange panelChange:
+                    if (panels.FirstOrDefault(p => p.Id == panelChange.Id) is { } panel)
+                        panel.Rect = before ? panelChange.Before : panelChange.After;
+                    break;
+                case PanelZChange zChange:
+                    if (panels.FirstOrDefault(p => p.Id == zChange.Id) is { } zPanel)
+                        zPanel.ZOrder = before ? zChange.Before : zChange.After;
+                    break;
+                case BubbleChange bubbleChange:
+                    if (bubbles.FirstOrDefault(b => b.Id == bubbleChange.Id) is { } bubble)
+                        bubble.ApplySnapshot(before ? bubbleChange.Before : bubbleChange.After);
+                    break;
+                case SfxChange sfxChange:
+                    if (sfxNodes.FirstOrDefault(n => n.PanelId == sfxChange.PanelId && n.Index == sfxChange.Index) is { } node)
+                        node.ApplySnapshot(before ? sfxChange.Before : sfxChange.After);
+                    break;
             }
         }
         UpdatePageSize();
@@ -1077,12 +1932,12 @@ public sealed partial class StoryboardView : WorkspaceView
             return;
         }
         var card = new StackPanel();
-        card.Children.Add(Kit.FieldLabel("几何（只读）"));
-        card.Children.Add(new TextBlock
-        {
-            Text = $"X {panel.Rect.X:P1} · Y {panel.Rect.Y:P1} · 宽 {panel.Rect.Width:P1} · 高 {panel.Rect.Height:P1}",
-            FontSize = 14, FontWeight = FontWeights.Bold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 8),
-        });
+        card.Children.Add(Kit.FieldLabel("几何"));
+        if (panel.IsPolygon)
+            card.Children.Add(Kit.Caption("此格为多边形，画布暂不支持拖拽与缩放；矩形调整手柄已禁用。"));
+        else
+            card.Children.Add(BuildGeometryFields("几何", () => panel.Rect, MinSize, after => CommitPanelRect(panel, after)));
+        card.Children.Add(BuildLayerOps());
         card.Children.Add(Kit.Caption($"阅读序 {panel.ReadingOrder} · 绘制层 Z{panel.ZOrder}" + (panel.Bleed ? " · 出血格" : "") + (panel.Borderless ? " · 无边框" : "")));
         var source = storyboard.Array("panels").FirstOrDefault(p => p.Text("id") == panel.Id);
         ComboBox Combo(IReadOnlyDictionary<string, string> labels, string current)
@@ -1165,6 +2020,141 @@ public sealed partial class StoryboardView : WorkspaceView
         var lettering = new StackPanel();
         BuildDialogueEditor(lettering, panel);
         inspector.Children.Add(InspectorSection(lettering));
+        // 气泡/拟声词选中时追加各自的几何区（对齐 web bubbleFields 块与拟声词读数）
+        if (selectedBubble is { } bubbleSel) inspector.Children.Add(InspectorSection(BuildBubbleGeometryCard(bubbleSel)));
+        if (selectedSfx is { } sfxSel) inspector.Children.Add(InspectorSection(BuildSfxCard(sfxSel)));
+    }
+
+    // 气泡几何卡（对齐 web bubbleFields 的「气泡几何」块）：X/Y/宽/高 + 角度，
+    // mm/% 单位与面板几何同源。
+    private StackPanel BuildBubbleGeometryCard(BubbleNode bubble)
+    {
+        var card = new StackPanel();
+        card.Children.Add(Kit.FieldLabel("气泡几何"));
+        card.Children.Add(BuildGeometryFields("气泡几何", () => bubble.Rect, MinBubble,
+            after => CommitBubbleRectField(bubble, after),
+            () => bubble.Rotation, deg => CommitBubbleRotationField(bubble, deg)));
+        return card;
+    }
+
+    // 拟声词读数卡（web 检查器无独立拟声词表单，画布上直拖/转/缩；这里给只读
+    // 定位信息与操作提示，数值与 SizeLabel 同源）。
+    private StackPanel BuildSfxCard(SfxNode node)
+    {
+        var card = new StackPanel();
+        card.Children.Add(Kit.FieldLabel("拟声词"));
+        card.Children.Add(new TextBlock
+        {
+            Text = $"{node.Text} · 位置 X {node.X:P1} Y {node.Y:P1} · 角度 {node.Rotation:F0}° · 大小 {node.Size * canvasHeightMm:F1}mm",
+            FontSize = 13, FontWeight = FontWeights.Bold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 6),
+        });
+        card.Children.Add(Kit.Caption("画布上拖动移动位置，Shift+旋转手柄按 15° 吸附，缩放手柄调字号；随本页几何一并保存。"));
+        return card;
+    }
+
+    // 数字几何区（对齐 web GeometryFields）：mm/% 双单位切换，各字段独立草稿，
+    // Enter/失焦提交、Esc 放弃草稿；AutomationProperties.Name 与 web aria-label
+    // 同构（"X（mm）"/"角度（°）"），便于回归检查按可访问名定位。
+    private FrameworkElement BuildGeometryFields(string namePrefix, Func<Rect> read, double minSize,
+        Action<Rect> commitRect, Func<double>? readRotation = null, Action<double>? commitRotation = null)
+    {
+        var host = new StackPanel { Margin = new Thickness(0, 6, 0, 8) };
+        var inMm = true;
+        var fields = new (string Label, Func<Rect, double> Get, Func<Rect, double, Rect> Set, bool Horizontal)[]
+        {
+            ("X", r => r.X, (r, v) => new Rect(v, r.Y, r.Width, r.Height), true),
+            ("Y", r => r.Y, (r, v) => new Rect(r.X, v, r.Width, r.Height), false),
+            ("宽", r => r.Width, (r, v) => new Rect(r.X, r.Y, v, r.Height), true),
+            ("高", r => r.Height, (r, v) => new Rect(r.X, r.Y, r.Width, v), false),
+        };
+        var boxes = new List<TextBox>();
+        TextBox? rotationBox = null;
+        double AxisMm(bool horizontal) => horizontal ? canvasWidthMm : canvasHeightMm;
+        string Display(Func<Rect, double> get, bool horizontal)
+        {
+            var value = get(read());
+            return (inMm ? value * AxisMm(horizontal) : value * 100).ToString("F1");
+        }
+        void Reseed()
+        {
+            for (var i = 0; i < boxes.Count; i++) boxes[i].Text = Display(fields[i].Get, fields[i].Horizontal);
+            if (rotationBox != null && readRotation != null)
+                rotationBox.Text = readRotation().ToString("F0");
+        }
+        void Commit(TextBox box, Func<Rect, double, Rect> set, bool horizontal)
+        {
+            if (!double.TryParse(box.Text, out var parsed)) { Reseed(); return; }
+            var normalized = inMm && AxisMm(horizontal) > 0 ? parsed / AxisMm(horizontal) : parsed / 100;
+            var rect = read();
+            var after = ClampRect(set(rect, normalized), minSize);
+            if (after != rect) commitRect(after);
+            else Reseed();
+        }
+        // 单位切换（对齐 web geometry-unit-toggle）
+        var unitRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6) };
+        var mmToggle = new ToggleButton { Content = "mm", IsChecked = true, MinWidth = 44, MinHeight = 28, Style = (Style)Application.Current.FindResource("Pill") };
+        var pctToggle = new ToggleButton { Content = "%", MinWidth = 44, MinHeight = 28, Margin = new Thickness(4, 0, 0, 0), Style = (Style)Application.Current.FindResource("Pill") };
+        mmToggle.Click += (_, _) => { inMm = true; mmToggle.IsChecked = true; pctToggle.IsChecked = false; Reseed(); };
+        pctToggle.Click += (_, _) => { inMm = false; pctToggle.IsChecked = true; mmToggle.IsChecked = false; Reseed(); };
+        unitRow.Children.Add(mmToggle);
+        unitRow.Children.Add(pctToggle);
+        host.Children.Add(unitRow);
+        var grid = new WrapPanel();
+        foreach (var field in fields)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 10, 6), VerticalAlignment = VerticalAlignment.Center };
+            row.Children.Add(new TextBlock { Text = field.Label, Width = 18, Foreground = AssetPageUi.Brush("Muted"), FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
+            var box = new TextBox { Width = 68, MinHeight = 30, Tag = namePrefix };
+            var captured = field;
+            System.Windows.Automation.AutomationProperties.SetName(box, $"{field.Label}（mm）");
+            box.GotFocus += (_, _) => System.Windows.Automation.AutomationProperties.SetName(box, $"{captured.Label}（{(inMm ? "mm" : "%")}）");
+            box.LostFocus += (_, _) => Commit(box, captured.Set, captured.Horizontal);
+            box.KeyDown += (_, ke) =>
+            {
+                if (ke.Key == Key.Enter) { Commit(box, captured.Set, captured.Horizontal); Keyboard.ClearFocus(); ke.Handled = true; }
+                else if (ke.Key == Key.Escape) { Reseed(); Keyboard.ClearFocus(); ke.Handled = true; }
+            };
+            boxes.Add(box);
+            row.Children.Add(box);
+            grid.Children.Add(row);
+        }
+        if (readRotation != null && commitRotation != null)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 10, 6), VerticalAlignment = VerticalAlignment.Center };
+            row.Children.Add(new TextBlock { Text = "角度", Width = 30, Foreground = AssetPageUi.Brush("Muted"), FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
+            var box = new TextBox { Width = 68, MinHeight = 30, Tag = namePrefix };
+            System.Windows.Automation.AutomationProperties.SetName(box, "角度（°）");
+            box.LostFocus += (_, _) =>
+            {
+                if (double.TryParse(box.Text, out var deg)) commitRotation(deg);
+                else Reseed();
+            };
+            box.KeyDown += (_, ke) =>
+            {
+                if (ke.Key == Key.Enter && double.TryParse(box.Text, out var deg)) { commitRotation(deg); Keyboard.ClearFocus(); ke.Handled = true; }
+                else if (ke.Key == Key.Escape) { Reseed(); Keyboard.ClearFocus(); ke.Handled = true; }
+            };
+            rotationBox = box;
+            row.Children.Add(box);
+            grid.Children.Add(row);
+        }
+        host.Children.Add(grid);
+        Reseed();
+        return host;
+    }
+
+    // 图层顺序组（对齐 web panel-layer-ops：上移一层/下移一层/置顶/置底）
+    private WrapPanel BuildLayerOps()
+    {
+        var row = new WrapPanel { Margin = new Thickness(0, 0, 0, 4) };
+        foreach (var (label, op) in new[] { ("上移一层", "up"), ("下移一层", "down"), ("置顶", "top"), ("置底", "bottom") })
+        {
+            var button = Kit.Act(label, (_, _) => RunZOrder(op), "Compact");
+            button.MinHeight = 28;
+            button.Margin = new Thickness(0, 0, 4, 4);
+            row.Children.Add(button);
+        }
+        return row;
     }
 
     // 对白编辑区（对齐 web panel-inspector 的 LETTERING 段 + dialogue-card）：
@@ -1601,6 +2591,26 @@ public sealed partial class StoryboardView : WorkspaceView
                 : Guid.NewGuid();
             geometryRequest = (requestId, history.Index, bubbles.Count);
             var payload = BuildPayload(requestId);
+            // 拟声词几何走面板叙事 PATCH（panel.version），先于整页 PUT 逐格提交
+            // （对齐 web saveGeometry 的 sfxPatches：对象条目打底 + Moved 覆写；
+            // 未动条目按 {text} 规范化随包回传）。PATCH 升格 panel.version，
+            // 成功后整页重载会带上新锚点。
+            var sfxPanels = sfxNodes.Where(n => n.Moved).Select(n => n.PanelId).Distinct().ToList();
+            foreach (var panelId in sfxPanels)
+            {
+                var host = panels.FirstOrDefault(p => p.Id == panelId);
+                if (host == null) continue;
+                // 数组下标即锚：合并包按原 sound_effects 数组序（含未渲染的空文本位）补齐
+                var full = new List<object?>();
+                for (var i = 0; i < host.SoundEffects.Count; i++)
+                {
+                    var node = sfxNodes.FirstOrDefault(n => n.PanelId == panelId && n.Index == i);
+                    full.Add(node != null ? node.BuildMergedEntry() : SfxBaseEntry(host.SoundEffects[i]));
+                }
+                await Api.SendAsync($"panels/{panelId}", HttpMethod.Patch,
+                    new Dictionary<string, object?> { ["version"] = host.Version, ["sound_effects"] = full },
+                    cancellation: lifetime.Token);
+            }
             var response = await Api.SendAsync($"pages/{pageAtRequest.Id}/storyboard-geometry", HttpMethod.Put, payload, cancellation: lifetime.Token);
             history.Clear();
             geometryRequest = null;   // 草稿已落库，重试身份随之作废
@@ -1679,16 +2689,20 @@ public sealed partial class StoryboardView : WorkspaceView
             {
                 panel_id = panel.Id,
                 bounds = Round4(panel.Rect),
-                // 未改动时原样透传服务端几何（保住 polygon/z_order）；
-                // 拖动过则退回构造值，否则服务端因 geometry.rect 与 bounds 不一致拒绝
-                geometry = (object?)(panel.GeometryIsCurrent() ? panel.StoredGeometry : new
-                {
-                    type = "rect",
-                    rect = Round4(panel.Rect),
-                    polygon = (double[]?)null,
-                    rotation = 0,
-                    z_order = panel.ZOrder,
-                }),
+                // 对齐 web buildGeometryPayload：polygon 格原样透传存储几何、仅覆写
+                // z_order（层序命令可改 polygon 格）；矩形格以当前 bounds 重建并带
+                // 上 rotation 与 z_order（旧版「未动则透传 geometry」会让层序/旋转
+                // 草稿永远落不了库——payload 草案钉死这个回归）。
+                geometry = (object?)(panel.IsPolygon && panel.StoredGeometry.ValueKind == JsonValueKind.Object
+                    ? PolygonGeometryPayload(panel)
+                    : new
+                    {
+                        type = "rect",
+                        rect = Round4(panel.Rect),
+                        polygon = (double[]?)null,
+                        rotation = Math.Round(panel.Rotation, 4),
+                        z_order = panel.ZOrder,
+                    }),
                 reading_order = panel.ReadingOrder,
             }),
             dialogues = bubbles.Select(bubble => new
@@ -1703,6 +2717,20 @@ public sealed partial class StoryboardView : WorkspaceView
             }),
         };
     }
+
+    // polygon 格的保存包（对齐 web `{...stored, z_order: meta ?? stored.z_order}`）
+    private static Dictionary<string, object?> PolygonGeometryPayload(PanelNode panel)
+    {
+        var payload = JsonSerializer.Deserialize<Dictionary<string, object?>>(panel.StoredGeometry.GetRawText()) ?? [];
+        payload["z_order"] = panel.ZOrder;
+        return payload;
+    }
+
+    // 未渲染/未动的拟声词条目基底（对齐 web merged 的 `string→{text}`、对象→原样展开）
+    private static Dictionary<string, object?> SfxBaseEntry(JsonElement entry) =>
+        entry.ValueKind == JsonValueKind.Object
+            ? JsonSerializer.Deserialize<Dictionary<string, object?>>(entry.GetRawText()) ?? []
+            : new Dictionary<string, object?> { ["text"] = entry.ToString() };
 
     private static Dictionary<string, double> Round4(Rect rect) => new()
     {
@@ -1727,6 +2755,16 @@ public sealed partial class StoryboardView : WorkspaceView
             case Key.Delete or Key.Back:
                 if (selectedBubble != null) { _ = DeleteBubbleAsync(selectedBubble); e.Handled = true; }
                 break;
+            case Key.C when Keyboard.Modifiers == ModifierKeys.Control:
+                CopySelectionGeometry();
+                e.Handled = true;
+                break;
+            case Key.V when Keyboard.Modifiers == ModifierKeys.Control:
+                if (PasteSelectionGeometry() || !AnySelection()) e.Handled = true;
+                break;
+            case Key.Escape:
+                if (AnySelection()) { SelectPanels([]); e.Handled = true; }
+                break;
             case Key.Tab:
                 if (panels.Count > 0)
                 {
@@ -1742,40 +2780,70 @@ public sealed partial class StoryboardView : WorkspaceView
                 if (selected is { } panelToEdit) { _ = EditPanel(panelToEdit); e.Handled = true; }
                 break;
             case Key.Left or Key.Right or Key.Up or Key.Down:
+                var offset = e.Key switch
+                {
+                    Key.Left => new Point(-step, 0), Key.Right => new Point(step, 0),
+                    Key.Up => new Point(0, -step), _ => new Point(0, step),
+                };
                 if (selectedBubble != null)
                 {
-                    var offset = e.Key switch
-                    {
-                        Key.Left => new Point(-step, 0), Key.Right => new Point(step, 0),
-                        Key.Up => new Point(0, -step), _ => new Point(0, step),
-                    };
-                    var next = new Rect(selectedBubble.Rect.X + offset.X, selectedBubble.Rect.Y + offset.Y, selectedBubble.Rect.Width, selectedBubble.Rect.Height);
+                    var origin = selectedBubble.Snapshot();
+                    var next = new Rect(origin.Rect.X + offset.X, origin.Rect.Y + offset.Y, origin.Rect.Width, origin.Rect.Height);
                     var host = panels.FirstOrDefault(p => p.Id == selectedBubble.PanelId);
                     if (host != null) next = ClampInto(next, host.Rect);
-                    history.Push(new GeometryCommand("方向键微调", [new BubbleChange(selectedBubble.Id, selectedBubble.Rect, next)]));
-                    selectedBubble.Rect = next;
-                    selectedBubble.Moved = true;
+                    var after = origin with { Rect = next, Moved = true };
+                    history.Push(new GeometryCommand("方向键微调", [new BubbleChange(selectedBubble.Id, origin, after)]));
+                    selectedBubble.ApplySnapshot(after);
                     selectedBubble.ApplyPosition(page);
+                    PositionBubbleHandles();
                     MarkDirty();
+                    RenderInspector();
                     e.Handled = true;
                 }
-                else if (selected != null)
+                else if (selectedSfx != null)
                 {
-                    var offset = e.Key switch
+                    var origin = selectedSfx.Snapshot();
+                    var after = origin with
                     {
-                        Key.Left => new Point(-step, 0), Key.Right => new Point(step, 0),
-                        Key.Up => new Point(0, -step), _ => new Point(0, step),
+                        X = Math.Clamp(origin.X + offset.X, 0, 1),
+                        Y = Math.Clamp(origin.Y + offset.Y, 0, 1),
+                        Moved = true,
                     };
-                    var next = new Rect(selected.Rect.X + offset.X, selected.Rect.Y + offset.Y, selected.Rect.Width, selected.Rect.Height);
-                    history.Push(new GeometryCommand("方向键微调", [new PanelChange(selected.Id, selected.Rect, next)]));
-                    selected.Rect = next;
-                    selected.ApplyPosition(page);
+                    history.Push(new GeometryCommand("方向键微调", [new SfxChange(selectedSfx.PanelId, selectedSfx.Index, origin, after)]));
+                    selectedSfx.ApplySnapshot(after);
+                    selectedSfx.ApplyPosition(page);
                     MarkDirty();
+                    RenderInspector();
+                    e.Handled = true;
+                }
+                else if (selectedIds.Count > 0)
+                {
+                    // 多选微调（对齐 web keyboardNudge：组内可移动格同向位移一条命令）
+                    var changes = new List<GeometryChange>();
+                    foreach (var target in MovableSelected())
+                    {
+                        var next = ClampMove(new Rect(target.Rect.X + offset.X, target.Rect.Y + offset.Y, target.Rect.Width, target.Rect.Height));
+                        if (next != target.Rect)
+                        {
+                            changes.Add(new PanelChange(target.Id, target.Rect, next));
+                            target.Rect = next;
+                            target.ApplyPosition(page);
+                        }
+                    }
+                    if (changes.Count > 0)
+                    {
+                        history.Push(new GeometryCommand("方向键微调", changes));
+                        PositionResizeHandles(ActiveHandleRect());
+                        MarkDirty();
+                        RenderInspector();
+                    }
                     e.Handled = true;
                 }
                 break;
         }
     }
+
+    private bool AnySelection() => selectedIds.Count > 0 || selectedBubble != null || selectedSfx != null;
 
     private void OnViewportWheel(object sender, MouseWheelEventArgs e)
     {
@@ -1875,13 +2943,160 @@ public sealed partial class StoryboardView : WorkspaceView
         ClearGuides();
     }
 
+    // ── 精准编辑测试缝：全部走生产提交函数（Run*/Commit*/手势 Compute+Commit），
+    // 只是入口参数化免真实鼠标设备——与 ResizeViaHandleForTest 同一约定。
+    internal IReadOnlyList<string> SelectedPanelIdsForTest => selectedIds.ToList();
+    internal int SfxCountForTest => sfxNodes.Count;
+    internal string? SelectedSfxTextForTest => selectedSfx?.Text;
+    internal int BubbleHandleCountForTest => bubbleHandles.Count;
+    internal int GridLineCountForTest => gridLineElements.Count;
+    internal bool GroupHandlesForTest => handlesAreGroup;
+    internal int GuideCountForTest => page.Children.OfType<Line>().Count(l => l.Tag as string == "guide");
+    internal int GapGuideCountForTest => page.Children.OfType<Line>().Count(l => l.Tag as string == "guide-gap");
+    internal string LastNoticeForTest => lastNotice;
+    internal bool GridVisibleForTest => gridButton.IsChecked == true;
+    internal int PanelZOrderForTest(int index) => panels.ElementAtOrDefault(index)?.ZOrder ?? -1;
+    internal double PanelRotationForTest(int index) => panels.ElementAtOrDefault(index)?.Rotation ?? double.NaN;
+    internal (Rect Rect, double Rotation, Point? Anchor, Point? Tail)? BubbleGeometryForTest(int index) =>
+        bubbles.ElementAtOrDefault(index) is { } b ? (b.Rect, b.Rotation, b.Anchor, b.TailTarget) : null;
+    internal (double X, double Y, double Rotation, double Size)? SfxGeometryForTest(int index) =>
+        sfxNodes.ElementAtOrDefault(index) is { } n ? (n.X, n.Y, n.Rotation, n.Size) : null;
+
+    internal void SelectPanelsForTest(params int[] indexes) =>
+        SelectPanels(indexes.Where(i => i >= 0 && i < panels.Count).Select(i => panels[i].Id).ToList());
+    internal void SelectSfxForTest(int index)
+    {
+        if (sfxNodes.ElementAtOrDefault(index) is { } node) SelectSfx(node);
+    }
+    internal void SetGridForTest(bool visible, int? stepMm = null)
+    {
+        gridButton.IsChecked = visible;
+        if (stepMm is { } step) gridStepMm = step;
+        RenderGridOverlay();
+    }
+
+    internal void AlignForTest(string mode) => RunAlign(mode);
+    internal void DistributeForTest(string axis) => RunDistribute(axis);
+    internal void SameSizeForTest(string mode) => RunSameSize(mode);
+    internal void ZOrderForTest(string op) => RunZOrder(op);
+    internal void CopyGeometryForTest() => CopySelectionGeometry();
+    internal bool PasteGeometryForTest() => PasteSelectionGeometry();
+    internal void CommitPanelRectForTest(int index, Rect after)
+    {
+        if (panels.ElementAtOrDefault(index) is { } panel) CommitPanelRect(panel, after);
+    }
+    internal void CommitBubbleRectForTest(int index, Rect after)
+    {
+        if (bubbles.ElementAtOrDefault(index) is { } bubble) CommitBubbleRectField(bubble, after);
+    }
+    internal void CommitBubbleRotationForTest(int index, double degrees)
+    {
+        if (bubbles.ElementAtOrDefault(index) is { } bubble) CommitBubbleRotationField(bubble, degrees);
+    }
+
+    // 多选拖动（生产 PanelGesture 的 Compute+Commit，注入归一化位移）；
+    // keepGuides=true 时保留提交时画的参考线，供检查等距/吸附参考线。
+    internal void DragSelectionForTest(double dx, double dy, bool keepGuides = false)
+    {
+        var movable = MovableSelected();
+        if (movable.Count == 0) return;
+        var gesture = new PanelGesture(movable) { Offset = new Point(dx, dy) };
+        var moved = gesture.Compute(this);
+        foreach (var target in movable) target.SetRectDirect(moved[target.Id], page);
+        gesture.Commit(this);
+        if (!keepGuides) { ClearGuides(); HideSizeLabel(); }
+        PositionResizeHandles(ActiveHandleRect());
+    }
+
+    // 组缩放（生产 ComputeGroupBox + ScaleRectWithBounds + 同一条提交命令）
+    internal void GroupResizeForTest(string handle, Point pointerNormalized, ModifierKeys modifiers = ModifierKeys.None)
+    {
+        var movable = MovableSelected();
+        if (movable.Count < 2 || BoundingBox(movable.Select(p => p.Rect)) is not { } originBox) return;
+        var origins = movable.ToDictionary(p => p.Id, p => p.Rect);
+        var nextBox = ComputeGroupBox(originBox, handle, pointerNormalized, modifiers == ModifierKeys.Shift);
+        var changes = new List<GeometryChange>();
+        foreach (var panel in movable)
+        {
+            var after = ClampRect(ScaleRectWithBounds(origins[panel.Id], originBox, nextBox, MinSize), MinSize);
+            if (after != origins[panel.Id]) changes.Add(new PanelChange(panel.Id, origins[panel.Id], after));
+            panel.SetRectDirect(after, page);
+        }
+        if (changes.Count > 0)
+        {
+            history.Push(new GeometryCommand("缩放多格", changes));
+            MarkDirty();
+            RenderInspector();
+        }
+        PositionResizeHandles(nextBox);
+        ClearGuides();
+        HideSizeLabel();
+    }
+
+    // 气泡移动/旋转（生产 CommitBubbleGeometry 提交链）
+    internal void MoveBubbleForTest(int index, double dx, double dy)
+    {
+        if (bubbles.ElementAtOrDefault(index) is not { } bubble) return;
+        SelectBubble(bubble);
+        var origin = bubble.Snapshot();
+        var next = new Rect(origin.Rect.X + dx, origin.Rect.Y + dy, origin.Rect.Width, origin.Rect.Height);
+        if (panels.FirstOrDefault(p => p.Id == bubble.PanelId) is { } host) next = ClampInto(next, host.Rect);
+        bubble.SetGeometryDirect(origin with { Rect = next, Moved = true }, page);
+        CommitBubbleGeometry(bubble, origin, "拖动气泡");
+        PositionBubbleHandles();
+    }
+
+    internal void RotateBubbleForTest(int index, double degrees)
+    {
+        if (bubbles.ElementAtOrDefault(index) is not { } bubble) return;
+        SelectBubble(bubble);
+        var origin = bubble.Snapshot();
+        bubble.SetGeometryDirect(origin with { Rotation = NormalizeRotation(degrees), Moved = true }, page);
+        CommitBubbleGeometry(bubble, origin, "旋转气泡");
+        PositionBubbleHandles();
+    }
+
+    // 拟声词三手势（生产 CommitSfxGeometry 提交链）
+    internal void MoveSfxForTest(int index, double dx, double dy)
+    {
+        if (sfxNodes.ElementAtOrDefault(index) is not { } node) return;
+        SelectSfx(node);
+        var origin = node.Snapshot();
+        node.SetGeometryDirect(origin with
+        {
+            X = Math.Clamp(origin.X + dx, 0, 1), Y = Math.Clamp(origin.Y + dy, 0, 1), Moved = true,
+        }, page);
+        CommitSfxGeometry(node, origin, "移动拟声词");
+    }
+
+    internal void ScaleSfxForTest(int index, double sizeDelta)
+    {
+        if (sfxNodes.ElementAtOrDefault(index) is not { } node) return;
+        SelectSfx(node);
+        var origin = node.Snapshot();
+        node.SetGeometryDirect(origin with { Size = Math.Clamp(origin.Size + sizeDelta, MinSfx, 0.2), Moved = true }, page);
+        CommitSfxGeometry(node, origin, "缩放拟声词");
+    }
+
+    internal void RotateSfxForTest(int index, double degrees)
+    {
+        if (sfxNodes.ElementAtOrDefault(index) is not { } node) return;
+        SelectSfx(node);
+        var origin = node.Snapshot();
+        node.SetGeometryDirect(origin with { Rotation = NormalizeRotation(degrees), Moved = true }, page);
+        CommitSfxGeometry(node, origin, "旋转拟声词");
+    }
+
     // ============ Geometry node model ============
     private sealed class PanelNode
     {
         public required string Id { get; init; }
         public Rect Rect { get; set; }
         public int ReadingOrder { get; init; }
-        public int ZOrder { get; init; }
+        // z_order 可被层序命令改写并随 geometry.z_order 落库（web panelMetaDrafts 同源）
+        public int ZOrder { get; set; }
+        // 面板 rotation 只透传（web meta.rotation 同款：画布暂无面板旋转手柄）
+        public double Rotation { get; init; }
         public int Version { get; init; }
         // PanelRead 没有 per-panel action 字段；「动作与表演」实际存放在 actions.script_action
         public string ScriptAction { get; init; } = "";
@@ -1890,6 +3105,8 @@ public sealed partial class StoryboardView : WorkspaceView
         public bool Bleed { get; init; }
         public bool Borderless { get; init; }
         public List<JsonElement> Dialogues { get; init; } = [];
+        // 拟声词原始条目（字符串或带 x/y/rotation/size 的对象；对齐 web panel.sound_effects）
+        public List<JsonElement> SoundEffects { get; init; } = [];
         public JsonElement StoredGeometry { get; init; }
         public required Border Element { get; init; }
 
@@ -1918,6 +3135,8 @@ public sealed partial class StoryboardView : WorkspaceView
                 Bleed = bleed,
                 Borderless = borderless,
                 Dialogues = row.Array("dialogues"),
+                SoundEffects = row.Array("sound_effects"),
+                Rotation = geometry.Decimal("rotation"),
                 StoredGeometry = geometry.ValueKind == JsonValueKind.Object ? geometry : default,
                 Element = new Border
                 {
@@ -1932,19 +3151,6 @@ public sealed partial class StoryboardView : WorkspaceView
         // 多边形格（对齐 web isPolygonPanel）：画布只读——可选中，但不挂
         // 缩放手柄（web 同样不允许 bounds 被改写）。
         public bool IsPolygon => StoredGeometry.Text("type") == "polygon";
-
-        // 存储几何可原样透传的条件：rect 型几何与当前 bounds 一致（服务端会校验二者一致），
-        // 或本就无 rect（如 polygon），此时透传才能保住 polygon/z_order。
-        public bool GeometryIsCurrent()
-        {
-            if (StoredGeometry.ValueKind != JsonValueKind.Object) return false;
-            var rect = StoredGeometry.Element("rect");
-            if (rect.ValueKind != JsonValueKind.Object) return true;
-            return Math.Round(rect.Decimal("x"), 4) == Math.Round(Rect.X, 4)
-                && Math.Round(rect.Decimal("y"), 4) == Math.Round(Rect.Y, 4)
-                && Math.Round(rect.Decimal("width"), 4) == Math.Round(Rect.Width, 4)
-                && Math.Round(rect.Decimal("height"), 4) == Math.Round(Rect.Height, 4);
-        }
 
         public void ApplyPosition(Canvas canvas)
         {
@@ -1982,6 +3188,11 @@ public sealed partial class StoryboardView : WorkspaceView
         public JsonElement StoredBubble { get; init; }
         public bool Legacy { get; init; }          // 服务端无 rect，客户端按版式派生
         public bool Moved { get; set; }            // 拖拽或键盘微调过即视为已定位
+        // web BubbleGeometryShape 的其余几何字段：rotation（度）、anchor（尾巴锚点
+        // 归一化坐标）、tail_target（终点）；只在存储形状带字段时挂对应手柄。
+        public double Rotation { get; set; }
+        public Point? Anchor { get; set; }
+        public Point? TailTarget { get; set; }
         public required Border Element { get; init; }
 
         public static BubbleNode From(JsonElement dialogue, PanelNode panel, int index)
@@ -2004,6 +3215,13 @@ public sealed partial class StoryboardView : WorkspaceView
                     Math.Min(0.13, panel.Rect.Height * 0.35));
             }
             var ellipse = shape.Text("type") == "ellipse";
+            Point? ReadPoint(string name)
+            {
+                var point = shape.Element(name);
+                return point.ValueKind == JsonValueKind.Object
+                    ? new Point(point.Decimal("x"), point.Decimal("y"))
+                    : null;
+            }
             return new BubbleNode
             {
                 Id = dialogue.Text("id"),
@@ -2015,6 +3233,9 @@ public sealed partial class StoryboardView : WorkspaceView
                 PanelVersion = panel.Version,
                 StoredBubble = shape.ValueKind == JsonValueKind.Object ? shape : default,
                 Legacy = !hasRect,
+                Rotation = shape.Decimal("rotation"),
+                Anchor = ReadPoint("anchor"),
+                TailTarget = ReadPoint("tail_target"),
                 Element = new Border
                 {
                     Background = new SolidColorBrush(Color.FromArgb(0xE0, 0xFF, 0xFF, 0xFF)),
@@ -2040,6 +3261,9 @@ public sealed partial class StoryboardView : WorkspaceView
             Element.Width = Math.Max(12, Rect.Width * canvas.Width);
             Element.Height = Math.Max(12, Rect.Height * canvas.Height);
             Panel.SetZIndex(Element, 20);
+            // 旋转只改视觉不改布局（对齐 web transform: rotate(deg) 绕中心）
+            Element.RenderTransformOrigin = new Point(0.5, 0.5);
+            Element.RenderTransform = Math.Abs(Rotation) > 1e-9 ? new RotateTransform(Rotation) : null;
         }
 
         public void SetRectDirect(Rect rect, Canvas canvas)
@@ -2049,12 +3273,30 @@ public sealed partial class StoryboardView : WorkspaceView
             ApplyPosition(canvas);
         }
 
-        // 提交时以服务端存储形状为底，更新 rect 并剥离服务端专有键；
-        // 移动过的气泡丢弃旧的 text_region（服务端要求它位于新 rect 内）。
+        // 几何快照/回滚（撤销栈的 BubbleChange 用）：Rect+Rotation+Anchor+TailTarget+Moved
+        public BubbleGeometry Snapshot() => new(Rect, Rotation, Anchor, TailTarget, Moved);
+
+        public void ApplySnapshot(BubbleGeometry geometry)
+        {
+            Rect = geometry.Rect;
+            Rotation = geometry.Rotation;
+            Anchor = geometry.Anchor;
+            TailTarget = geometry.TailTarget;
+            Moved = geometry.Moved;
+        }
+
+        public void SetGeometryDirect(BubbleGeometry geometry, Canvas canvas)
+        {
+            ApplySnapshot(geometry);
+            ApplyPosition(canvas);
+        }
+
+        // 提交时以服务端存储形状为底，更新 rect/rotation/anchor/tail_target 并剥离
+        // 服务端专有键；移动过的气泡丢弃旧的 text_region（服务端要求它位于新 rect 内）。
         public object BuildPayloadBubble()
         {
             if (StoredBubble.ValueKind != JsonValueKind.Object)
-                return new { type = Shape, rect = Round4(Rect), rotation = 0 };
+                return new { type = Shape, rect = Round4(Rect), rotation = Rotation };
             var payload = JsonSerializer.Deserialize<Dictionary<string, object?>>(StoredBubble.GetRawText()) ?? [];
             var storedRect = StoredBubble.Element("rect");
             var moved = Math.Round(storedRect.Decimal("x"), 4) != Math.Round(Rect.X, 4)
@@ -2063,6 +3305,13 @@ public sealed partial class StoryboardView : WorkspaceView
                 || Math.Round(storedRect.Decimal("height"), 4) != Math.Round(Rect.Height, 4);
             payload.Remove("mapped_from_legacy");
             payload["rect"] = Round4(Rect);
+            payload["rotation"] = Math.Round(Rotation, 4);
+            if (Anchor is { } anchor)
+                payload["anchor"] = new Dictionary<string, double> { ["x"] = Math.Round(anchor.X, 4), ["y"] = Math.Round(anchor.Y, 4) };
+            else payload.Remove("anchor");
+            if (TailTarget is { } tail)
+                payload["tail_target"] = new Dictionary<string, double> { ["x"] = Math.Round(tail.X, 4), ["y"] = Math.Round(tail.Y, 4) };
+            else payload.Remove("tail_target");
             if (moved) payload.Remove("text_region");
             return payload;
         }
@@ -2076,20 +3325,221 @@ public sealed partial class StoryboardView : WorkspaceView
         }
     }
 
+    // 拟声词画布节点（对齐 web sfx-node + contract §12）：x/y 是归一化中心点，
+    // rotation 度、size 归一化字号（相对页高）。字符串条目无几何字段，首次
+    // 拖动才落结构化几何（Moved）——保存时经面板叙事 PATCH 回写。
+    private sealed class SfxNode
+    {
+        public required string PanelId { get; init; }
+        public required int Index { get; init; }      // sound_effects 数组下标（PATCH 锚定用）
+        public required string Text { get; init; }
+        public JsonElement StoredEntry { get; init; } // 字符串条目为 default
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Rotation { get; set; }
+        public double Size { get; set; }
+        public bool Moved { get; set; }
+        public required Grid Element { get; init; }   // 0×0 定位壳：子元素以中心对齐锚定点
+        public FrameworkElement HitArea { get; private set; } = null!;
+        private TextBlock label = null!;
+        private Border dash = null!;
+        private Border rotateHandle = null!;
+        private Border scaleHandle = null!;
+        private double fontPx = 12;
+
+        public static SfxNode? From(JsonElement entry, PanelNode panel, int index)
+        {
+            var isObject = entry.ValueKind == JsonValueKind.Object;
+            var text = isObject ? entry.Text("text") : entry.ToString();
+            if (text.Length == 0) return null;
+            // 缺省落位（对齐 web defaultSfxPosition）：按所属格内网格排布
+            var fallbackX = Math.Clamp(panel.Rect.X + panel.Rect.Width * (0.5 + (index % 3 - 1) * 0.2), 0, 1);
+            var fallbackY = Math.Clamp(panel.Rect.Y + panel.Rect.Height * (0.3 + index / 3 * 0.2), 0, 1);
+            var size = isObject && entry.Decimal("size") > 0 ? entry.Decimal("size") : 0.05;
+            var node = new SfxNode
+            {
+                PanelId = panel.Id,
+                Index = index,
+                Text = text,
+                StoredEntry = isObject ? entry : default,
+                X = isObject && entry.Element("x").ValueKind == JsonValueKind.Number ? entry.Decimal("x") : fallbackX,
+                Y = isObject && entry.Element("y").ValueKind == JsonValueKind.Number ? entry.Decimal("y") : fallbackY,
+                Rotation = isObject ? entry.Decimal("rotation") : 0,
+                Size = size,
+                // Moved = 本会话手势过的草稿标记（对齐 web sfxDrafts）：存储几何
+                // 本身不算草稿——PATCH 脏判定只看 Moved，撤销回存储态即脱草稿。
+                Moved = false,
+                Element = new Grid { Width = 0, Height = 0, RenderTransformOrigin = new Point(0.5, 0.5) },
+            };
+            var cell = new Grid { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            var dash = new Border
+            {
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0xC0, 0x5A, 0x44)),
+                BorderThickness = new Thickness(1.5), CornerRadius = new CornerRadius(2),
+                Visibility = Visibility.Collapsed, IsHitTestVisible = false,
+            };
+            node.label = new TextBlock
+            {
+                Text = text, FontWeight = FontWeights.Black, Margin = new Thickness(3),
+                Foreground = new SolidColorBrush(Color.FromRgb(0x26, 0x20, 0x19)),
+                // web .canvas-sfx-text 的白色描边近似
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { Color = Colors.White, BlurRadius = 1, ShadowDepth = 0, Opacity = 0.9 },
+            };
+            cell.Children.Add(dash);
+            cell.Children.Add(node.label);
+            node.Element.Children.Add(cell);
+            node.HitArea = cell;
+            cell.Cursor = Cursors.Hand;
+            node.dash = dash;
+            node.rotateHandle = node.MakeHandle("#3A7A98", "rotate");
+            node.scaleHandle = node.MakeHandle(null, "scale");
+            return node;
+        }
+
+        private Border MakeHandle(string? color, string kind)
+        {
+            var handle = new Border
+            {
+                Width = 14, Height = 14, CornerRadius = new CornerRadius(999),
+                Background = color != null ? new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)) : (Brush)Application.Current.FindResource("Accent"),
+                BorderBrush = Brushes.White, BorderThickness = new Thickness(2),
+                Visibility = Visibility.Collapsed, Tag = "sfx-handle:" + kind,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                Cursor = kind == "rotate" ? Cursors.Hand : Cursors.SizeNWSE,
+                IsHitTestVisible = false,
+            };
+            Element.Children.Add(handle);
+            return handle;
+        }
+
+        // 手柄需要视图侧手势：把事件转发挂接点暴露出来（保持节点私有构造干净）
+        public Border RotateHandle => rotateHandle;
+        public Border ScaleHandle => scaleHandle;
+
+        public SfxGeometry Snapshot() => new(X, Y, Rotation, Size, Moved);
+
+        public void ApplySnapshot(SfxGeometry geometry)
+        {
+            X = geometry.X; Y = geometry.Y; Rotation = geometry.Rotation; Size = geometry.Size; Moved = geometry.Moved;
+        }
+
+        public void SetGeometryDirect(SfxGeometry geometry, Canvas canvas)
+        {
+            ApplySnapshot(geometry);
+            ApplyPosition(canvas);
+        }
+
+        public void ApplyPosition(Canvas canvas)
+        {
+            Canvas.SetLeft(Element, X * canvas.Width);
+            Canvas.SetTop(Element, Y * canvas.Height);
+            fontPx = Math.Max(Size * canvas.Height, 6);
+            label.FontSize = fontPx;
+            Element.RenderTransform = Math.Abs(Rotation) > 1e-9 ? new RotateTransform(Rotation) : null;
+            // 手柄在自身（已旋转的）坐标系内偏移，与 web 的 left/top em 定位同源：
+            // rotate 在中心上方 1.6em、scale 在右下 (1.2em, 0.9em)。
+            rotateHandle.RenderTransform = new TranslateTransform(0, -1.6 * fontPx);
+            scaleHandle.RenderTransform = new TranslateTransform(1.2 * fontPx, 0.9 * fontPx);
+            Panel.SetZIndex(Element, 22);
+        }
+
+        public void SetSelected(bool isSelected)
+        {
+            dash.Visibility = isSelected ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var handle in new[] { rotateHandle, scaleHandle })
+            {
+                handle.Visibility = isSelected ? Visibility.Visible : Visibility.Collapsed;
+                handle.IsHitTestVisible = isSelected;
+            }
+        }
+
+        // 保存时的单条目合并（对齐 web sfxPatches 的 base/draft 合并）：对象条目
+        // 原样打底；字符串条目升格为 { text }。只有手势过（Moved）的条目才覆写
+        // 几何四字段——未动条目保持存储内容，不凭空虚增 x/y。
+        public Dictionary<string, object?> BuildMergedEntry()
+        {
+            var payload = StoredEntry.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Deserialize<Dictionary<string, object?>>(StoredEntry.GetRawText()) ?? []
+                : new Dictionary<string, object?> { ["text"] = Text };
+            if (Moved)
+            {
+                payload["x"] = Math.Round(X, 4);
+                payload["y"] = Math.Round(Y, 4);
+                payload["rotation"] = Math.Round(Rotation, 4);
+                payload["size"] = Math.Round(Size, 4);
+            }
+            return payload;
+        }
+    }
+
+    // 多选移动手势（对齐 web computeResult("move-panels")）：先按 Offset 平移
+    // 全部成员，吸附只作用于主格（Group[0]），其余成员跟随同一修正量；
+    // 等间距吸附只服务单格移动（多选时组内格互为干扰，web ids.length==1 同款）。
     private sealed class PanelGesture(List<PanelNode> group)
     {
         public List<PanelNode> Group { get; } = group;
         public Dictionary<string, Rect> Origins { get; } = group.ToDictionary(g => g.Id, g => g.Rect);
         public Point Offset { get; set; }
 
+        // 计算最终落位并顺带画参考线/尺寸标签（moved 与 Commit 共用同一份结果，
+        // 保证画布上所画即所存）。
+        public Dictionary<string, Rect> Compute(StoryboardView view)
+        {
+            var primary = Group[0];
+            var clampedPrimary = view.ClampMove(new Rect(
+                Origins[primary.Id].X + Offset.X, Origins[primary.Id].Y + Offset.Y,
+                Origins[primary.Id].Width, Origins[primary.Id].Height));
+            var fix = new Point(clampedPrimary.X - (Origins[primary.Id].X + Offset.X),
+                clampedPrimary.Y - (Origins[primary.Id].Y + Offset.Y));
+            var gapGuides = new List<(double At, bool Vertical)>();
+            if (view.snapButton.IsChecked == true)
+            {
+                var xs = new List<double>(); var ys = new List<double>();
+                // 边吸附只排除主格自身（对齐 web otherPanelRects([primaryId])）：
+                // 组内其他成员仍在原位，作吸附目标保住旧测试语义。
+                view.CollectSnapTargets(primary, xs, ys);
+                var bestX = BestDelta([clampedPrimary.X, clampedPrimary.X + clampedPrimary.Width / 2, clampedPrimary.Right], xs, clampedPrimary.X);
+                var bestY = BestDelta([clampedPrimary.Y, clampedPrimary.Y + clampedPrimary.Height / 2, clampedPrimary.Bottom], ys, clampedPrimary.Y);
+                var threshold = view.SnapThresholdPx();
+                var snappedX = Math.Abs(bestX.Delta) <= threshold;
+                var snappedY = Math.Abs(bestY.Delta) <= threshold;
+                var snapped = new Rect(clampedPrimary.X + (snappedX ? bestX.Delta : 0),
+                    clampedPrimary.Y + (snappedY ? bestY.Delta : 0), clampedPrimary.Width, clampedPrimary.Height);
+                var gapX = 0.0; var gapY = 0.0;
+                if (Group.Count == 1)
+                {
+                    var others = view.panels.Where(p => !ReferenceEquals(p, primary)).Select(p => p.Rect).ToList();
+                    if (!snappedX) gapX = view.EqualGapDelta(snapped, others, vertical: true, gapGuides);
+                    if (!snappedY) gapY = view.EqualGapDelta(snapped, others, vertical: false, gapGuides);
+                }
+                if (snappedX) fix.X += bestX.Delta; else fix.X += gapX;
+                if (snappedY) fix.Y += bestY.Delta; else fix.Y += gapY;
+                view.ClearGuides();
+                if (snappedX) view.ShowGuide(bestX.Guide, true);
+                if (snappedY) view.ShowGuide(bestY.Guide, false);
+                foreach (var (at, vertical) in gapGuides) view.ShowGuide(at, vertical, gap: true);
+            }
+            // 落位保持全精度（web move 分支不 round）——浮点尾差在 Commit 用
+            // 1e-9 epsilon 消掉，不向用户几何里写量化值。
+            var result = Group.ToDictionary(p => p.Id, p => view.ClampMove(new Rect(
+                Origins[p.Id].X + Offset.X + fix.X, Origins[p.Id].Y + Offset.Y + fix.Y,
+                Origins[p.Id].Width, Origins[p.Id].Height)));
+            var labelRect = Group.Count > 1 && BoundingBox(result.Values) is { } box ? box : result[primary.Id];
+            view.ShowSizeLabel(view.RectSizeLabel(labelRect), labelRect.Right, labelRect.Bottom);
+            return result;
+        }
+
         public void Commit(StoryboardView view)
         {
+            var result = Compute(view);
             var changes = new List<GeometryChange>();
             foreach (var target in Group)
             {
                 var before = Origins[target.Id];
-                var next = SnapRect(view, new Rect(before.X + Offset.X, before.Y + Offset.Y, before.Width, before.Height), target);
-                if (next != before)
+                var next = result[target.Id];
+                // 吸附/等距修正的浮点尾差（~1e-17）会让「吸回原位」误判成有变化；
+                // epsilon 比较只挡亚像素级幽灵位移，真实手势最小步长 >> 1e-9。
+                if (!NearlyEqual(next, before))
                 {
                     changes.Add(new PanelChange(target.Id, before, next));
                     target.Rect = next;
@@ -2101,30 +3551,12 @@ public sealed partial class StoryboardView : WorkspaceView
                 view.MarkDirty();
             }
             view.UpdatePageSize();
+            view.RenderInspector();
         }
 
-        private Rect SnapRect(StoryboardView view, Rect rect, PanelNode self)
-        {
-            var clamped = new Rect(
-                Math.Clamp(rect.X, 0, 1 - Math.Min(rect.Width, 1)),
-                Math.Clamp(rect.Y, 0, 1 - Math.Min(rect.Height, 1)),
-                Math.Max(MinSize, Math.Min(rect.Width, 1)), Math.Max(MinSize, Math.Min(rect.Height, 1)));
-            if (view.snapButton.IsChecked != true) return clamped;
-            var targets = new List<double>(PageGuides);
-            foreach (var other in view.panels.Where(p => !ReferenceEquals(p, self)))
-            {
-                targets.Add(other.Rect.X); targets.Add(other.Rect.X + other.Rect.Width / 2); targets.Add(other.Rect.Right);
-                targets.Add(other.Rect.Y); targets.Add(other.Rect.Y + other.Rect.Height / 2); targets.Add(other.Rect.Bottom);
-            }
-            var bestX = BestDelta([clamped.X, clamped.X + clamped.Width / 2, clamped.Right], targets, clamped.X);
-            var bestY = BestDelta([clamped.Y, clamped.Y + clamped.Height / 2, clamped.Bottom], targets, clamped.Y);
-            view.ClearGuides();
-            // 同 ComputeResized：吸附闸门取绝对值，负向 delta 不得无条件通过。
-            if (Math.Abs(bestX.Delta) <= SnapThreshold && Math.Abs(bestX.Delta) < Math.Abs(bestY.Delta)) view.ShowGuide(bestX.Guide, true);
-            if (Math.Abs(bestY.Delta) <= SnapThreshold && Math.Abs(bestY.Delta) < Math.Abs(bestX.Delta)) view.ShowGuide(bestY.Guide, false);
-            var moved = new Rect(clamped.X + (Math.Abs(bestX.Delta) <= SnapThreshold ? bestX.Delta : 0), clamped.Y + (Math.Abs(bestY.Delta) <= SnapThreshold ? bestY.Delta : 0), clamped.Width, clamped.Height);
-            return new Rect(Math.Clamp(moved.X, 0, 1 - moved.Width), Math.Clamp(moved.Y, 0, 1 - moved.Height), moved.Width, moved.Height);
-        }
+        private static bool NearlyEqual(Rect a, Rect b) =>
+            Math.Abs(a.X - b.X) < 1e-9 && Math.Abs(a.Y - b.Y) < 1e-9
+            && Math.Abs(a.Width - b.Width) < 1e-9 && Math.Abs(a.Height - b.Height) < 1e-9;
 
         private static (double Delta, double Guide) BestDelta(double[] edges, List<double> targets, double current)
         {
@@ -2139,10 +3571,24 @@ public sealed partial class StoryboardView : WorkspaceView
         }
     }
 
+    // 移动 clamp（对齐 web translateRect 的页边界约束，但带上宽高感知——web
+    // translateRect 只夹 x/y 原点，本实现沿用原生既有的右/下界保护）。
+    private Rect ClampMove(Rect rect) => new(
+        Math.Clamp(rect.X, 0, 1 - Math.Min(rect.Width, 1)),
+        Math.Clamp(rect.Y, 0, 1 - Math.Min(rect.Height, 1)),
+        rect.Width, rect.Height);
+
     private sealed record GeometryCommand(string Label, List<GeometryChange> Changes);
     private abstract record GeometryChange(string Id);
     private sealed record PanelChange(string Id, Rect Before, Rect After) : GeometryChange(Id);
-    private sealed record BubbleChange(string Id, Rect Before, Rect After) : GeometryChange(Id);
+    // 气泡几何快照（对齐 web bubble.shape 的 rect+rotation+anchor+tail_target 四元组；
+    // Moved 记录是否已定位——撤销回到未定位态时 payload 重新发 null）。
+    private sealed record BubbleGeometry(Rect Rect, double Rotation, Point? Anchor, Point? TailTarget, bool Moved);
+    private sealed record BubbleChange(string Id, BubbleGeometry Before, BubbleGeometry After) : GeometryChange(Id);
+    private sealed record PanelZChange(string Id, int Before, int After) : GeometryChange(Id);
+    // 拟声词快照（对齐 web sfxGeometryPatch 的 x/y/rotation/size 四元组 + Moved 定位语义）
+    private sealed record SfxGeometry(double X, double Y, double Rotation, double Size, bool Moved);
+    private sealed record SfxChange(string PanelId, int Index, SfxGeometry Before, SfxGeometry After) : GeometryChange(PanelId);
 
     // 对白草稿（对齐 web DialogueDraft 的四个字段；保存载荷 = 草稿 + panel_version）
     private sealed record DialogueDraft(string TargetText, string? SpeakerCharacterId, string TextDirection, bool RewriteForbidden)
@@ -2215,6 +3661,9 @@ internal sealed class PanelEditDialog : Window
         var background = new TextBox { AcceptsReturn = true, MinHeight = 48 };
         var props = new TextBox();
         var soundEffects = new TextBox();
+        // 拟声词几何锚定基线（对齐 web anchorSoundEffects）：文本列表重建时未变
+        // 条目保留原 x/y/rotation/size，改动条目按同索引位置沿用几何。
+        var storedSfx = new List<JsonElement>();
 
         form.Children.Add(Label("景别"));
         form.Children.Add(shot);
@@ -2312,7 +3761,7 @@ internal sealed class PanelEditDialog : Window
                     ["camera_angle"] = (angle.SelectedItem as ComboBoxItem)?.Tag,
                     ["background"] = background.Text,
                     ["props"] = SplitList(props.Text),
-                    ["sound_effects"] = SplitList(soundEffects.Text),
+                    ["sound_effects"] = AnchorSoundEffects(SplitList(soundEffects.Text), storedSfx),
                     ["character_presence"] = presencePayload,
                     ["bleed"] = bleed.IsChecked == true,
                     ["borderless"] = borderless.IsChecked == true,
@@ -2380,7 +3829,9 @@ internal sealed class PanelEditDialog : Window
             scriptAction.Text = storedScriptAction;
             background.Text = row.Text("background");
             props.Text = string.Join("、", row.Strings("props"));
-            soundEffects.Text = string.Join("、", row.Strings("sound_effects"));
+            // 结构化条目只显示 text 字段（Strings 会把对象序列化成 JSON 原文）
+            soundEffects.Text = string.Join("、", row.Array("sound_effects").Select(e => e.ValueKind == JsonValueKind.Object ? e.Text("text") : e.ToString()));
+            storedSfx = row.Array("sound_effects");
             storedPresence = row.Element("character_presence");
             storedExpressions = row.StringMap("expressions");
             storedOutfits = row.StringMap("outfits");
@@ -2457,6 +3908,39 @@ internal sealed class PanelEditDialog : Window
                 if (!right.TryGetValue(key, out var other) || other != value) return false;
             return true;
         }
+    }
+
+    // web anchorSoundEffects 的直译（几何按文本锚定，internal 供离线回归直接驱动）：
+    // 1) 未变文本从左到右精确匹配消耗；2) 改名/新增回退同索引位置的原对象
+    //    沿用几何；3) 其余落成裸 {text}（旧字符串条目一并规范化为对象）。
+    internal static List<Dictionary<string, object?>> AnchorSoundEffects(List<string> texts, List<JsonElement> previous)
+    {
+        var available = previous.Select((entry, index) => (entry, index, used: false))
+            .Where(slot => slot.entry.ValueKind == JsonValueKind.Object).ToList();
+        var matched = texts.Select(text =>
+        {
+            var hitIndex = available.FindIndex(slot => !slot.used && slot.entry.Text("text") == text);
+            if (hitIndex < 0) return (Dictionary<string, object?>?)null;
+            var hit = available[hitIndex];
+            available[hitIndex] = hit with { used = true };
+            var payload = JsonSerializer.Deserialize<Dictionary<string, object?>>(hit.entry.GetRawText()) ?? [];
+            payload["text"] = text;
+            return payload;
+        }).ToList();
+        return matched.Select((entry, index) =>
+        {
+            if (entry != null) return entry;
+            var slotIndex = available.FindIndex(slot => slot.index == index && !slot.used);
+            if (slotIndex >= 0)
+            {
+                var positional = available[slotIndex];
+                available[slotIndex] = positional with { used = true };
+                var payload = JsonSerializer.Deserialize<Dictionary<string, object?>>(positional.entry.GetRawText()) ?? [];
+                payload["text"] = texts[index];
+                return payload;
+            }
+            return new Dictionary<string, object?> { ["text"] = texts[index] };
+        }).ToList();
     }
 
     private static TextBlock Label(string text) => new()

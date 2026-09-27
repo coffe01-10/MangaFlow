@@ -117,6 +117,42 @@ public sealed partial class StoryboardView
         Add(Kit.Act("＋", (_, _) => SetZoom(zoom * 1.25), "Compact")); Add(Kit.Act("适配窗口", (_, _) => FitViewport(), "Compact")); Add(Kit.Act("复位", (_, _) => SetZoom(1), "Compact"));
         Add(snapButton); orderButton.Click += (_, _) => RenderOrderBadges(); Add(orderButton);
         bleedButton.Click += (_, _) => RenderGuidesOverlay(); Add(bleedButton); safeButton.Click += (_, _) => RenderGuidesOverlay(); Add(safeButton);
+        // 网格开关 + 物理间距选择（对齐 web toolbar 的 grid/gridStep）
+        gridButton.Click += (_, _) => RenderGridOverlay();
+        Add(gridButton);
+        foreach (var step in GridSteps) gridStepBox.Items.Add(new ComboBoxItem { Tag = step, Content = $"{step} mm" });
+        gridStepBox.SelectedIndex = 1;
+        System.Windows.Automation.AutomationProperties.SetName(gridStepBox, "网格间距");
+        gridStepBox.SelectionChanged += (_, _) =>
+        {
+            if (gridStepBox.SelectedItem is ComboBoxItem { Tag: int step }) { gridStepMm = step; RenderGridOverlay(); }
+        };
+        Add(gridStepBox);
+        // 对齐/分布/同尺寸组（对齐 web toolbar-align）：≥2 可移动选中格才显示，
+        // 等距分布需要 ≥3（UpdateAlignBar 统一管可见性）。
+        alignBar = new WrapPanel { Margin = new Thickness(0, 0, 5, 5), Visibility = Visibility.Collapsed };
+        void AlignButton(string label, string mode)
+        {
+            var button = Kit.Act(label, (_, _) => RunAlign(mode), "Compact");
+            button.MinHeight = 38; button.Margin = new Thickness(0, 0, 4, 0);
+            alignBar.Children.Add(button);
+        }
+        AlignButton("左对齐", "left"); AlignButton("水平居中", "centerX"); AlignButton("右对齐", "right");
+        AlignButton("顶对齐", "top"); AlignButton("垂直居中", "middleY"); AlignButton("底对齐", "bottom");
+        foreach (var (label, axis) in new[] { ("水平等距", "x"), ("垂直等距", "y") })
+        {
+            var button = Kit.Act(label, (_, _) => RunDistribute(axis), "Compact");
+            button.MinHeight = 38; button.Margin = new Thickness(0, 0, 4, 0);
+            distributeButtons.Add(button);
+            alignBar.Children.Add(button);
+        }
+        foreach (var (label, mode) in new[] { ("同宽", "width"), ("同高", "height"), ("同大小", "size") })
+        {
+            var button = Kit.Act(label, (_, _) => RunSameSize(mode), "Compact");
+            button.MinHeight = 38; button.Margin = new Thickness(0, 0, 4, 0);
+            alignBar.Children.Add(button);
+        }
+        wrapped.Children.Add(alignBar);
         undoButton.Click += (_, _) => Undo(); redoButton.Click += (_, _) => Redo(); Add(undoButton); Add(redoButton);
         var menu = new ContextMenu(); var rebuild = new MenuItem { Header = "重建本页版式…" }; rebuild.Click += (_, _) => RebuildLayout(); menu.Items.Add(rebuild);
         var menuButton = Kit.Act("页菜单 ▾", (_, _) => { }, "Compact"); menuButton.ContextMenu = menu;
@@ -124,7 +160,7 @@ public sealed partial class StoryboardView
         saveButton.Click += async (_, _) => await SaveAsync(); Add(saveButton);
         directorToggle.Click += (_, _) => { inspectorOpen = !inspectorOpen; ConfigureDesk(ActualWidth, true); }; Add(directorToggle);
         var block = new StackPanel(); block.Children.Add(wrapped);
-        block.Children.Add(new TextBlock { Text = "Tab 切换格子 · 方向键微调（Shift 加速） · 回车打开属性 · Delete 删除气泡", FontSize = 11, Foreground = AssetPageUi.Brush("Muted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) });
+        block.Children.Add(new TextBlock { Text = "Tab 切换格子 · 方向键微调（Shift 加速） · 回车打开属性 · Delete 删除气泡 · Ctrl+C/V 复制粘贴几何", FontSize = 11, Foreground = AssetPageUi.Brush("Muted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) });
         return new Border { Child = block, Padding = new Thickness(9), Background = AssetPageUi.Brush("Surface"), BorderBrush = AssetPageUi.Brush("Line"), BorderThickness = new Thickness(1), Margin = new Thickness(0, 0, 0, 10) };
     }
 

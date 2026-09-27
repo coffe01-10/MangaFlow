@@ -98,6 +98,13 @@ if (args.Contains("--storyedit"))
     NativeStoryboardEditChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-storyedit-checks"));
     return 0;
 }
+if (args.Contains("--storyboard-precision"))
+{
+    // 分镜精准编辑回归（多选/对齐分布/网格/等距线/数字几何/气泡/拟声词/
+    // 层序/复制粘贴/组缩放/保存载荷/冲突与刷新保草）——Run 自带 STA 调度。
+    NativeStoryboardPrecisionChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-precision-checks"));
+    return 0;
+}
 if (args.Contains("--issue441"))
 {
     NativeIssue441Checks.Run();
