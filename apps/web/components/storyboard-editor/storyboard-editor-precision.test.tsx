@@ -679,6 +679,54 @@ describe("StoryboardEditor 精准编辑", () => {
     expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(20, 4);
   });
 
+  it("T6 A/B 对比：双色幽灵叠层，采用其一落撤销命令", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    // 存 A（基线），改动一格，再存 B。
+    fireEvent.click(screen.getByRole("button", { name: "快照" }));
+    fireEvent.change(screen.getByLabelText("快照名称"), { target: { value: "方案 A" } });
+    fireEvent.click(screen.getByRole("button", { name: "存快照" }));
+    const xInput = screen.getByLabelText("X（mm）");
+    fireEvent.change(xInput, { target: { value: "91" } });
+    fireEvent.blur(xInput);
+    fireEvent.change(screen.getByLabelText("快照名称"), { target: { value: "方案 B" } });
+    fireEvent.click(screen.getByRole("button", { name: "存快照" }));
+    // 回基线（撤销 X 改动），两侧标记后双色幽灵同时出现。
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    const itemA = screen.getByText("方案 A").closest(".library-item")!;
+    const itemB = screen.getByText("方案 B").closest(".library-item")!;
+    fireEvent.click(within(itemA as HTMLElement).getByRole("button", { name: "标为 A" }));
+    fireEvent.click(within(itemB as HTMLElement).getByRole("button", { name: "标为 B" }));
+    const ghosts = document.querySelectorAll(".canvas-ghost");
+    expect(ghosts.length).toBe(4); // 两份快照 × 两格
+    expect(document.querySelectorAll(".canvas-ghost.variant-b").length).toBe(2);
+    // A 侧幽灵在 x=0.1，B 侧在 x=0.5。
+    expect(parseFloat((ghosts[0] as HTMLElement).style.left)).toBeCloseTo(10, 4);
+    expect(parseFloat((document.querySelectorAll(".canvas-ghost.variant-b")[0] as HTMLElement).style.left)).toBeCloseTo(50, 4);
+    // 选择条出现，采用 B → 画布回到 B 态且可撤销。
+    const bar = screen.getByRole("group", { name: "A/B 版式对比" });
+    fireEvent.click(within(bar).getByRole("button", { name: "采用 B" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(50, 4);
+    expect(document.querySelector(".canvas-ghost")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(10, 4);
+  });
+
+  it("T7 A/B 对比：单侧标记不显示选择条，退出清空幽灵", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "快照" }));
+    fireEvent.click(screen.getByRole("button", { name: "存快照" }));
+    const item = screen.getByText("快照 1").closest(".library-item")!;
+    fireEvent.click(within(item as HTMLElement).getByRole("button", { name: "标为 A" }));
+    // 只有 A：幽灵叠层可见但选择条不出（缺 B 侧）。
+    expect(document.querySelectorAll(".canvas-ghost").length).toBe(2);
+    expect(screen.queryByRole("group", { name: "A/B 版式对比" })).toBeNull();
+    // 再点一次"标为 A"取消标记 → 幽灵清空。
+    fireEvent.click(within(item as HTMLElement).getByRole("button", { name: "标为 A" }));
+    expect(document.querySelector(".canvas-ghost")).toBeNull();
+  });
+
   /** 读取 panel-2 气泡节点当前的 left/width（% 文本转数值比例）。 */
   function payloadBubbleAfterTemplate() {
     const element = bubbleEl("dialogue-1");

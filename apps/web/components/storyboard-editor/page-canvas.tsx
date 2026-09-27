@@ -193,8 +193,9 @@ export function PageCanvas({
   onZoomStep: (direction: 1 | -1) => void;
   /** 层序命令的透明度脉冲（对齐原生 PulseZIndex）：token 变化重放一次 z-flash。 */
   zFlash?: { token: number; ids: string[] } | null;
-  /** 版本快照对比（V02-33）：幽灵轮廓画在当前画布上，纯展示不响应指针。 */
-  ghosts?: { key: string; rect: NormalizedRect; ellipse?: boolean }[] | null;
+  /** 版本快照对比（V02-33）：幽灵轮廓画在当前画布上，纯展示不响应指针。
+   *  A/B 对比时 variant 区分两侧配色（a=紫、b=青）。 */
+  ghosts?: { key: string; rect: NormalizedRect; ellipse?: boolean; variant?: "a" | "b" }[] | null;
   /** 覆盖层插槽（回放控制条）：渲染在 canvas-viewport 内、页面之外。 */
   overlay?: ReactNode;
 }) {
@@ -1221,7 +1222,7 @@ export function PageCanvas({
       {ghosts?.map((ghost) => (
         <div
           key={ghost.key}
-          className={ghost.ellipse ? "canvas-ghost ellipse" : "canvas-ghost"}
+          className={`canvas-ghost${ghost.ellipse ? " ellipse" : ""}${ghost.variant === "b" ? " variant-b" : ""}`}
           aria-hidden="true"
           style={{
             left: `${ghost.rect.x * 100}%`,

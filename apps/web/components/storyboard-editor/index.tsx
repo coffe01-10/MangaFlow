@@ -58,6 +58,7 @@ import {
   type SameSizeMode,
   type ZOrderOp,
 } from "./geometry";
+import { CompareBar } from "./compare-bar";
 import { LayoutRebuildDialog } from "./layout-rebuild-dialog";
 import { LibraryBar } from "./library-bar";
 import { PageCanvas, syntheticBubbleShape, type CanvasBubble, type CanvasSelection } from "./page-canvas";
@@ -274,6 +275,8 @@ export function StoryboardEditor({
   const snapshotsRaw = useLocalStorageValue(snapshotsKey(currentPage?.id ?? ""), "");
   const snapshots = useMemo(() => parseSnapshots(snapshotsRaw), [snapshotsRaw]);
   const [compareId, setCompareId] = useState<string | null>(null);
+  // A/B 版式对比：两份快照各标一侧后双色幽灵叠层同屏，选择条采用其一。
+  const [compareAB, setCompareAB] = useState<{ a: string | null; b: string | null } | null>(null);
 
   // 回放时间线：每个已应用命令后的完整 canvasState。帧标签由命令入口在
   // applyChanges 之前写入 pendingLabel;去重靠 sameCanvasState,无实际几何
@@ -621,24 +624,56 @@ export function StoryboardEditor({
 
   const deleteSnapshot = (id: string) => {
     if (compareId === id) setCompareId(null);
+    if (compareAB?.a === id || compareAB?.b === id) {
+      setCompareAB(compareAB.a === id ? (compareAB.b === id ? null : { a: null, b: compareAB.b }) : { a: compareAB.a, b: null });
+    }
     writeSnapshots(snapshots.filter((item) => item.id !== id));
     setNotice(storyboardCopy.snapshotDeleted);
   };
 
+  // 单份对比是紫色幽灵；A/B 对比把两份快照分别以紫/青双色叠上当前画布。
+  // 标 A/B 属于另一种对比模式，进入即关掉单份对比。
+  const markCompare = (id: string, side: "a" | "b") => {
+    setCompareId(null);
+    setCompareAB((value) => {
+      const next = { a: value?.a ?? null, b: value?.b ?? null };
+      next[side] = next[side] === id ? null : id;
+      // 同一侧只能标一份；同一份快照可以同时占 A 和 B（与自身比对无意义但无害，
+      // 采用它就等于恢复它）。
+      return next.a || next.b ? next : null;
+    });
+  };
+
+  const adoptCompare = (side: "a" | "b") => {
+    const target = compareAB?.[side] ? snapshots.find((item) => item.id === compareAB[side]) : null;
+    if (!target) return;
+    const changes = stateChanges(canvasState, target.state);
+    if (changes.length) handleCommand("采用版式", changes);
+    setCompareAB(null);
+    setNotice(storyboardCopy.compareAdopted(target.name));
+  };
+
   const compareSnapshot = compareId ? snapshots.find((item) => item.id === compareId) ?? null : null;
-  const ghosts = compareSnapshot
-    ? [
-      ...Object.entries(compareSnapshot.state.panels).map(([id, panel]) => ({
-        key: `panel:${id}`,
-        rect: panel.rect,
-      })),
-      ...Object.entries(compareSnapshot.state.bubbles).map(([id, bubble]) => ({
-        key: `bubble:${id}`,
-        rect: bubble.rect,
-        ellipse: bubble.type === "ellipse",
-      })),
-    ]
-    : null;
+  const ghostRects = (snapshot: NonNullable<typeof compareSnapshot>, variant: "a" | "b") => [
+    ...Object.entries(snapshot.state.panels).map(([id, panel]) => ({
+      key: `${variant}:panel:${id}`,
+      rect: panel.rect,
+      variant,
+    })),
+    ...Object.entries(snapshot.state.bubbles).map(([id, bubble]) => ({
+      key: `${variant}:bubble:${id}`,
+      rect: bubble.rect,
+      ellipse: bubble.type === "ellipse",
+      variant,
+    })),
+  ];
+  const snapshotA = compareAB?.a ? snapshots.find((item) => item.id === compareAB.a) ?? null : null;
+  const snapshotB = compareAB?.b ? snapshots.find((item) => item.id === compareAB.b) ?? null : null;
+  const ghosts = compareAB
+    ? [...(snapshotA ? ghostRects(snapshotA, "a") : []), ...(snapshotB ? ghostRects(snapshotB, "b") : [])]
+    : compareSnapshot
+      ? ghostRects(compareSnapshot, "a")
+      : null;
 
   // 回放展示覆盖:只换投影,不动草稿。interactive=false 封掉全部手势与键
   // 盘命令,handleCommand 的 replay 门禁兜住程序化入口——回放是纯只读的。
@@ -669,6 +704,7 @@ export function StoryboardEditor({
     }
     setSelection(null);
     setCompareId(null);
+    setCompareAB(null);
     setReplay({ open: true, index: 0, playing: true, speed: replay.speed });
   };
 
@@ -946,6 +982,7 @@ export function StoryboardEditor({
     setNewDialogue(null);
     // 快照对比与回放都是本页视图态,换页即关闭(回放时间线按页重建)。
     setCompareId(null);
+    setCompareAB(null);
     setReplay((value) => ({ ...value, open: false, playing: false }));
     setPageId(nextPageId);
   };
@@ -1100,6 +1137,7 @@ export function StoryboardEditor({
         templates={templates}
         snapshots={snapshots}
         compareId={compareId}
+        compareAB={compareAB}
         replayOpen={replay.open}
         disabled={canvasBusy || replay.open}
         onApplyTemplate={applyTemplate}
@@ -1107,7 +1145,11 @@ export function StoryboardEditor({
         onDeleteTemplate={deleteTemplate}
         onSaveSnapshot={saveSnapshot}
         onRestoreSnapshot={restoreSnapshot}
-        onToggleCompare={(id) => setCompareId((value) => (value === id ? null : id))}
+        onToggleCompare={(id) => {
+          setCompareAB(null);
+          setCompareId((value) => (value === id ? null : id));
+        }}
+        onMarkCompare={markCompare}
         onDeleteSnapshot={deleteSnapshot}
         onToggleReplay={toggleReplay}
       />}
@@ -1147,6 +1189,11 @@ export function StoryboardEditor({
             }))}
             onSpeed={(speed) => setReplay((value) => ({ ...value, speed }))}
             onExit={() => setReplay((value) => ({ ...value, open: false, playing: false }))}
+          /> : snapshotA && snapshotB ? <CompareBar
+            nameA={snapshotA.name}
+            nameB={snapshotB.name}
+            onAdopt={adoptCompare}
+            onExit={() => setCompareAB(null)}
           /> : null}
           selection={selection}
           onCommand={handleCommand}

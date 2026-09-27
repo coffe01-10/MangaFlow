@@ -59,6 +59,7 @@ export function LibraryBar({
   templates,
   snapshots,
   compareId,
+  compareAB,
   replayOpen,
   disabled,
   onApplyTemplate,
@@ -67,12 +68,15 @@ export function LibraryBar({
   onSaveSnapshot,
   onRestoreSnapshot,
   onToggleCompare,
+  onMarkCompare,
   onDeleteSnapshot,
   onToggleReplay,
 }: {
   templates: LayoutTemplate[];
   snapshots: StoryboardSnapshot[];
   compareId: string | null;
+  /** A/B 对比两侧的快照 id；两侧都标好才显示选择条。 */
+  compareAB: { a: string | null; b: string | null } | null;
   replayOpen: boolean;
   /** Locked during saves and replay playback. */
   disabled: boolean;
@@ -82,6 +86,7 @@ export function LibraryBar({
   onSaveSnapshot: (name: string) => void;
   onRestoreSnapshot: (id: string) => void;
   onToggleCompare: (id: string) => void;
+  onMarkCompare: (id: string, side: "a" | "b") => void;
   onDeleteSnapshot: (id: string) => void;
   onToggleReplay: () => void;
 }) {
@@ -157,6 +162,20 @@ export function LibraryBar({
               className={compareId === snapshot.id ? "active" : ""}
               onClick={() => onToggleCompare(snapshot.id)}
             >{storyboardCopy.compareSnapshot}</button>
+            <button
+              type="button"
+              aria-pressed={compareAB?.a === snapshot.id}
+              className={`compare-mark${compareAB?.a === snapshot.id ? " active" : ""}`}
+              disabled={disabled}
+              onClick={() => onMarkCompare(snapshot.id, "a")}
+            >{storyboardCopy.compareMarkA}</button>
+            <button
+              type="button"
+              aria-pressed={compareAB?.b === snapshot.id}
+              className={`compare-mark${compareAB?.b === snapshot.id ? " active" : ""}`}
+              disabled={disabled}
+              onClick={() => onMarkCompare(snapshot.id, "b")}
+            >{storyboardCopy.compareMarkB}</button>
             <button
               type="button"
               className="library-delete"
