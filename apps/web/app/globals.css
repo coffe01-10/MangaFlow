@@ -639,6 +639,32 @@ a { color: inherit; text-decoration: none; }
 /* 减弱动效：由 V02-51B 的全局单块统一接管（transition/animation-duration
    .01ms !important），不再单独开块——命令过渡/参考线淡出/z-flash 随之关闭。 */
 .canvas-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+/* 快照对比幽灵轮廓（V02-33）：虚线框标出快照态位置，纯展示不吃指针。 */
+.canvas-ghost { position: absolute; z-index: 30; border: 1.5px dashed #7a5fb8; background: rgba(122,95,184,.07); pointer-events: none; }
+.canvas-ghost.ellipse { border-radius: 50%; }
+/* 模板/快照弹层与回放条 */
+.library-popover { min-width: 240px; padding: 6px; display: grid; gap: 2px; }
+.library-section { display: grid; gap: 2px; }
+.library-item { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; }
+.library-item:hover { background: rgba(58,122,152,.08); }
+.library-item .library-apply { flex: 1; display: flex; align-items: center; gap: 6px; padding: 4px 6px; border: none; background: transparent; text-align: left; font-size: 12px; cursor: pointer; }
+.library-item .library-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-item small { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.library-item > button { padding: 3px 8px; font-size: 11px; }
+.library-item > button.active { background: var(--ink); color: white; }
+.library-delete { display: inline-flex; align-items: center; padding: 3px !important; color: var(--muted); }
+.library-delete:hover { color: var(--vermillion); }
+.library-save { display: flex; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.library-save input { flex: 1; min-width: 0; padding: 4px 7px; border: 1px solid var(--line-dark); border-radius: 4px; font-size: 12px; }
+.library-save button { padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+.library-empty { margin: 4px 6px; color: var(--muted); font-size: 12px; }
+.replay-bar { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 80; display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid var(--ink); border-radius: 8px; background: rgba(255,253,248,.95); box-shadow: 0 4px 16px rgba(38,32,25,.22); }
+.replay-bar button { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 12px; }
+.replay-bar input[type="range"] { width: min(220px, 30vw); accent-color: var(--vermillion); }
+.replay-bar select { padding: 3px 5px; font-size: 11px; }
+.replay-position { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 42px; text-align: center; }
+.replay-label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ink); font-weight: 600; }
+.replay-exit { font-weight: 700; }
 .canvas-object-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
 .canvas-object-panel { fill: rgba(255,255,255,.04); stroke: #4a453d; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .canvas-object-panel.polygon { stroke-dasharray: 6 4; }

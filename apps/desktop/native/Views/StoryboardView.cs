@@ -208,6 +208,7 @@ public sealed partial class StoryboardView : WorkspaceView
                 storyboard = default;
                 dialogueDrafts.Clear();
                 history.Clear();
+                ResetTimeline();
                 geometryRequest = null;
                 dirty = false;
                 bubblesDeleted = false;
@@ -391,6 +392,9 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private async Task SelectPageAsync(PageItem item, bool preserveDrafts = false)
     {
+        // 页面加载先收尾视图态：回放/快照对比不跨页存活（对齐 web 的
+        // 页切换清 compareSnapshotId 与 timeline；同页 preserve 重载同理）。
+        ExitLibraryModes();
         var previous = currentPage;
         // 单调请求代号（与 ScriptView 的 scriptLoadVersion 同一模式）：快速连点
         // 两页时，迟到的旧响应既不得渲染旧分镜，也不得改写 currentPage 与页号记忆。
@@ -562,6 +566,10 @@ public sealed partial class StoryboardView : WorkspaceView
         PositionResizeHandles(ActiveHandleRect(), animate);
         PositionBubbleHandles(animate);
         UpdateOverlaySizes();
+        RenderGhosts();
+        // 回放帧录制（V02-33）：所有几何落地都汇聚到 UpdatePageSize，
+        // 在这里统一录时间线；回放期间的写回被 RecordFrame 自身门禁拦掉。
+        RecordFrame();
     }
 
     private void RenderCanvas()
@@ -579,6 +587,7 @@ public sealed partial class StoryboardView : WorkspaceView
         RenderOrderBadges();
         RenderGuidesOverlay();
         RenderResizeHandles();
+        RenderGhosts();
     }
 
     private void RenderOrderBadges()
@@ -696,7 +705,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void BeginPanelDrag(object sender, MouseButtonEventArgs e, PanelNode panel)
     {
-        if (e.ChangedButton != MouseButton.Left) return;
+        if (replayOpen || e.ChangedButton != MouseButton.Left) return;
         // Shift+按下 = 加选/保留多选（对齐 web startPanelMove 的 additive）：
         // 已选中的格保持整组拖动；无修饰键回到单选。
         var additive = Keyboard.Modifiers == ModifierKeys.Shift && selectedBubble == null && selectedSfx == null;
@@ -730,7 +739,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void BeginBubbleDrag(object sender, MouseButtonEventArgs e, BubbleNode bubble)
     {
-        if (e.ChangedButton != MouseButton.Left) return;
+        if (replayOpen || e.ChangedButton != MouseButton.Left) return;
         SelectBubble(bubble);
         var start = ToNormalized(e.GetPosition(page));
         var origin = bubble.Snapshot();
@@ -842,7 +851,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void BeginSfxMove(object sender, MouseButtonEventArgs e, SfxNode node)
     {
-        if (e.ChangedButton != MouseButton.Left) return;
+        if (replayOpen || e.ChangedButton != MouseButton.Left) return;
         SelectSfx(node);
         var start = ToNormalized(e.GetPosition(page));
         var origin = node.Snapshot();
@@ -863,7 +872,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void BeginSfxHandle(object sender, MouseButtonEventArgs e, SfxNode node, string kind)
     {
-        if (e.ChangedButton != MouseButton.Left) return;
+        if (replayOpen || e.ChangedButton != MouseButton.Left) return;
         var origin = node.Snapshot();
         var center = new Point(node.X, node.Y);
         var aspect = page.Height / Math.Max(1, page.Width);
@@ -910,7 +919,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void BeginGroupHandleDrag(object sender, MouseButtonEventArgs e, string handle)
     {
-        if (e.ChangedButton != MouseButton.Left) return;
+        if (replayOpen || e.ChangedButton != MouseButton.Left) return;
         var movable = MovableSelected();
         if (movable.Count < 2 || BoundingBox(movable.Select(p => p.Rect)) is not { } originBox) return;
         var origins = movable.ToDictionary(p => p.Id, p => p.Rect);
@@ -1243,7 +1252,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void BeginHandleDrag(object sender, MouseButtonEventArgs e, PanelNode panel, string handle)
     {
-        if (e.ChangedButton != MouseButton.Left) return;
+        if (replayOpen || e.ChangedButton != MouseButton.Left) return;
         // 手柄只在 selected==panel 时挂载（RenderResizeHandles 的前置条件），
         // 这里不得再走 SelectPanel：它会重建手柄元素，把正要捕获鼠标的 sender
         // 从视觉树摘下来，捕获随即失效。
@@ -1656,6 +1665,7 @@ public sealed partial class StoryboardView : WorkspaceView
     // 对齐：非主格向选中组 bounding box 的对应边/中线收拢；round4 消浮点尾差。
     private void RunAlign(string mode)
     {
+        if (replayOpen) return;
         var targets = MovableSelected();
         if (targets.Count < 2 || BoundingBox(targets.Select(p => p.Rect)) is not { } box) return;
         var changes = new List<GeometryChange>();
@@ -1681,6 +1691,7 @@ public sealed partial class StoryboardView : WorkspaceView
     // 相邻格间距相等——gap = (span - totalSize)/(n-1)，中间格顺次落位。
     private void RunDistribute(string axis)
     {
+        if (replayOpen) return;
         var targets = MovableSelected();
         if (targets.Count < 3) return;
         var horizontal = axis == "x";
@@ -1708,6 +1719,7 @@ public sealed partial class StoryboardView : WorkspaceView
     // ids 是点击序，selectedIds 同序），溢出页界时 clampRect 回挪原点。
     private void RunSameSize(string mode)
     {
+        if (replayOpen) return;
         var targets = selectedIds
             .Select(id => panels.FirstOrDefault(p => p.Id == id))
             .Where(p => p is { IsPolygon: false }).Cast<PanelNode>().ToList();
@@ -1741,6 +1753,7 @@ public sealed partial class StoryboardView : WorkspaceView
     // 目标格 = 单选格或检查器当前格（对齐 web targetId 取值）。
     private void RunZOrder(string op)
     {
+        if (replayOpen) return;
         var targetId = selectedIds.Count == 1 ? selectedIds[0] : selected?.Id;
         if (targetId == null || panels.FirstOrDefault(p => p.Id == targetId) is not { } target) return;
         var zOrders = panels.ToDictionary(p => p.Id, p => p.ZOrder);
@@ -1796,6 +1809,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void CopySelectionGeometry()
     {
+        if (replayOpen) return;
         if (selectedSfx is { } sfx)
         {
             var g = sfx.Snapshot();
@@ -1818,6 +1832,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private bool PasteSelectionGeometry()
     {
+        if (replayOpen) return false;
         if (!AnySelection()) { Notice("先选中一个格再按 Ctrl+C 复制几何"); return false; }
         if (copiedGeometry == null) return false;
         if (selectedSfx is { } sfx)
@@ -1886,6 +1901,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void CommitPanelRect(PanelNode panel, Rect after)
     {
+        if (replayOpen) return;
         // clamp 下沉到提交点（对齐 web commitRect 内部的 clampRect）：
         // 数字字段已夹过，测试缝/将来其他调用点走同一防线。
         after = ClampRect(after, MinSize);
@@ -1899,6 +1915,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void CommitBubbleRectField(BubbleNode bubble, Rect after)
     {
+        if (replayOpen) return;
         var origin = bubble.Snapshot();
         var next = origin with { Rect = ClampRect(after, MinBubble), Moved = true };
         if (next == origin) return;
@@ -1911,6 +1928,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void CommitBubbleRotationField(BubbleNode bubble, double rotation)
     {
+        if (replayOpen) return;
         var origin = bubble.Snapshot();
         // 数字输入用 web commitRotation 的 clamp（±360 + round4），非手势的取模归一化
         var next = origin with { Rotation = Math.Round(Math.Clamp(rotation, -MaxRotation, MaxRotation), 4), Moved = true };
@@ -1925,8 +1943,9 @@ public sealed partial class StoryboardView : WorkspaceView
     // ============ Undo / redo ============
     private void Undo()
     {
-        if (!history.CanUndo) return;
+        if (replayOpen || !history.CanUndo) return;
         var command = history.Undo();
+        pendingCommandLabel = $"撤销：{command.Label}";
         ApplyChanges(command.Changes, before: true);
         MarkDirty();
         RenderCanvas();
@@ -1935,8 +1954,9 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void Redo()
     {
-        if (!history.CanRedo) return;
+        if (replayOpen || !history.CanRedo) return;
         var command = history.Redo();
+        pendingCommandLabel = $"重做：{command.Label}";
         ApplyChanges(command.Changes, before: false);
         MarkDirty();
         RenderCanvas();
@@ -2635,7 +2655,7 @@ public sealed partial class StoryboardView : WorkspaceView
 
     private void RebuildLayout()
     {
-        if (currentPage == null) return;
+        if (replayOpen || currentPage == null) return;
         var dialog = new LayoutRebuildDialog(Host, currentPage.PageNumber, panels.Count);
         if (dialog.ShowDialog() != true) return;
         _ = RebuildLayoutAsync(dialog.PanelCount, dialog.LayoutMode);
@@ -2668,6 +2688,8 @@ public sealed partial class StoryboardView : WorkspaceView
     // ============ Save ============
     private async Task SaveAsync()
     {
+        // 回放中禁止保存：节点此刻是帧投影而非工作几何，PUT 会把投影落库。
+        if (replayOpen) { Notice("退出回放后再保存本页"); return; }
         if (currentPage == null || saving || !dirty) return;
         var pageAtRequest = currentPage;
         saving = true;
@@ -2840,7 +2862,8 @@ public sealed partial class StoryboardView : WorkspaceView
     // ============ Keyboard ============
     private void OnCanvasKey(object sender, KeyEventArgs e)
     {
-        if (currentPage == null) return;
+        // 回放只读：几何快捷键（Delete/方向键/Ctrl+C·V·Z·Y/Tab 轮换）全部拦下。
+        if (replayOpen || currentPage == null) return;
         // 第二道防线：焦点在文本编辑控件（检查器 TextBox / ComboBox）时按键属于
         // 文本编辑（退格删字、方向键移光标、Tab 焦点遍历），画布不得劫持。处理器
         // 挂在 page 上已隔离画布之外的控件，这里再挡住画布子树内将来可能出现的
@@ -3719,12 +3742,17 @@ public sealed partial class StoryboardView : WorkspaceView
         public bool CanUndo => Index > 0;
         public bool CanRedo => Index < stack.Count;
 
+        // V02-33 回放帧标签：Push 先于应用发生，标签挂起到 UpdatePageSize
+        // 落点后由 RecordFrame 消费；空变更（Changes.Count==0）不推不录。
+        public Action<GeometryCommand>? OnPush;
+
         public void Push(GeometryCommand command)
         {
             if (command.Changes.Count == 0) return;
             if (Index < stack.Count) stack.RemoveRange(Index, stack.Count - Index);
             stack.Add(command);
             Index++;
+            OnPush?.Invoke(command);
         }
 
         public GeometryCommand Undo() => stack[--Index];

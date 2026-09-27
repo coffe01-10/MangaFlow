@@ -565,4 +565,126 @@ describe("StoryboardEditor 精准编辑", () => {
     fireEvent.click(screen.getByRole("button", { name: "撤销" }));
     expect(panelEl("panel-1").classList.contains("z-flash")).toBe(true);
   });
+
+  it("T1 模板套用：预设按阅读序配格，气泡随宿主仿射，命令可撤销", async () => {
+    const panelWithBubble = makePanel({
+      id: "panel-2",
+      reading_order: 2,
+      bounds: { x: 0.55, y: 0.2, width: 0.35, height: 0.25 },
+      geometry: { type: "rect", rect: { x: 0.55, y: 0.2, width: 0.35, height: 0.25 }, rotation: 0, z_order: 2 },
+      dialogues: [dialogue1],
+    });
+    data = { page, candidate_count: 0, panels: [panel1, panelWithBubble] };
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "模板" }));
+    fireEvent.click(screen.getByRole("button", { name: /左右对开/ }));
+    // panel-1 → cell[0] (.06,.06,.42,.88)，panel-2 → cell[1] (.52,.06,.42,.88)。
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(6, 4);
+    expect(parseFloat(panelEl("panel-1").style.width)).toBeCloseTo(42, 4);
+    expect(parseFloat(panelEl("panel-2").style.left)).toBeCloseTo(52, 4);
+    // 气泡随宿主格仿射:panel-2 (.55,.2,.35,.25) → (.52,.06,.42,.88)。
+    const bubble = payloadBubbleAfterTemplate();
+    expect(bubble.x).toBeCloseTo(0.52 + (0.15 - 0.55) * (0.42 / 0.35), 3);
+    expect(bubble.width).toBeCloseTo(0.2 * (0.42 / 0.35), 3);
+    // 撤销整体回滚。
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(10, 6);
+    expect(parseFloat(panelEl("panel-2").style.left)).toBeCloseTo(55, 6);
+  });
+
+  it("T2 存为模板：当前布局入库，变形后一键套回", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "模板" }));
+    fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "我的版式" } });
+    fireEvent.click(screen.getByRole("button", { name: "存为模板" }));
+    const stored = JSON.parse(window.localStorage.getItem("mangaflow.storyboard-templates") ?? "[]");
+    expect(stored).toHaveLength(1);
+    expect(stored[0].name).toBe("我的版式");
+    expect(stored[0].cells[0].x).toBe(0.1);
+    // 先挪走 panel-1（弹层仍在打开态），再套用自己存的模板回到原布局。
+    const xInput = screen.getByLabelText("X（mm）");
+    fireEvent.change(xInput, { target: { value: "91" } });
+    fireEvent.blur(xInput);
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(50, 4);
+    fireEvent.click(screen.getByRole("button", { name: /^我的版式/ }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(10, 4);
+  });
+
+  it("T3 版本快照：存快照 → 改动 → 恢复即回滚且可撤销", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "快照" }));
+    fireEvent.change(screen.getByLabelText("快照名称"), { target: { value: "定稿前" } });
+    fireEvent.click(screen.getByRole("button", { name: "存快照" }));
+    const stored = JSON.parse(window.localStorage.getItem("mangaflow.storyboard-snapshots.page-1") ?? "[]");
+    expect(stored).toHaveLength(1);
+    expect(stored[0].name).toBe("定稿前");
+    // 改动 panel-1 的 X（弹层仍在打开态，新快照条目已可见）。
+    const xInput = screen.getByLabelText("X（mm）");
+    fireEvent.change(xInput, { target: { value: "91" } });
+    fireEvent.blur(xInput);
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(50, 4);
+    // 恢复快照 → 回到 0.1；撤销恢复命令 → 又回到 0.5。
+    const item = screen.getByText("定稿前").closest(".library-item")!;
+    fireEvent.click(within(item as HTMLElement).getByRole("button", { name: "恢复" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(10, 4);
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(50, 4);
+  });
+
+  it("T4 快照对比：幽灵轮廓标出快照态位置", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "快照" }));
+    fireEvent.click(screen.getByRole("button", { name: "存快照" }));
+    const xInput = screen.getByLabelText("X（mm）");
+    fireEvent.change(xInput, { target: { value: "91" } });
+    fireEvent.blur(xInput);
+    expect(document.querySelector(".canvas-ghost")).toBeNull();
+    // 存完后弹层仍在打开态，直接点对比。
+    fireEvent.click(screen.getByRole("button", { name: "对比" }));
+    const ghosts = document.querySelectorAll(".canvas-ghost");
+    expect(ghosts.length).toBe(2);
+    expect(parseFloat((ghosts[0] as HTMLElement).style.left)).toBeCloseTo(10, 4);
+    // 再点一次对比关闭。
+    fireEvent.click(screen.getByRole("button", { name: "对比" }));
+    expect(document.querySelector(".canvas-ghost")).toBeNull();
+  });
+
+  it("T5 制作回放：录制命令历史，播放/步进只读展示帧状态", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    // 产生两条命令：改 X + 置顶。
+    const xInput = screen.getByLabelText("X（mm）");
+    fireEvent.change(xInput, { target: { value: "36.4" } });
+    fireEvent.blur(xInput);
+    fireEvent.click(screen.getByRole("button", { name: "置顶" }));
+    fireEvent.click(screen.getByRole("button", { name: "回放", pressed: false }));
+    // 回放条出现，画布只读：拖动不再改几何。
+    const bar = await screen.findByRole("group", { name: "制作过程回放" });
+    expect(bar).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(/\/3/).textContent).toBe("3/3"), { timeout: 3000 });
+    // 步回第一帧：初始态 panel-1 x=0.1。
+    fireEvent.click(screen.getByRole("button", { name: "上一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "上一步" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(10, 4);
+    fireEvent.pointerDown(panelEl("panel-1"), { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 160, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 160, clientY: 100 });
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(10, 4);
+    // 退出回放回到实时态（X=0.2）。
+    fireEvent.click(screen.getByRole("button", { name: "退出回放" }));
+    expect(parseFloat(panelEl("panel-1").style.left)).toBeCloseTo(20, 4);
+  });
+
+  /** 读取 panel-2 气泡节点当前的 left/width（% 文本转数值比例）。 */
+  function payloadBubbleAfterTemplate() {
+    const element = bubbleEl("dialogue-1");
+    return {
+      x: parseFloat(element.style.left) / 100,
+      width: parseFloat(element.style.width) / 100,
+    };
+  }
 });

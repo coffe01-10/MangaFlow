@@ -4,6 +4,7 @@
 // save and the page menu holding the destructive layout rebuild (audit §2.1 L0).
 import { ChevronDown, Maximize, Redo2, RefreshCw, Save, Scan, Undo2, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import type { AlignMode, SameSizeMode } from "./geometry";
 import { storyboardCopy } from "./storyboard-copy";
@@ -43,6 +44,7 @@ export function StoryboardToolbar({
   onSameSize,
   gridStep,
   onGridStep,
+  endSlot,
 }: {
   zoomLabel: string;
   toggles: ToolbarToggleState;  bleedAvailable: boolean;
@@ -70,6 +72,8 @@ export function StoryboardToolbar({
   onSameSize?: (mode: SameSizeMode) => void;
   gridStep?: number;
   onGridStep?: (step: number) => void;
+  /** 末尾插槽（V02-33）：模板/快照/回放的 LibraryBar 由 index 组装传入。 */
+  endSlot?: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -157,6 +161,7 @@ export function StoryboardToolbar({
     </div>
     {overlayHint && <p className="toolbar-hint">{overlayHint}</p>}
     {!overlayHint && <p className="toolbar-hint" aria-hidden="true">{storyboardCopy.hintKeys}</p>}
+    {endSlot}
     <div className="toolbar-group toolbar-spacer" role="group" aria-label="保存与页操作">
       <div className="page-menu" ref={menuRef}>
         <button type="button" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>

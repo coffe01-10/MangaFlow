@@ -120,9 +120,10 @@ internal static class NativeStoryboardPrecisionChecks
             await SavePayloadChecks(view, fixture);
             await ConflictKeepsDraftsChecks(view, fixture);
             await RefreshRestoresSelectionChecks(view, fixture);
+            LibraryChecks(view);
         }
         finally { view.Deactivate(); }
-        Console.WriteLine("PASS: storyboard precision checks (multi-select/align/distribute/same-size/grid/gap-guides/numeric-fields/bubble/sfx/layers/copy-paste/group-scale/save-payload/conflict/refresh) all match the web contract");
+        Console.WriteLine("PASS: storyboard precision checks (multi-select/align/distribute/same-size/grid/gap-guides/numeric-fields/bubble/sfx/layers/copy-paste/group-scale/save-payload/conflict/refresh/library) all match the web contract");
     }
 
     // ── 1. 多选与组手柄：≥2 选中挂组 bbox 手柄（group-handle:*），单选挂格手柄 ──
@@ -610,6 +611,97 @@ internal static class NativeStoryboardPrecisionChecks
         var kept = view.SfxGeometryForTest(0)!.Value;
         Require(Near(kept.X, moved.X) && Near(kept.Y, moved.Y), "保草稿刷新应还原拟声词草稿");
         Require(view.CanUndoForTest, "保草稿刷新应保留撤销栈");
+    }
+
+    // ── 16. 功能库（V02-33）：布局模板 / 版本快照+幽灵对比 / 制作回放 ──
+    // 与 web storyboard-history 同一契约：模板按 reading_order 配对 cells、气泡
+    // 随宿主仿射映射、快照恢复走撤销栈、回放时间线沿命令历史录制且播放期只读。
+    private static void LibraryChecks(StoryboardView view)
+    {
+        // 快照：捕获 → 改动 → 恢复（普通命令，可撤销）
+        var baseRect0 = view.PanelRectForTest(0);
+        view.SaveSnapshotForTest("基准版式");
+        Require(view.SnapshotCountForTest == 1 && view.SnapshotNameForTest(0) == "基准版式",
+            "快照应落本地存储并可读回");
+        view.CommitPanelRectForTest(0, new Rect(0.30, 0.30, 0.20, 0.20));
+        view.RestoreSnapshotForTest(0);
+        Require(Near(view.PanelRectForTest(0), baseRect0),
+            $"恢复快照应还原捕获态几何（实际 {view.PanelRectForTest(0)}）");
+        Undo(view);
+        Require(Near(view.PanelRectForTest(0).X, 0.30), "快照恢复本身应可撤销");
+        Undo(view);   // 撤销手动改动
+        Require(Near(view.PanelRectForTest(0), baseRect0), "两级撤销应回到基线");
+
+        // 对比幽灵：快照的 4 格 + 2 气泡虚线轮廓叠在当前画布上
+        view.ToggleCompareForTest(0);
+        Require(view.GhostCountForTest == 6,
+            $"对比快照应叠加 4 格 + 2 气泡的幽灵轮廓（实际 {view.GhostCountForTest}）");
+        view.ToggleCompareForTest(0);
+        Require(view.GhostCountForTest == 0, "取消对比应清空幽灵层");
+
+        // 第二份快照追加、删除只移除目标
+        view.SaveSnapshotForTest("第二版");
+        Require(view.SnapshotCountForTest == 2, "第二份快照应追加存储");
+        view.DeleteSnapshotForTest(1);
+        Require(view.SnapshotCountForTest == 1 && view.SnapshotNameForTest(0) == "基准版式",
+            "删除快照应只移除目标条目");
+
+        // 模板：内置预设按 reading_order 落位（preset-two-column = 索引 4），
+        // 气泡随宿主格做同仿射映射，多余格不动；套用可撤销。
+        var panel0Before = view.PanelRectForTest(0);
+        var panel2Before = view.PanelRectForTest(2);
+        var bubble0Before = view.BubbleGeometryForTest(0)!.Value;
+        view.ApplyTemplateForTest(4);
+        Require(Near(view.PanelRectForTest(0), new Rect(0.06, 0.06, 0.42, 0.88)) &&
+            Near(view.PanelRectForTest(1), new Rect(0.52, 0.06, 0.42, 0.88)),
+            $"左右对开应把前两格落入预设格位（实际 {view.PanelRectForTest(0)} / {view.PanelRectForTest(1)}）");
+        Require(Near(view.PanelRectForTest(2), panel2Before), "超出模板格数的格不应被改动");
+        var mapped = view.BubbleGeometryForTest(0)!.Value.Rect;
+        var expectX = 0.06 + (bubble0Before.Rect.X - panel0Before.X) / panel0Before.Width * 0.42;
+        var expectY = 0.06 + (bubble0Before.Rect.Y - panel0Before.Y) / panel0Before.Height * 0.88;
+        Require(Near(mapped.X, expectX) && Near(mapped.Y, expectY),
+            $"宿主格内的气泡应随模板做同仿射映射（实际 {mapped}，期望 x≈{expectX:F4} y≈{expectY:F4}）");
+        Undo(view);
+        Require(Near(view.PanelRectForTest(0), panel0Before), "模板套用应可整体撤销");
+
+        // 自定义模板：本页矩形格按 reading_order 收成 cells，打乱后可套回
+        view.SaveTemplateForTest("我的版式");
+        Require(view.TemplateCountForTest == 1, "自定义模板应落本地存储");
+        view.CommitPanelRectForTest(0, new Rect(0.40, 0.40, 0.20, 0.20));
+        view.ApplyTemplateForTest(6);   // 内置 6 + 自定义 1 → 索引 6
+        Require(Near(view.PanelRectForTest(0), panel0Before),
+            $"自定义模板应把格子套回保存时布局（实际 {view.PanelRectForTest(0)}）");
+        Undo(view);   // 模板套用
+        Undo(view);   // 打乱
+
+        // 回放：帧 0 是页面初始版式（夹具基线），末帧是实时态；播放期只读。
+        view.CommitPanelRectForTest(1, new Rect(0.40, 0.40, 0.20, 0.20));
+        var frames = view.TimelineCountForTest;
+        Require(frames >= 2, $"回放至少需要初始帧+命令帧（实际 {frames}）");
+        var liveRect = view.PanelRectForTest(1);
+        view.ToggleReplayForTest();
+        Require(view.ReplayOpenForTest, "应进入回放模式");
+        Require(view.ReplayIndexForTest == 0, "进入回放应落在首帧");
+        Require(Near(view.PanelRectForTest(0), new Rect(0.02, 0.05, 0.20, 0.20)),
+            $"首帧应是页面初始版式（实际 {view.PanelRectForTest(0)}）");
+        view.ReplaySeekForTest(frames - 1);
+        Require(view.ReplayIndexForTest == frames - 1, "步进应落在末帧");
+        Require(view.ReplayLabelForTest == "输入几何", $"末帧标签应来自命令（实际 {view.ReplayLabelForTest}）");
+        Require(Near(view.PanelRectForTest(1), liveRect), "末帧应等于开回放前的实时态");
+        Require(view.TimelineCountForTest == frames, "回放写回节点不得新增时间线帧");
+
+        // 只读：回放中提交/撤销/键盘全拦
+        view.CommitPanelRectForTest(0, new Rect(0.50, 0.50, 0.20, 0.20));
+        Require(view.PanelRectForTest(0).X < 0.50, "回放中几何提交应被拦截");
+        Undo(view);
+        Require(Near(view.PanelRectForTest(1), liveRect), "回放中撤销应被拦截");
+
+        view.CloseReplayForTest();
+        Require(!view.ReplayOpenForTest, "退出应离开回放");
+        Require(Near(view.PanelRectForTest(1), liveRect), "退出回放应恢复实时态而非停在帧上");
+        Undo(view);   // 退出后撤销栈照常：回退那条探测提交
+        Require(Near(view.PanelRectForTest(1), new Rect(0.32, 0.05, 0.20, 0.25)),
+            $"退出后撤销应回退实时命令（实际 {view.PanelRectForTest(1)}）");
     }
 
     // ── helpers（NativeStoryboardEditChecks 同款最小集）──

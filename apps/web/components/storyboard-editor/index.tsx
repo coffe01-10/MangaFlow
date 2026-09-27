@@ -59,10 +59,25 @@ import {
   type ZOrderOp,
 } from "./geometry";
 import { LayoutRebuildDialog } from "./layout-rebuild-dialog";
-import { PageCanvas, type CanvasBubble, type CanvasSelection } from "./page-canvas";
+import { LibraryBar } from "./library-bar";
+import { PageCanvas, syntheticBubbleShape, type CanvasBubble, type CanvasSelection } from "./page-canvas";
 import { PanelInspector, type PanelDraft } from "./panel-inspector";
+import { ReplayBar } from "./replay-bar";
 import type { SfxNodeData } from "./sfx-node";
 import { storyboardCopy } from "./storyboard-copy";
+import {
+  BUILT_IN_TEMPLATES,
+  captureCanvasState,
+  parseSnapshots,
+  parseUserTemplates,
+  sameCanvasState,
+  snapshotsKey,
+  stateChanges,
+  TEMPLATES_KEY,
+  templateChanges,
+  type LayoutTemplate,
+  type ReplayEntry,
+} from "./storyboard-history";
 import { StoryboardToolbar, type ToolbarToggleState } from "./storyboard-toolbar";
 
 export function StoryboardEditor({
@@ -175,25 +190,28 @@ export function StoryboardEditor({
   const panelOfDialogue = (dialogueId: string) =>
     panels.find((panel) => panel.dialogues.some((dialogue) => dialogue.id === dialogueId)) ?? null;
 
-  const bubbles: CanvasBubble[] = [];
-  for (const panel of panels) {
-    panel.dialogues.forEach((dialogue, index) => {
-      const draft = bubbleDrafts[dialogue.id];
-      const stored = bubbleGeometry(dialogue);
-      const shape = draft !== undefined ? draft : stored.shape;
-      const panelBounds = panelRects[panel.id] ?? panelRect(panel);
-      const rect = shape?.rect ?? legacyBubbleRect(panel, dialogue, index);
-      bubbles.push({
-        dialogue,
-        panelId: panel.id,
-        panelRect: panelBounds,
-        rect,
-        shape,
-        legacy: draft === undefined && stored.legacy,
-        shapeType: shape?.type === "ellipse" ? "ellipse" : "rect",
+  const bubbles: CanvasBubble[] = useMemo(() => {
+    const list: CanvasBubble[] = [];
+    for (const panel of panels) {
+      panel.dialogues.forEach((dialogue, index) => {
+        const draft = bubbleDrafts[dialogue.id];
+        const stored = bubbleGeometry(dialogue);
+        const shape = draft !== undefined ? draft : stored.shape;
+        const panelBounds = panelRects[panel.id] ?? panelRect(panel);
+        const rect = shape?.rect ?? legacyBubbleRect(panel, dialogue, index);
+        list.push({
+          dialogue,
+          panelId: panel.id,
+          panelRect: panelBounds,
+          rect,
+          shape,
+          legacy: draft === undefined && stored.legacy,
+          shapeType: shape?.type === "ellipse" ? "ellipse" : "rect",
+        });
       });
-    });
-  }
+    }
+    return list;
+  }, [panels, bubbleDrafts, panelRects]);
 
   // Sound-effect nodes rendered on the canvas: stored structured entries with
   // canvas drafts applied on top; null x/y/size fall back to a cascaded
@@ -221,6 +239,82 @@ export function StoryboardEditor({
     }
     return list;
   }, [panels, panelRects, sfxDrafts]);
+
+  // --- V02-33: templates / snapshots / replay (client-local) ----------------
+  //
+  // canvasState 是画布"所见即所得"的几何快照：面板 bounds+meta、气泡有效形
+  // 状、拟声词有效几何,全部 round4。快照对比、模板套用与回放帧共用这一个
+  // 投影——diff 走 stateChanges,应用走 handleCommand,撤销天然覆盖三者。
+  const resolvedPanelMeta = useMemo(() => Object.fromEntries(
+    panels.map((panel) => [panel.id, {
+      rotation: panelMetaDrafts[panel.id]?.rotation ?? panelGeometry(panel)?.rotation ?? 0,
+      z_order: panelMetaDrafts[panel.id]?.z_order ?? panelZOrder(panel),
+    }]),
+  ), [panels, panelMetaDrafts]);
+
+  const canvasState = useMemo(() => captureCanvasState({
+    panelIds: panels.map((panel) => panel.id),
+    rects: panelRects,
+    meta: resolvedPanelMeta,
+    bubbles: bubbles.map((bubble) => ({
+      id: bubble.dialogue.id,
+      shape: bubble.shape ?? syntheticBubbleShape(bubble),
+    })),
+    sfx: sfxNodes.map((item) => ({
+      panelId: item.panelId,
+      index: item.index,
+      value: { x: item.x, y: item.y, rotation: item.rotation, size: item.size },
+    })),
+  }), [panels, panelRects, resolvedPanelMeta, bubbles, sfxNodes]);
+
+  const templatesRaw = useLocalStorageValue(TEMPLATES_KEY, "");
+  const userTemplates = useMemo(() => parseUserTemplates(templatesRaw), [templatesRaw]);
+  const templates = useMemo(() => [...BUILT_IN_TEMPLATES, ...userTemplates], [userTemplates]);
+
+  const snapshotsRaw = useLocalStorageValue(snapshotsKey(currentPage?.id ?? ""), "");
+  const snapshots = useMemo(() => parseSnapshots(snapshotsRaw), [snapshotsRaw]);
+  const [compareId, setCompareId] = useState<string | null>(null);
+
+  // 回放时间线：每个已应用命令后的完整 canvasState。帧标签由命令入口在
+  // applyChanges 之前写入 pendingLabel;去重靠 sameCanvasState,无实际几何
+  // 变化的命令(如同几何粘贴)不产生帧,其标签也随之丢弃。
+  const [timeline, setTimeline] = useState<ReplayEntry[]>([]);
+  const timelinePageRef = useRef<string | null>(null);
+  const pendingLabelRef = useRef<string | null>(null);
+  const [replay, setReplay] = useState<{ open: boolean; index: number; playing: boolean; speed: number }>({
+    open: false,
+    index: 0,
+    playing: false,
+    speed: 1,
+  });
+  const hasServerPage = Boolean(serverPage);
+  useEffect(() => {
+    if (!hasServerPage || !currentPage) return;
+    const pageNow = currentPage.id;
+    const label = pendingLabelRef.current;
+    pendingLabelRef.current = null;
+    setTimeline((prev) => {
+      if (timelinePageRef.current !== pageNow) {
+        timelinePageRef.current = pageNow;
+        return [{ label: "初始状态", at: Date.now(), state: canvasState }];
+      }
+      const last = prev[prev.length - 1];
+      if (last && sameCanvasState(last.state, canvasState)) return prev;
+      return [...prev, { label: label ?? "外部更新", at: Date.now(), state: canvasState }];
+    });
+  }, [canvasState, hasServerPage, currentPage]);
+
+  // 播放驱动:每帧驻留 620ms(含 170ms 命令过渡),到末尾自动停。
+  useEffect(() => {
+    if (!replay.open || !replay.playing) return;
+    const timer = window.setTimeout(() => {
+      setReplay((value) => {
+        if (value.index >= timeline.length - 1) return { ...value, playing: false };
+        return { ...value, index: value.index + 1 };
+      });
+    }, 620 / replay.speed);
+    return () => window.clearTimeout(timer);
+  }, [replay.open, replay.playing, replay.index, replay.speed, timeline.length]);
 
   const selectedPanelIds = selection?.kind === "panels" ? selection.ids : [];
   const movableSelectedIds = selectedPanelIds.filter((id) => {
@@ -351,20 +445,28 @@ export function StoryboardEditor({
   };
 
   const handleCommand = (label: string, changes: GeometryCommandChange[]) => {
+    // 回放是只读模式:命令通道整体关闭(interactive=false 已封画布,这里兜
+    // 住检查器/工具栏等程序化入口)。
+    if (replay.open) return;
+    pendingLabelRef.current = label;
     applyChanges(changes, "after");
     setCommandStack((state) => pushCommand(state, { label, changes }));
   };
 
   const handleUndo = () => {
+    if (replay.open) return;
     const { state, command } = undoCommand(commandStack);
     if (!command) return;
+    pendingLabelRef.current = `撤销：${command.label}`;
     setCommandStack(state);
     applyChanges(command.changes, "before");
   };
 
   const handleRedo = () => {
+    if (replay.open) return;
     const { state, command } = redoCommand(commandStack);
     if (!command) return;
+    pendingLabelRef.current = `重做：${command.label}`;
     setCommandStack(state);
     applyChanges(command.changes, "after");
   };
@@ -422,6 +524,152 @@ export function StoryboardEditor({
     if (!bubble) return;
     const before = bubble.shape ?? { type: bubble.shapeType, rect: bubble.rect, rotation: 0 } as BubbleGeometryShape;
     handleCommand("输入几何", [{ kind: "bubble", id: dialogueId, before, after: { ...before, rotation } }]);
+  };
+
+  // --- library bar handlers: templates, snapshots, replay ------------------
+
+  const applyTemplate = (template: LayoutTemplate) => {
+    if (replay.open) return;
+    // 按阅读序把可动格配到模板格:气泡与拟声词随宿主格做同一仿射映射。
+    const orderedIds = panels
+      .filter((panel) => !isPolygonPanel(panel) && panelRects[panel.id])
+      .sort((a, b) => a.reading_order - b.reading_order)
+      .map((panel) => panel.id);
+    if (!orderedIds.length) {
+      setNotice(storyboardCopy.templateNeedsPanels);
+      return;
+    }
+    const bubblesByPanel: Record<string, { id: string; shape: BubbleGeometryShape }[]> = {};
+    for (const bubble of bubbles) {
+      bubblesByPanel[bubble.panelId] = [
+        ...bubblesByPanel[bubble.panelId] ?? [],
+        { id: bubble.dialogue.id, shape: bubble.shape ?? syntheticBubbleShape(bubble) },
+      ];
+    }
+    const sfxByPanel: Record<string, Record<number, SoundEffectGeometry>> = {};
+    for (const item of sfxNodes) {
+      sfxByPanel[item.panelId] = {
+        ...sfxByPanel[item.panelId],
+        [item.index]: { x: item.x, y: item.y, rotation: item.rotation, size: item.size },
+      };
+    }
+    const changes = templateChanges({
+      orderedPanelIds: orderedIds,
+      rects: panelRects,
+      bubblesByPanel,
+      sfxByPanel,
+      cells: template.cells,
+    });
+    if (!changes.length) return;
+    handleCommand("套用模板", changes);
+    setNotice(storyboardCopy.templateApplied(template.name, Math.min(orderedIds.length, template.cells.length)));
+  };
+
+  const writeTemplates = (list: LayoutTemplate[]) => {
+    writeLocalStorage(TEMPLATES_KEY, JSON.stringify(list.filter((item) => !item.builtIn)));
+  };
+
+  const saveTemplate = (name: string) => {
+    const cells = panels
+      .filter((panel) => !isPolygonPanel(panel) && panelRects[panel.id])
+      .sort((a, b) => a.reading_order - b.reading_order)
+      .map((panel) => panelRects[panel.id]);
+    if (!cells.length) {
+      setNotice(storyboardCopy.templateNeedsPanels);
+      return;
+    }
+    const template: LayoutTemplate = {
+      id: newRequestId(),
+      name: name || `模板 ${userTemplates.length + 1}`,
+      builtIn: false,
+      cells,
+      createdAt: Date.now(),
+    };
+    writeTemplates([...userTemplates, template]);
+    setNotice(storyboardCopy.templateSaved(template.name));
+  };
+
+  const deleteTemplate = (id: string) => {
+    writeTemplates(userTemplates.filter((item) => item.id !== id));
+  };
+
+  const writeSnapshots = (list: ReturnType<typeof parseSnapshots>) => {
+    if (currentPage) writeLocalStorage(snapshotsKey(currentPage.id), JSON.stringify(list));
+  };
+
+  const saveSnapshot = (name: string) => {
+    const snapshot = {
+      id: newRequestId(),
+      name: name || `快照 ${snapshots.length + 1}`,
+      createdAt: Date.now(),
+      state: canvasState,
+    };
+    writeSnapshots([...snapshots, snapshot]);
+    setNotice(storyboardCopy.snapshotSaved(snapshot.name));
+  };
+
+  const restoreSnapshot = (id: string) => {
+    if (replay.open) return;
+    const snapshot = snapshots.find((item) => item.id === id);
+    if (!snapshot) return;
+    // 恢复就是一条普通几何命令:命令栈接管撤销,canvasState 录制接管回放帧。
+    const changes = stateChanges(canvasState, snapshot.state);
+    if (!changes.length) return;
+    handleCommand("恢复快照", changes);
+    setNotice(storyboardCopy.snapshotRestored(snapshot.name));
+  };
+
+  const deleteSnapshot = (id: string) => {
+    if (compareId === id) setCompareId(null);
+    writeSnapshots(snapshots.filter((item) => item.id !== id));
+    setNotice(storyboardCopy.snapshotDeleted);
+  };
+
+  const compareSnapshot = compareId ? snapshots.find((item) => item.id === compareId) ?? null : null;
+  const ghosts = compareSnapshot
+    ? [
+      ...Object.entries(compareSnapshot.state.panels).map(([id, panel]) => ({
+        key: `panel:${id}`,
+        rect: panel.rect,
+      })),
+      ...Object.entries(compareSnapshot.state.bubbles).map(([id, bubble]) => ({
+        key: `bubble:${id}`,
+        rect: bubble.rect,
+        ellipse: bubble.type === "ellipse",
+      })),
+    ]
+    : null;
+
+  // 回放展示覆盖:只换投影,不动草稿。interactive=false 封掉全部手势与键
+  // 盘命令,handleCommand 的 replay 门禁兜住程序化入口——回放是纯只读的。
+  const replayFrame = replay.open ? timeline[Math.min(replay.index, Math.max(timeline.length - 1, 0))] ?? null : null;
+  const displayPanelRects = replayFrame
+    ? Object.fromEntries(Object.entries(replayFrame.state.panels).map(([id, panel]) => [id, panel.rect]))
+    : panelRects;
+  const displayBubbles = replayFrame
+    ? bubbles.map((bubble) => {
+      const shape = replayFrame.state.bubbles[bubble.dialogue.id];
+      return shape
+        ? { ...bubble, rect: shape.rect, shape, shapeType: shape.type === "ellipse" ? "ellipse" as const : "rect" as const }
+        : bubble;
+    })
+    : bubbles;
+  const displaySfx = replayFrame
+    ? sfxNodes.map((item) => ({ ...item, ...(replayFrame.state.sfx[item.panelId]?.[item.index] ?? {}) }))
+    : sfxNodes;
+
+  const toggleReplay = () => {
+    if (replay.open) {
+      setReplay((value) => ({ ...value, open: false, playing: false }));
+      return;
+    }
+    if (timeline.length < 2) {
+      setNotice(storyboardCopy.replayEmpty);
+      return;
+    }
+    setSelection(null);
+    setCompareId(null);
+    setReplay({ open: true, index: 0, playing: true, speed: replay.speed });
   };
 
   const buildGeometryPayload = (): StoryboardGeometrySavePayload | null => {
@@ -696,6 +944,9 @@ export function StoryboardEditor({
     // stale text into the next page's editor.
     setDialogueDrafts({});
     setNewDialogue(null);
+    // 快照对比与回放都是本页视图态,换页即关闭(回放时间线按页重建)。
+    setCompareId(null);
+    setReplay((value) => ({ ...value, open: false, playing: false }));
     setPageId(nextPageId);
   };
 
@@ -781,7 +1032,6 @@ export function StoryboardEditor({
   // Attached once the canvas actually mounts: the storyboard query gates the
   // viewport, so re-running when serverPage arrives re-attaches after the
   // viewport exists (cold-cache visits included) instead of only on mount.
-  const hasServerPage = Boolean(serverPage);
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || !hasServerPage || typeof ResizeObserver === "undefined") return;
@@ -836,13 +1086,31 @@ export function StoryboardEditor({
       onUndo={handleUndo}
       onRedo={handleRedo}
       onSave={saveGeometry}
-      onRebuildLayout={() => setRebuild({ open: true, panelCount: currentPage.panel_count, layoutMode: currentPage.source_coverage.layout_mode ?? "dynamic" })}
+      onRebuildLayout={() => {
+        if (replay.open) return;
+        setRebuild({ open: true, panelCount: currentPage.panel_count, layoutMode: currentPage.source_coverage.layout_mode ?? "dynamic" });
+      }}
       alignCount={movableSelectedIds.length}
       onAlign={runAlign}
       onDistribute={runDistribute}
       onSameSize={runSameSize}
       gridStep={gridStep}
       onGridStep={setGridStep}
+      endSlot={<LibraryBar
+        templates={templates}
+        snapshots={snapshots}
+        compareId={compareId}
+        replayOpen={replay.open}
+        disabled={canvasBusy || replay.open}
+        onApplyTemplate={applyTemplate}
+        onSaveTemplate={saveTemplate}
+        onDeleteTemplate={deleteTemplate}
+        onSaveSnapshot={saveSnapshot}
+        onRestoreSnapshot={restoreSnapshot}
+        onToggleCompare={(id) => setCompareId((value) => (value === id ? null : id))}
+        onDeleteSnapshot={deleteSnapshot}
+        onToggleReplay={toggleReplay}
+      />}
     />
     {storyboard.isLoading ? <div className="storyboard-loading">{storyboardCopy.loading}</div>
       : storyboard.isError ? <div className="storyboard-loading" role="alert"><span>{storyboardCopy.loadError}</span><button type="button" onClick={() => storyboard.refetch()}>{storyboardCopy.retry}</button></div>
@@ -851,9 +1119,9 @@ export function StoryboardEditor({
           page={serverPage ?? currentPage}
           canvas={canvas}
           panels={panels}
-          panelRects={panelRects}
-          bubbles={bubbles}
-          sfx={sfxNodes}
+          panelRects={displayPanelRects}
+          bubbles={displayBubbles}
+          sfx={displaySfx}
           zoom={zoom}
           viewportRef={viewportRef}
           snapEnabled={toggles.snap}
@@ -862,7 +1130,24 @@ export function StoryboardEditor({
           showReadingOrder={toggles.readingOrder}
           showBleed={toggles.bleed}
           showSafe={toggles.safe}
-          interactive={!canvasBusy}
+          interactive={!canvasBusy && !replay.open}
+          ghosts={ghosts}
+          overlay={replay.open ? <ReplayBar
+            index={Math.min(replay.index, Math.max(timeline.length - 1, 0))}
+            count={timeline.length}
+            label={replayFrame?.label ?? ""}
+            playing={replay.playing}
+            speed={replay.speed}
+            onPlayPause={() => setReplay((value) => ({ ...value, playing: !value.playing }))}
+            onSeek={(index) => setReplay((value) => ({ ...value, index, playing: false }))}
+            onStep={(delta) => setReplay((value) => ({
+              ...value,
+              index: Math.min(Math.max(value.index + delta, 0), timeline.length - 1),
+              playing: false,
+            }))}
+            onSpeed={(speed) => setReplay((value) => ({ ...value, speed }))}
+            onExit={() => setReplay((value) => ({ ...value, open: false, playing: false }))}
+          /> : null}
           selection={selection}
           onCommand={handleCommand}
           onSelectPanels={selectPanels}

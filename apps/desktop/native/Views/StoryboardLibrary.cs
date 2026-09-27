@@ -1,0 +1,704 @@
+using System.IO;
+using System.Text.Json;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Shapes;
+using System.Windows.Threading;
+using MangaFlow.Native.Controls;
+using MangaFlow.Native.Services;
+
+namespace MangaFlow.Native.Views;
+
+/// <summary>
+/// Canvas library features (V02-33): layout templates, named version
+/// snapshots with ghost compare, and session replay — the native counterpart
+/// of web storyboard-history.ts. Same model: a CanvasState captures the
+/// resolved geometry of every node (node values ARE the effective state),
+/// template/snapshot application lands as ordinary undoable commands, and
+/// replay frames are recorded along the command history, played back through
+/// the same 170ms command transitions.
+/// </summary>
+public sealed partial class StoryboardView
+{
+    // 存储键与 web 同名（客户端本地存储：web=localStorage，原生=KeyValueStore）
+    private const string TemplatesKey = "mangaflow.storyboard-templates";
+    private static string SnapshotsKey(string pageId) => $"mangaflow.storyboard-snapshots.{pageId}";
+
+    // ---- 状态模型（对齐 web CanvasState：round4 归一化的有效几何）------------
+    private sealed record PanelState(Rect Rect, int ZOrder);
+    private sealed record CanvasState(
+        Dictionary<string, PanelState> Panels,
+        Dictionary<string, BubbleGeometry> Bubbles,
+        Dictionary<string, Dictionary<int, SfxGeometry>> Sfx);
+    private sealed record ReplayEntry(string Label, CanvasState State);
+    private sealed record LayoutTemplate(string Id, string Name, bool BuiltIn, List<Rect> Cells, long CreatedAt);
+    private sealed record StoryboardSnapshot(string Id, string Name, long CreatedAt, CanvasState State);
+
+    // ---- 序列化 DTO（Rect/Point 不直接进 JSON，用紧凑 DTO）-------------------
+    private sealed record RectDto(double X, double Y, double W, double H);
+    private sealed record PointDto(double X, double Y);
+    private sealed record TemplateDto(string Id, string Name, List<RectDto> Cells, long CreatedAt);
+    private sealed record PanelStateDto(RectDto Rect, int ZOrder);
+    private sealed record BubbleStateDto(RectDto Rect, double Rotation, PointDto? Anchor, PointDto? TailTarget, bool Moved);
+    private sealed record SfxStateDto(double X, double Y, double Rotation, double Size, bool Moved);
+    private sealed record CanvasStateDto(
+        Dictionary<string, PanelStateDto> Panels,
+        Dictionary<string, BubbleStateDto> Bubbles,
+        Dictionary<string, Dictionary<int, SfxStateDto>> Sfx);
+    private sealed record SnapshotDto(string Id, string Name, long CreatedAt, CanvasStateDto State);
+
+    // ---- 回放时间线：每个已应用命令后的完整状态 ------------------------------
+    // pendingCommandLabel 由 CommandStack.OnPush 供标签（Push 先于应用），
+    // UpdatePageSize 收尾时 RecordFrame 消费并录制；无几何变化的调用被
+    // SameCanvasState 去重。切页/清栈时 timelinePageId 变化触发重基线。
+    private readonly List<ReplayEntry> timeline = [];
+    private string? timelinePageId, pendingCommandLabel;
+    private bool replayOpen, replayPlaying;
+    private int replayIndex;
+    private double replaySpeed = 1;
+    private CanvasState? replayReturnState;
+    private DispatcherTimer? replayTimer;
+    private Border replayBarElement = new() { Visibility = Visibility.Collapsed };
+    private Slider replaySlider = new();
+    private TextBlock replayPosition = new();
+    private TextBlock replayLabel = new();
+    private Button replayPlayButton = new();
+    private ComboBox replaySpeedBox = new();
+
+    // ---- 快照对比幽灵 --------------------------------------------------------
+    private string? compareSnapshotId;
+    private CanvasState? compareState;
+    private readonly List<FrameworkElement> ghostElements = [];
+
+    private List<StoryboardSnapshot> snapshots = [];
+
+    // ============================ 状态捕获与 diff ==============================
+
+    private CanvasState CaptureCanvasState() => new(
+        panels.ToDictionary(p => p.Id, p => new PanelState(p.Rect, p.ZOrder)),
+        bubbles.ToDictionary(b => b.Id, b => b.Snapshot()),
+        sfxNodes.GroupBy(n => n.PanelId)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(n => n.Index, n => n.Snapshot())));
+
+    private static bool SameDict<K, V>(Dictionary<K, V> a, Dictionary<K, V> b) where K : notnull =>
+        a.Count == b.Count && a.All(kv => b.TryGetValue(kv.Key, out var other) && EqualityComparer<V>.Default.Equals(kv.Value, other));
+
+    private static bool SameCanvasState(CanvasState a, CanvasState b) =>
+        SameDict(a.Panels, b.Panels) && SameDict(a.Bubbles, b.Bubbles)
+        && SameDict(a.Sfx, b.Sfx, (x, y) => SameDict(x, y));
+
+    private static bool SameDict<K, V>(Dictionary<K, V> a, Dictionary<K, V> b, Func<V, V, bool> equal) where K : notnull =>
+        a.Count == b.Count && a.All(kv => b.TryGetValue(kv.Key, out var other) && equal(kv.Value, other));
+
+    /// <summary>Diff two states into one undoable command's change list —
+    /// snapshot restore and (via RoundFrame) replay share this path. Nodes
+    /// absent on either side keep their current value.</summary>
+    private static List<GeometryChange> StateChanges(CanvasState before, CanvasState after)
+    {
+        var changes = new List<GeometryChange>();
+        foreach (var (id, next) in after.Panels)
+        {
+            if (!before.Panels.TryGetValue(id, out var prev)) continue;
+            if (prev.Rect != next.Rect) changes.Add(new PanelChange(id, prev.Rect, next.Rect));
+            if (prev.ZOrder != next.ZOrder) changes.Add(new PanelZChange(id, prev.ZOrder, next.ZOrder));
+        }
+        foreach (var (id, next) in after.Bubbles)
+        {
+            if (before.Bubbles.TryGetValue(id, out var prev) && prev != next)
+                changes.Add(new BubbleChange(id, prev, next));
+        }
+        foreach (var (panelId, byIndex) in after.Sfx)
+        {
+            foreach (var (index, next) in byIndex)
+            {
+                if (before.Sfx.TryGetValue(panelId, out var prevMap)
+                    && prevMap.TryGetValue(index, out var prev) && prev != next)
+                    changes.Add(new SfxChange(panelId, index, prev, next));
+            }
+        }
+        return changes;
+    }
+
+    /// <summary>UpdatePageSize 收尾挂点：所有几何落地（命令/手势提交/撤销/
+    /// 重载）都经过这里。回放期间不录制——回放写回节点本身不能再产帧。</summary>
+    private void RecordFrame()
+    {
+        if (replayOpen || currentPage == null) return;
+        var label = pendingCommandLabel;
+        pendingCommandLabel = null;
+        var state = CaptureCanvasState();
+        if (timelinePageId != currentPage.Id)
+        {
+            timelinePageId = currentPage.Id;
+            timeline.Clear();
+            timeline.Add(new ReplayEntry("初始状态", state));
+            return;
+        }
+        if (timeline.Count == 0 || !SameCanvasState(timeline[^1].State, state))
+            timeline.Add(new ReplayEntry(label ?? "外部更新", state));
+    }
+
+    private void ResetTimeline()
+    {
+        timeline.Clear();
+        timelinePageId = null;
+        pendingCommandLabel = null;
+    }
+
+    // ============================ 布局模板 ===================================
+
+    private static Rect R(double x, double y, double w, double h) => new(x, y, w, h);
+
+    // 内置预设与 web BUILT_IN_TEMPLATES 一一对应（归一化坐标）。
+    private static readonly LayoutTemplate[] BuiltInTemplates =
+    [
+        new("preset-yon-koma", "标准四格", true,
+            [R(0.06, 0.04, 0.42, 0.44), R(0.52, 0.04, 0.42, 0.44), R(0.06, 0.52, 0.42, 0.44), R(0.52, 0.52, 0.42, 0.44)], 0),
+        new("preset-three-row", "三行竖排", true,
+            [R(0.08, 0.05, 0.84, 0.27), R(0.08, 0.365, 0.84, 0.27), R(0.08, 0.68, 0.84, 0.27)], 0),
+        new("preset-big-two-small", "一大两小", true,
+            [R(0.06, 0.04, 0.88, 0.52), R(0.06, 0.6, 0.43, 0.36), R(0.51, 0.6, 0.43, 0.36)], 0),
+        new("preset-hero-side", "主格加副格", true,
+            [R(0.06, 0.04, 0.6, 0.92), R(0.7, 0.04, 0.24, 0.44), R(0.7, 0.52, 0.24, 0.44)], 0),
+        new("preset-two-column", "左右对开", true,
+            [R(0.06, 0.06, 0.42, 0.88), R(0.52, 0.06, 0.42, 0.88)], 0),
+        new("preset-six-grid", "六格网格", true,
+            [R(0.06, 0.04, 0.42, 0.29), R(0.52, 0.04, 0.42, 0.29), R(0.06, 0.355, 0.42, 0.29),
+             R(0.52, 0.355, 0.42, 0.29), R(0.06, 0.67, 0.42, 0.29), R(0.52, 0.67, 0.42, 0.29)], 0),
+    ];
+
+    private static readonly Rect FullPage = new(0, 0, 1, 1);
+
+    private static Rect MapRectThrough(Rect rect, Rect from, Rect to) => new(
+        to.X + (rect.X - from.X) * (to.Width / from.Width),
+        to.Y + (rect.Y - from.Y) * (to.Height / from.Height),
+        rect.Width * to.Width / from.Width,
+        rect.Height * to.Height / from.Height);
+
+    private static Point MapPointThrough(Point point, Rect from, Rect to) => new(
+        Math.Clamp(to.X + (point.X - from.X) * (to.Width / from.Width), 0, 1),
+        Math.Clamp(to.Y + (point.Y - from.Y) * (to.Height / from.Height), 0, 1));
+
+    /// <summary>Reading-order pairing: panel[i] → cells[i]; bubbles and sound
+    /// effects follow their host panel through the same affine map (web
+    /// templateChanges 移植）。Extra panels/cells stay untouched.</summary>
+    private static List<GeometryChange> TemplateChanges(
+        List<PanelNode> ordered, List<BubbleNode> bubbleNodes, List<SfxNode> sfx, IReadOnlyList<Rect> cells)
+    {
+        var changes = new List<GeometryChange>();
+        for (var i = 0; i < Math.Min(ordered.Count, cells.Count); i++)
+        {
+            var panel = ordered[i];
+            var from = panel.Rect;
+            if (from.Width <= 0 || from.Height <= 0) continue;
+            var to = ClampInto(ClampRect(cells[i], 0.02), FullPage);
+            if (to != from) changes.Add(new PanelChange(panel.Id, from, to));
+            foreach (var bubble in bubbleNodes.Where(b => b.PanelId == panel.Id))
+            {
+                var before = bubble.Snapshot();
+                var after = before with
+                {
+                    Rect = ClampInto(ClampRect(MapRectThrough(before.Rect, from, to), MinBubble), FullPage),
+                    Anchor = before.Anchor is { } anchor ? MapPointThrough(anchor, from, to) : before.Anchor,
+                    TailTarget = before.TailTarget is { } tail ? MapPointThrough(tail, from, to) : before.TailTarget,
+                    Moved = true,
+                };
+                if (after != before) changes.Add(new BubbleChange(bubble.Id, before, after));
+            }
+            var scale = (to.Width / from.Width + to.Height / from.Height) / 2;
+            foreach (var node in sfx.Where(n => n.PanelId == panel.Id))
+            {
+                var before = node.Snapshot();
+                var mapped = MapPointThrough(new Point(before.X, before.Y), from, to);
+                var after = before with
+                {
+                    X = mapped.X,
+                    Y = mapped.Y,
+                    Size = Math.Clamp(before.Size * scale, MinSfx, 1),
+                    Moved = true,
+                };
+                if (after != before) changes.Add(new SfxChange(node.PanelId, node.Index, before, after));
+            }
+        }
+        return changes;
+    }
+
+    private void RunTemplate(LayoutTemplate template)
+    {
+        if (replayOpen) return;
+        var ordered = panels.Where(p => !p.IsPolygon).OrderBy(p => p.ReadingOrder).ToList();
+        if (ordered.Count == 0) { Notice("本页没有可套用模板的矩形格"); return; }
+        var changes = TemplateChanges(ordered, bubbles, sfxNodes, template.Cells);
+        if (changes.Count == 0) return;
+        history.Push(new GeometryCommand("套用模板", changes));
+        ApplyChanges(changes, before: false);
+        MarkDirty();
+        RenderInspector();
+        Notice($"已套用模板「{template.Name}」（{Math.Min(ordered.Count, template.Cells.Count)} 格）");
+    }
+
+    private void SaveTemplate(string name)
+    {
+        var cells = panels.Where(p => !p.IsPolygon).OrderBy(p => p.ReadingOrder).Select(p => p.Rect).ToList();
+        if (cells.Count == 0) { Notice("本页没有可保存为模板的矩形格"); return; }
+        var list = LoadUserTemplates();
+        var template = new LayoutTemplate(
+            Guid.NewGuid().ToString("N"),
+            string.IsNullOrWhiteSpace(name) ? $"模板 {list.Count + 1}" : name,
+            false, cells, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        list.Add(template);
+        SaveUserTemplates(list);
+        Notice($"已保存模板「{template.Name}」");
+    }
+
+    private void DeleteTemplate(string id)
+    {
+        SaveUserTemplates(LoadUserTemplates().Where(t => t.Id != id).ToList());
+    }
+
+    // ============================ 版本快照 ===================================
+
+    private void SaveSnapshot(string name)
+    {
+        if (currentPage == null) return;
+        var list = LoadSnapshots();   // 现读再追加：字段缓存可能落后于菜单外的保存
+        var snapshot = new StoryboardSnapshot(
+            Guid.NewGuid().ToString("N"),
+            string.IsNullOrWhiteSpace(name) ? $"快照 {list.Count + 1}" : name,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            CaptureCanvasState());
+        list.Add(snapshot);
+        WriteSnapshots(list);
+        Notice($"已保存快照「{snapshot.Name}」");
+    }
+
+    private void RunSnapshotRestore(StoryboardSnapshot snapshot)
+    {
+        if (replayOpen) return;
+        // 恢复即普通命令：撤销栈接管回滚，UpdatePageSize 接管动画与回放帧。
+        var changes = StateChanges(CaptureCanvasState(), snapshot.State);
+        if (changes.Count == 0) return;
+        history.Push(new GeometryCommand("恢复快照", changes));
+        ApplyChanges(changes, before: false);
+        MarkDirty();
+        RenderInspector();
+        Notice($"已恢复快照「{snapshot.Name}」，可撤销");
+    }
+
+    private void DeleteSnapshot(string id)
+    {
+        if (compareSnapshotId == id) { compareSnapshotId = null; compareState = null; RenderGhosts(); }
+        WriteSnapshots(LoadSnapshots().Where(s => s.Id != id).ToList());
+        Notice("已删除快照");
+    }
+
+    private void ToggleCompareSnapshot(string id)
+    {
+        compareSnapshotId = compareSnapshotId == id ? null : id;
+        compareState = compareSnapshotId == null
+            ? null
+            : snapshots.FirstOrDefault(s => s.Id == compareSnapshotId)?.State;
+        RenderGhosts();
+    }
+
+    /// <summary>幽灵轮廓：快照态面板/气泡以紫色虚线叠在当前画布上（对齐 web
+    /// .canvas-ghost）。随 UpdatePageSize 重定位，随 RenderCanvas 重建挂载。</summary>
+    private void RenderGhosts()
+    {
+        foreach (var element in ghostElements) page.Children.Remove(element);
+        ghostElements.Clear();
+        if (compareState == null || page.Width <= 0) return;
+        foreach (var (id, panel) in compareState.Panels) AddGhost(panel.Rect, $"panel:{id}");
+        foreach (var (id, bubble) in compareState.Bubbles) AddGhost(bubble.Rect, $"bubble:{id}", ellipse: true);
+
+        void AddGhost(Rect rect, string key, bool ellipse = false)
+        {
+            Shape shape = ellipse ? new Ellipse() : new Rectangle();
+            shape.Stroke = new SolidColorBrush(Color.FromRgb(0x7a, 0x5f, 0xb8));
+            shape.StrokeThickness = 1.5;
+            shape.StrokeDashArray = new DoubleCollection([4, 3]);
+            shape.Fill = new SolidColorBrush(Color.FromArgb(18, 0x7a, 0x5f, 0xb8));
+            shape.IsHitTestVisible = false;
+            shape.Tag = $"ghost:{key}";
+            shape.Width = rect.Width * page.Width;
+            shape.Height = rect.Height * page.Height;
+            Canvas.SetLeft(shape, rect.X * page.Width);
+            Canvas.SetTop(shape, rect.Y * page.Height);
+            Panel.SetZIndex(shape, 30);
+            ghostElements.Add(shape);
+            page.Children.Add(shape);
+        }
+    }
+
+    // ============================ 制作回放 ===================================
+
+    private Border BuildReplayBar()
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        Button Make(string text, RoutedEventHandler onClick)
+        {
+            var button = new Button { Content = text, Style = (Style)Application.Current.FindResource("Compact"), MinHeight = 30, Margin = new Thickness(0, 0, 6, 0) };
+            button.Click += onClick;
+            panel.Children.Add(button);
+            return button;
+        }
+        Make("⏮", (_, _) => ShowReplayFrame(replayIndex - 1));
+        replayPlayButton = Make("⏸", (_, _) => ToggleReplayPause());
+        Make("⏭", (_, _) => ShowReplayFrame(replayIndex + 1));
+        replaySlider = new Slider
+        {
+            Width = 220, Minimum = 0, Maximum = 0, VerticalAlignment = VerticalAlignment.Center,
+            IsSnapToTickEnabled = true, TickFrequency = 1, Margin = new Thickness(4, 0, 6, 0),
+        };
+        replaySlider.ValueChanged += (_, e) =>
+        {
+            if (replayOpen && (int)Math.Round(e.NewValue) != replayIndex) ShowReplayFrame((int)Math.Round(e.NewValue));
+        };
+        panel.Children.Add(replaySlider);
+        replayPosition = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center, MinWidth = 46, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
+        panel.Children.Add(replayPosition);
+        replayLabel = new TextBlock
+        {
+            FontSize = 11, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center,
+            MaxWidth = 150, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 6, 0),
+        };
+        panel.Children.Add(replayLabel);
+        replaySpeedBox = new ComboBox { Width = 66, Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+        foreach (var speed in new[] { 0.5, 1.0, 2.0, 4.0 })
+            replaySpeedBox.Items.Add(new ComboBoxItem { Tag = speed, Content = $"×{speed:g}" });
+        replaySpeedBox.SelectedIndex = 1;
+        replaySpeedBox.SelectionChanged += (_, _) =>
+        {
+            if (replaySpeedBox.SelectedItem is ComboBoxItem { Tag: double speed }) replaySpeed = speed;
+            if (replayTimer != null) replayTimer.Interval = TimeSpan.FromMilliseconds(620 / replaySpeed);
+        };
+        panel.Children.Add(replaySpeedBox);
+        Make("退出回放", (_, _) => CloseReplay());
+        return new Border
+        {
+            Child = panel,
+            Padding = new Thickness(12, 6, 12, 6),
+            Background = new SolidColorBrush(Color.FromArgb(242, 0xff, 0xfd, 0xf8)),
+            BorderBrush = AssetPageUi.Brush("Ink"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 0, 14),
+            Visibility = Visibility.Collapsed,
+        };
+    }
+
+    private void ToggleReplay()
+    {
+        if (replayOpen) { CloseReplay(); return; }
+        if (timeline.Count < 2) { Notice("还没有可回放的编辑历史"); return; }
+        if (Mouse.Captured != null) return;   // 手势进行中不开回放
+        SelectPanels([]);
+        compareSnapshotId = null;
+        compareState = null;
+        RenderGhosts();
+        replayReturnState = CaptureCanvasState();
+        replayOpen = true;
+        replayIndex = 0;
+        replayPlaying = true;
+        replayPlayButton.Content = "⏸";
+        replayBarElement.Visibility = Visibility.Visible;
+        replaySlider.Maximum = timeline.Count - 1;
+        ShowReplayFrame(0);
+        EnsureReplayTimer().Start();
+        Notice("回放本页制作过程（只读，退出后回到当前状态）");
+    }
+
+    private DispatcherTimer EnsureReplayTimer()
+    {
+        if (replayTimer == null)
+        {
+            replayTimer = new DispatcherTimer();
+            replayTimer.Tick += (_, _) =>
+            {
+                if (replayIndex >= timeline.Count - 1) PauseReplay();
+                else ShowReplayFrame(replayIndex + 1);
+            };
+        }
+        replayTimer.Interval = TimeSpan.FromMilliseconds(620 / replaySpeed);
+        return replayTimer;
+    }
+
+    private void PauseReplay()
+    {
+        replayPlaying = false;
+        replayTimer?.Stop();
+        replayPlayButton.Content = "▶";
+    }
+
+    private void ToggleReplayPause()
+    {
+        if (replayPlaying) { PauseReplay(); return; }
+        if (replayIndex >= timeline.Count - 1) ShowReplayFrame(0);
+        replayPlaying = true;
+        replayPlayButton.Content = "⏸";
+        EnsureReplayTimer().Start();
+    }
+
+    /// <summary>展示某一帧：直接写节点状态（绕过命令栈），位置/尺寸经
+    /// UpdatePageSize(animate) 滑过去——与 web 的回放帧过渡同源。</summary>
+    private void ShowReplayFrame(int index)
+    {
+        if (!replayOpen || timeline.Count == 0) return;
+        replayIndex = Math.Clamp(index, 0, timeline.Count - 1);
+        var frame = timeline[replayIndex].State;
+        ApplyCanvasState(frame);
+        UpdatePageSize(animate: true);
+        if (replaySlider.Value != replayIndex) replaySlider.Value = replayIndex;
+        replayPosition.Text = $"{replayIndex + 1}/{timeline.Count}";
+        replayLabel.Text = timeline[replayIndex].Label;
+    }
+
+    private void ApplyCanvasState(CanvasState state)
+    {
+        foreach (var panel in panels)
+            if (state.Panels.TryGetValue(panel.Id, out var panelState))
+            {
+                panel.Rect = panelState.Rect;
+                panel.ZOrder = panelState.ZOrder;
+            }
+        foreach (var bubble in bubbles)
+            if (state.Bubbles.TryGetValue(bubble.Id, out var bubbleState)) bubble.ApplySnapshot(bubbleState);
+        foreach (var node in sfxNodes)
+            if (state.Sfx.TryGetValue(node.PanelId, out var byIndex)
+                && byIndex.TryGetValue(node.Index, out var sfxState))
+                node.ApplySnapshot(sfxState);
+    }
+
+    private void CloseReplay()
+    {
+        if (!replayOpen) return;
+        replayTimer?.Stop();
+        replayTimer = null;
+        replayPlaying = false;
+        // 先恢复实时态再放行录制：回放帧写回不得成为时间线的新帧。
+        if (replayReturnState is { } back)
+        {
+            ApplyCanvasState(back);
+            UpdatePageSize(animate: true);
+        }
+        replayReturnState = null;
+        replayOpen = false;
+        replayBarElement.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>换页/重建前收尾：回放与对比都是本页视图态。</summary>
+    private void ExitLibraryModes()
+    {
+        CloseReplay();
+        compareSnapshotId = null;
+        compareState = null;
+        snapshots = [];
+        RenderGhosts();
+    }
+
+    // ============================ 菜单与存储 =================================
+
+    private void RebuildLibraryMenu(ContextMenu menu)
+    {
+        menu.Items.Clear();
+        menu.Items.Add(new MenuItem { Header = "布局模板", IsEnabled = false });
+        foreach (var template in LoadTemplates())
+        {
+            var captured = template;
+            if (template.BuiltIn)
+            {
+                var item = new MenuItem { Header = $"{template.Name}（{template.Cells.Count} 格）" };
+                item.Click += (_, _) => RunTemplate(captured);
+                menu.Items.Add(item);
+            }
+            else
+            {
+                var item = new MenuItem { Header = $"{template.Name}（{template.Cells.Count} 格）" };
+                var apply = new MenuItem { Header = "套用" };
+                var delete = new MenuItem { Header = "删除" };
+                apply.Click += (_, _) => RunTemplate(captured);
+                delete.Click += (_, _) => DeleteTemplate(captured.Id);
+                item.Items.Add(apply);
+                item.Items.Add(delete);
+                menu.Items.Add(item);
+            }
+        }
+        var saveTemplate = new MenuItem { Header = "存为模板…" };
+        saveTemplate.Click += (_, _) =>
+        {
+            var name = LibraryNameDialog.Ask("存为模板", "模板名称（可留空）");
+            if (name != null) SaveTemplate(name);
+        };
+        menu.Items.Add(saveTemplate);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(new MenuItem { Header = "版本快照", IsEnabled = false });
+        snapshots = LoadSnapshots();
+        if (snapshots.Count == 0)
+            menu.Items.Add(new MenuItem { Header = "还没有快照", IsEnabled = false });
+        foreach (var snapshot in snapshots)
+        {
+            var captured = snapshot;
+            var stamp = snapshot.CreatedAt > 0
+                ? DateTimeOffset.FromUnixTimeMilliseconds(snapshot.CreatedAt).ToLocalTime().ToString("HH:mm")
+                : "";
+            var item = new MenuItem { Header = stamp.Length > 0 ? $"{snapshot.Name}  {stamp}" : snapshot.Name };
+            var restore = new MenuItem { Header = "恢复" };
+            var compare = new MenuItem { Header = "对比", IsCheckable = true, IsChecked = compareSnapshotId == snapshot.Id };
+            var delete = new MenuItem { Header = "删除" };
+            restore.Click += (_, _) => RunSnapshotRestore(captured);
+            compare.Click += (_, _) => ToggleCompareSnapshot(captured.Id);
+            delete.Click += (_, _) => DeleteSnapshot(captured.Id);
+            item.Items.Add(restore);
+            item.Items.Add(compare);
+            item.Items.Add(delete);
+            menu.Items.Add(item);
+        }
+        var saveSnapshot = new MenuItem { Header = "存快照…" };
+        saveSnapshot.Click += (_, _) =>
+        {
+            var name = LibraryNameDialog.Ask("存快照", "快照名称（可留空）");
+            if (name != null) SaveSnapshot(name);
+        };
+        menu.Items.Add(saveSnapshot);
+    }
+
+    private List<LayoutTemplate> LoadTemplates() => [.. BuiltInTemplates, .. LoadUserTemplates()];
+
+    private List<LayoutTemplate> LoadUserTemplates()
+    {
+        try
+        {
+            var list = JsonSerializer.Deserialize<List<TemplateDto>>(KeyValueStore.Get(TemplatesKey)) ?? [];
+            return list.Select(dto => new LayoutTemplate(
+                dto.Id, dto.Name, false,
+                dto.Cells.Select(c => new Rect(c.X, c.Y, c.W, c.H)).ToList(),
+                dto.CreatedAt)).ToList();
+        }
+        catch (JsonException) { return []; }
+    }
+
+    private static void SaveUserTemplates(List<LayoutTemplate> list) =>
+        KeyValueStore.Set(TemplatesKey, JsonSerializer.Serialize(list.Select(t =>
+            new TemplateDto(t.Id, t.Name, t.Cells.Select(c => new RectDto(c.X, c.Y, c.Width, c.Height)).ToList(), t.CreatedAt))));
+
+    private List<StoryboardSnapshot> LoadSnapshots()
+    {
+        if (currentPage == null) return [];
+        try
+        {
+            var list = JsonSerializer.Deserialize<List<SnapshotDto>>(KeyValueStore.Get(SnapshotsKey(currentPage.Id))) ?? [];
+            return list.Select(dto => new StoryboardSnapshot(dto.Id, dto.Name, dto.CreatedAt, FromDto(dto.State))).ToList();
+        }
+        catch (JsonException) { return []; }
+    }
+
+    private void WriteSnapshots(List<StoryboardSnapshot> list)
+    {
+        if (currentPage == null) return;
+        KeyValueStore.Set(SnapshotsKey(currentPage.Id),
+            JsonSerializer.Serialize(list.Select(s => new SnapshotDto(s.Id, s.Name, s.CreatedAt, ToDto(s.State)))));
+        snapshots = list;
+    }
+
+    private static RectDto ToDto(Rect r) => new(r.X, r.Y, r.Width, r.Height);
+    private static PointDto? ToDto(Point? p) => p is { } v ? new PointDto(v.X, v.Y) : null;
+
+    private static CanvasStateDto ToDto(CanvasState state) => new(
+        state.Panels.ToDictionary(kv => kv.Key, kv => new PanelStateDto(ToDto(kv.Value.Rect), kv.Value.ZOrder)),
+        state.Bubbles.ToDictionary(kv => kv.Key, kv => new BubbleStateDto(
+            ToDto(kv.Value.Rect), kv.Value.Rotation, ToDto(kv.Value.Anchor), ToDto(kv.Value.TailTarget), kv.Value.Moved)),
+        state.Sfx.ToDictionary(kv => kv.Key, kv => kv.Value.ToDictionary(
+            e => e.Key, e => new SfxStateDto(e.Value.X, e.Value.Y, e.Value.Rotation, e.Value.Size, e.Value.Moved))));
+
+    private static CanvasState FromDto(CanvasStateDto dto) => new(
+        dto.Panels.ToDictionary(kv => kv.Key, kv => new PanelState(
+            new Rect(kv.Value.Rect.X, kv.Value.Rect.Y, kv.Value.Rect.W, kv.Value.Rect.H), kv.Value.ZOrder)),
+        dto.Bubbles.ToDictionary(kv => kv.Key, kv => new BubbleGeometry(
+            new Rect(kv.Value.Rect.X, kv.Value.Rect.Y, kv.Value.Rect.W, kv.Value.Rect.H),
+            kv.Value.Rotation,
+            kv.Value.Anchor is { } a ? new Point(a.X, a.Y) : null,
+            kv.Value.TailTarget is { } t ? new Point(t.X, t.Y) : null,
+            kv.Value.Moved)),
+        dto.Sfx.ToDictionary(kv => kv.Key, kv => kv.Value.ToDictionary(
+            e => e.Key, e => new SfxGeometry(e.Value.X, e.Value.Y, e.Value.Rotation, e.Value.Size, e.Value.Moved))));
+
+    // ============================ 测试缝 ======================================
+    // 与既有 *ForTest 同一约定：驱动生产方法，只把入口参数化。
+
+    internal int TimelineCountForTest => timeline.Count;
+    internal bool ReplayOpenForTest => replayOpen;
+    internal int ReplayIndexForTest => replayIndex;
+    internal string? ReplayLabelForTest => timeline.Count > 0 && replayIndex < timeline.Count ? timeline[replayIndex].Label : null;
+    internal void ToggleReplayForTest() => ToggleReplay();
+    internal void ReplaySeekForTest(int index) => ShowReplayFrame(index);
+    internal void CloseReplayForTest() => CloseReplay();
+    internal int GhostCountForTest => ghostElements.Count;
+    internal int SnapshotCountForTest => LoadSnapshots().Count;
+    internal string? SnapshotNameForTest(int index) => LoadSnapshots().ElementAtOrDefault(index)?.Name;
+    internal void SaveSnapshotForTest(string name) => SaveSnapshot(name);
+    internal void RestoreSnapshotForTest(int index)
+    {
+        if (LoadSnapshots().ElementAtOrDefault(index) is { } snapshot) RunSnapshotRestore(snapshot);
+    }
+    internal void ToggleCompareForTest(int index)
+    {
+        snapshots = LoadSnapshots();
+        if (snapshots.ElementAtOrDefault(index) is { } snapshot) ToggleCompareSnapshot(snapshot.Id);
+    }
+    internal void DeleteSnapshotForTest(int index)
+    {
+        if (LoadSnapshots().ElementAtOrDefault(index) is { } snapshot) DeleteSnapshot(snapshot.Id);
+    }
+    internal int TemplateCountForTest => LoadUserTemplates().Count;
+    internal void SaveTemplateForTest(string name) => SaveTemplate(name);
+    internal void ApplyTemplateForTest(int index)
+    {
+        if (LoadTemplates().ElementAtOrDefault(index) is { } template) RunTemplate(template);
+    }
+}
+
+/// <summary>单行名称输入对话框（模板/快照命名共用）。</summary>
+internal sealed class LibraryNameDialog : Window
+{
+    private readonly TextBox input;
+
+    private LibraryNameDialog(Window? owner, string title, string placeholder)
+    {
+        Owner = owner;
+        Title = title;
+        Width = 340;
+        SizeToContent = SizeToContent.Height;
+        WindowStartupLocation = owner == null ? WindowStartupLocation.CenterScreen : WindowStartupLocation.CenterOwner;
+        ShowInTaskbar = false;
+        Background = (Brush)Application.Current.FindResource("Paper");
+        var stack = new StackPanel { Margin = new Thickness(18) };
+        input = new TextBox { MinHeight = 30, Margin = new Thickness(0, 0, 0, 14) };
+        System.Windows.Automation.AutomationProperties.SetName(input, placeholder);
+        stack.Children.Add(input);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var cancel = new Button { Content = "取消", MinWidth = 80, Margin = new Thickness(0, 0, 8, 0) };
+        cancel.Click += (_, _) => Close();
+        var ok = new Button { Content = "确定", MinWidth = 96, Style = (Style)Application.Current.FindResource("InkButton") };
+        ok.Click += (_, _) => { DialogResult = true; };
+        row.Children.Add(cancel);
+        row.Children.Add(ok);
+        stack.Children.Add(row);
+        Content = stack;
+        input.Focus();
+        PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
+    }
+
+    /// <summary>返回 null 表示取消；空字符串合法（调用方给默认名）。</summary>
+    public static string? Ask(string title, string placeholder)
+    {
+        var owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive)
+            ?? Application.Current?.MainWindow;
+        var dialog = new LibraryNameDialog(owner, title, placeholder);
+        return dialog.ShowDialog() == true ? dialog.input.Text.Trim() : null;
+    }
+}

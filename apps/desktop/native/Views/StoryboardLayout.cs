@@ -68,7 +68,12 @@ public sealed partial class StoryboardView
         viewport.Content = new Border { Child = pageHost, Margin = new Thickness(32), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         viewport.BorderBrush = AssetPageUi.Brush("Ink"); viewport.BorderThickness = new Thickness(1); viewport.PreviewMouseWheel += OnViewportWheel;
         viewport.SizeChanged += (_, _) => { if ((fitPending || fitToViewport) && currentPage != null && viewport.ActualWidth > 100 && viewport.ActualHeight > 100) { fitPending = false; FitViewport(); } };
-        worktable.Children.Add(viewport); Grid.SetColumn(directorSplitter, 1); worktable.Children.Add(directorSplitter);
+        // V02-33 回放控制条叠在画布层底部居中（对齐 web replay-bar 的 absolute 定位）
+        replayBarElement = BuildReplayBar();
+        var canvasLayer = new Grid();
+        canvasLayer.Children.Add(viewport);
+        canvasLayer.Children.Add(replayBarElement);
+        worktable.Children.Add(canvasLayer); Grid.SetColumn(directorSplitter, 1); worktable.Children.Add(directorSplitter);
         inspector.Background = AssetPageUi.Brush("Surface"); directorScroll.Content = inspector; directorScroll.Background = AssetPageUi.Brush("Surface"); directorScroll.BorderBrush = AssetPageUi.Brush("Ink"); directorScroll.BorderThickness = new Thickness(1); Grid.SetColumn(directorScroll, 2); worktable.Children.Add(directorScroll);
         Grid.SetRow(worktable, 6); main.Children.Add(worktable);
         deskScroll.Content = main; Grid.SetColumn(deskScroll, 1); desk.Children.Add(deskScroll); Grid.SetRow(desk, 1); root.Children.Add(desk);
@@ -154,6 +159,20 @@ public sealed partial class StoryboardView
         }
         wrapped.Children.Add(alignBar);
         undoButton.Click += (_, _) => Undo(); redoButton.Click += (_, _) => Redo(); Add(undoButton); Add(redoButton);
+        // V02-33 功能库：模板/快照集中在一个菜单，回放是独立开关
+        // （对齐 web library-bar + replay 入口）；菜单每次打开重建以反映最新存储。
+        history.OnPush = command => pendingCommandLabel = command.Label;
+        var libraryMenu = new ContextMenu();
+        var libraryButton = Kit.Act("画布库 ▾", (_, _) => { }, "Compact");
+        libraryButton.Click += (_, _) =>
+        {
+            RebuildLibraryMenu(libraryMenu);
+            libraryMenu.PlacementTarget = libraryButton;
+            libraryMenu.Placement = PlacementMode.Bottom;
+            libraryMenu.IsOpen = true;
+        };
+        Add(libraryButton);
+        Add(Kit.Act("回放", (_, _) => ToggleReplay(), "Compact"));
         var menu = new ContextMenu(); var rebuild = new MenuItem { Header = "重建本页版式…" }; rebuild.Click += (_, _) => RebuildLayout(); menu.Items.Add(rebuild);
         var menuButton = Kit.Act("页菜单 ▾", (_, _) => { }, "Compact"); menuButton.ContextMenu = menu;
         menuButton.Click += (_, _) => { menu.PlacementTarget = menuButton; menu.Placement = PlacementMode.Bottom; menu.IsOpen = true; }; Add(menuButton);
