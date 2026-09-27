@@ -288,7 +288,8 @@ def test_a5_idempotent_replay(client, db_session, monkeypatch):
     request_id = _uid()
     first = _post_utterance(client, ctx, client_request_id=request_id)
     second = _post_utterance(client, ctx, client_request_id=request_id)
-    assert first.status_code == 202 and second.status_code == 202
+    # 契约 §2：首次入队 202，幂等重放返回 200。
+    assert first.status_code == 202 and second.status_code == 200
     assert first.json()["command_group_id"] == second.json()["command_group_id"]
     assert second.json()["idempotent_replay"] is True
     jobs = list(
@@ -335,6 +336,47 @@ def test_a7_model_failure_marks_parse_failed(client, db_session, monkeypatch):
         )
         is None
     )
+
+
+def test_model_clarify_option_ids_are_ownership_checked(client, db_session, monkeypatch):
+    """契约 §8：模型澄清选项里的 id 必须属于本页/本项目才下发；
+    幻觉 id 降级为纯文本提示（id=None），不原样反射给客户端。"""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    ctx = _setup(client, db_session, dialogue_count=2)
+    real_panel_id = ctx["panels"][1].id
+    foreign = _setup(client, db_session)  # 第二个项目：幻觉 id 来源
+    _install_adapter(
+        monkeypatch,
+        _output(
+            clarifications=[
+                {
+                    "kind": "target",
+                    "question": "要改哪一格？",
+                    "options": [
+                        {"kind": "panel", "id": real_panel_id, "label": "格 2"},
+                        {
+                            "kind": "panel",
+                            "id": foreign["panels"][0].id,
+                            "label": "其他项目的格",
+                        },
+                        {"kind": "panel", "id": _uid(), "label": "不存在的格"},
+                        {"kind": "scene", "id": _uid(), "label": "不存在的场景"},
+                    ],
+                }
+            ]
+        ),
+    )
+    response = _post_utterance(client, ctx, "改一下那格")
+    group = _run_group(
+        db_session, ctx["project"]["id"], response.json()["command_group_id"]
+    )
+    assert group.status == "NEEDS_CLARIFICATION"
+    options = group.first_result["clarify_options"]
+    by_label = {option["label"]: option for option in options}
+    assert by_label["格 2"]["id"] == real_panel_id
+    assert by_label["其他项目的格"]["id"] is None
+    assert by_label["不存在的格"]["id"] is None
+    assert by_label["不存在的场景"]["id"] is None
 
 
 def test_a8_regenerate_request_is_unsupported(client, db_session, monkeypatch):

@@ -1190,6 +1190,38 @@ describe("DirectorWorkspace AI 解析（DIR-01C）", () => {
     });
   });
 
+  it("AI 解析前提示文本调用费用，落地后展示本次解析用量", async () => {
+    renderDirector();
+    // DIR-01C：解析前的费用提示必须常驻可见，不靠 hover。
+    expect(screen.getByText(/产生一次文本调用费用/)).toBeInTheDocument();
+
+    utteranceApi.mockResolvedValue({
+      job_id: "job-1",
+      job_status: "QUEUED",
+      command_group_id: "nl-group-fee",
+      idempotent_replay: false,
+    });
+    groupApi.mockResolvedValue(groupFixture({
+      command_group_id: "nl-group-fee",
+      status: "PREVIEWED",
+      first_result: {
+        kind: "ready",
+        commands_ready: 1,
+        model: { provider: "vertex", catalog_model_id: "m1", model_id: "gemini-3.5-flash" },
+        duration_ms: 840,
+        model_call_attempt_id: "attempt-1",
+      },
+    }));
+
+    fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "第 1 格改成近景" } });
+    fireEvent.click(screen.getByRole("button", { name: "AI 解析" }));
+
+    const region = await screen.findByRole("region", { name: "命令预览" });
+    expect(region.textContent).toContain("文本调用 1 次");
+    expect(region.textContent).toContain("840ms");
+    expect(region.textContent).toContain("已计入用量账本");
+  });
+
   it("PARSE_FAILED 展示错误原因，不产生命令预览", async () => {
     renderDirector();
     utteranceApi.mockResolvedValue({

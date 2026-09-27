@@ -267,5 +267,5 @@ def test_webtoon_export_missing_dimensions_is_409(
     response = client.post(
         f"/api/v1/chapters/{chapter.id}/exports", json={"export_type": "WEBTOON"}
     )
-    assert response.status_code == 422
+    assert response.status_code == 409
     assert "尺寸" in response.json()["detail"]

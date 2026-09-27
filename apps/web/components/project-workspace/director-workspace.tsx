@@ -232,7 +232,7 @@ export function DirectorWorkspace({
           <Sparkles size={12} />{DIRECTOR_PARSER_LABEL}
         </span>
       </header>
-      <p className="director-note">先点作用域，再写短指令。预览确认后才会执行；导演台不会自动调用图片模型，也不会整页重绘。</p>
+      <p className="director-note">先点作用域，再写短指令。预览确认后才会执行；导演台不会自动调用图片模型，也不会整页重绘。「AI 解析」调用文本模型，每次解析产生一次文本调用费用；「规则预览」为本地规则解析，不调用模型。</p>
 
       <div className="director-scopes" aria-live="polite" aria-label="作用域芯片">
         <div className="director-scope-row">
@@ -450,6 +450,11 @@ export function DirectorWorkspace({
             })}
             <dl className="director-preview-meta">
               <div><dt>模型</dt><dd>{parseResult?.model?.model_id ? `文本模型 ${parseResult.model.model_id}` : "规则解析，非模型调用"} · 抽卡模型：{activeDrawModelName ?? "未选择"}</dd></div>
+              {parseResult?.model && (
+                <div><dt>解析用量</dt><dd>
+                  文本调用 1 次{typeof parseResult.duration_ms === "number" ? ` · ${Math.round(parseResult.duration_ms)}ms` : ""}{parseResult.model_call_attempt_id ? " · 已计入用量账本" : ""}
+                </dd></div>
+              )}
               <div><dt>费用</dt><dd>分镜字段修改 · 本次不调用图片模型 · 重新抽卡费用暂不可估算</dd></div>
               {preview.commands.length === 1 && (
                 <div><dt>风险</dt><dd>{previewPlan?.risk === "high" ? "高：整页命令，候选将过期" : previewPlan?.risk === "medium" ? "中：影响本页后续抽卡" : "低：局部字段修改"}</dd></div>

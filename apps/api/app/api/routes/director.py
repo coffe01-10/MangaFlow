@@ -1,6 +1,6 @@
 """Director command journal API (V02-40). Independent of the workflow router."""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi import status as http_status
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,7 @@ router = APIRouter()
 def create_director_utterance(
     project_id: str,
     payload: DirectorUtteranceRequest,
+    response: Response,
     db: Session = Depends(get_db),
 ) -> dict:
     """DIR-01A §2: enqueue a DIRECTOR_PARSE job for one NL utterance."""
@@ -43,6 +44,10 @@ def create_director_utterance(
     db.commit()
     job = enqueue_job(db, job)
     result["job_status"] = str(job.status)
+    # 契约 §2：幂等重放返回 200（新建入队为 202），客户端以
+    # idempotent_replay 区分。
+    if result.get("idempotent_replay"):
+        response.status_code = http_status.HTTP_200_OK
     return result
 
 
