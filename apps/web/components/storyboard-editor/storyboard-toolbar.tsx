@@ -39,6 +39,7 @@ export function StoryboardToolbar({
   onToggle,
   onUndo,
   onRedo,
+  historySlot,
   onSave,
   onRebuildLayout,
   alignCount = 0,
@@ -68,6 +69,8 @@ export function StoryboardToolbar({
   onToggle: (key: keyof ToolbarToggleState) => void;
   onUndo: () => void;
   onRedo: () => void;
+  /** 撤销历史树插槽（index 组装 HistoryTree 传入），渲染在撤销/重做组内。 */
+  historySlot?: ReactNode;
   onSave: () => void;
   onRebuildLayout: () => void;
   /** Count of movable rect panels in the current selection; >= 2 enables the
@@ -174,6 +177,7 @@ export function StoryboardToolbar({
           改写草稿与命令栈，随后被保存成功的 clearGeometryDrafts 静默清掉。 */}
       <button type="button" aria-label={storyboardCopy.undo} disabled={!canUndo || saving} onClick={onUndo}><Undo2 size={14} /></button>
       <button type="button" aria-label={storyboardCopy.redo} disabled={!canRedo || saving} onClick={onRedo}><Redo2 size={14} /></button>
+      {historySlot}
     </div>
     {overlayHint && <p className="toolbar-hint">{overlayHint}</p>}
     {!overlayHint && <p className="toolbar-hint" aria-hidden="true">{storyboardCopy.hintKeys}</p>}

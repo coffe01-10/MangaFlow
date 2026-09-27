@@ -124,6 +124,7 @@ internal static class NativeStoryboardPrecisionChecks
             await SpreadChecks(view);
             await ReplayExportChecks(view, output);
             AnnotationChecks(view, fixture);
+            BranchTreeChecks(view);
         }
         finally { view.Deactivate(); }
         Console.WriteLine("PASS: storyboard precision checks (multi-select/align/distribute/same-size/grid/gap-guides/numeric-fields/bubble/sfx/layers/copy-paste/group-scale/save-payload/conflict/refresh/library) all match the web contract");
@@ -801,6 +802,33 @@ internal static class NativeStoryboardPrecisionChecks
         view.ToggleAnnotateForTest();
         Require(!view.AnnotatingForTest, "再按批注应退出批注模式");
         _ = fixture;   // 批注不触网：夹具仅作上下文存在性占位
+    }
+
+    private static void BranchTreeChecks(StoryboardView view)
+    {
+        // 撤销分支树：撤销后再编辑向被撤销节点追加子节点（分叉），旧重做尾巴
+        // 不被截断；历史树可回跳任意节点（含基线）。
+        var baseline = view.PanelRectForTest(0);
+        view.CommitPanelRectForTest(0, new Rect(0.10, 0.10, 0.20, 0.20));   // A
+        view.SelectPanelForTest(0);
+        view.ZOrderForTest("top");                                          // B
+        var topZ = view.PanelZOrderForTest(0);
+        Undo(view);                                                         // 回到 A
+        view.CommitPanelRectForTest(0, new Rect(0.40, 0.10, 0.20, 0.20));   // C（在 A 上分叉）
+        Require(view.HistoryNodeCountForTest == 3, "A/B/C 应形成三节点历史树（含分叉）");
+        Require(Near(view.PanelRectForTest(0).X, 0.40),
+            $"分叉命令 C 应已应用（实际 {view.PanelRectForTest(0)}）");
+        // 回跳到 B（推入序号 1）：撤 C + 重做 B → x 回 0.10 且置顶生效。
+        view.JumpToHistoryForTest(1);
+        Require(Near(view.PanelRectForTest(0).X, 0.10) && view.PanelZOrderForTest(0) == topZ,
+            $"回跳分支节点应撤 C 重做 B（实际 {view.PanelRectForTest(0)} z={view.PanelZOrderForTest(0)}）");
+        // 回跳基线还原初始版式；再直达分支 C 验证任意节点可跳。
+        view.JumpToHistoryForTest(-1);
+        Require(Near(view.PanelRectForTest(0), baseline),
+            $"回跳基线应还原初始版式（实际 {view.PanelRectForTest(0)}）");
+        view.JumpToHistoryForTest(2);
+        Require(Near(view.PanelRectForTest(0).X, 0.40), "应能跨支回跳到 C");
+        view.JumpToHistoryForTest(-1);   // 收尾回基线，不留脏态给 teardown
     }
 
     // ── helpers（NativeStoryboardEditChecks 同款最小集）──
