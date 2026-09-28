@@ -49,7 +49,9 @@ def test_cli_environment_overrides_require_explicit_non_python_whitelist(tmp_pat
 
 def _symlinks_creatable() -> bool:
     """Privilege probe: creating symlinks needs developer mode/admin on Windows."""
-    probe = Path(os.environ.get("TEMP", ".")) / "mangaflow-symlink-probe"
+    # pytest-xdist workers collect this module concurrently and share TEMP;
+    # a fixed probe name races between workers (unlink of a sibling's probe).
+    probe = Path(os.environ.get("TEMP", ".")) / f"mangaflow-symlink-probe-{os.getpid()}"
     target = probe.with_suffix(".target")
     try:
         target.mkdir(exist_ok=True)
