@@ -82,8 +82,11 @@ describe("U7 lightbox（audit §2.4/§7）", () => {
     expect(screen.getByRole("dialog", { name: "候选 1" })).toBeInTheDocument();
 
     fireEvent.keyDown(document, { key: "Escape" });
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(trigger).toHaveFocus();
+    // 焦点归还在卸载后的被动 effect 清理里发生，等轮询覆盖「卸载 + 焦点归还」。
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(trigger).toHaveFocus();
+    });
   });
 
   it("Tab 焦点陷阱把键盘焦点留在 lightbox 内", () => {
