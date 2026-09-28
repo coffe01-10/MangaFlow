@@ -22,11 +22,11 @@ Use the following project-specific performance profiles when distributing work. 
 
 Assignment rules:
 
-1. Put every delegated task in a GitHub Issue with the baseline commit, worktree/branch, exact scope, forbidden changes, acceptance cases, required commands, and known unverified boundaries.
+1. Put every delegated task in a GitHub Issue. L2/L3 issues must carry the baseline commit, worktree/branch, exact scope, forbidden changes, acceptance cases, required commands, and known unverified boundaries; L1 tasks may use a single-line scope statement.
 2. Give one risky responsibility to one agent at a time. Split implementation, live-environment validation, and unrelated refactors into separate PRs. Do not use spare token budget as a reason to enlarge a PR.
 3. Gemini should receive small, testable slices. Grok may own browser/performance slices with an exclusive port and load window. GLM may own larger refactors, but each extraction or behavior boundary must remain independently reviewable.
 4. L3 work needs a lead-approved design before broad editing. Missing PostgreSQL, Redis, browser, container, or provider infrastructure must be reported as `BLOCKED` or `NOT RUN`; SQLite, fakeredis, mocks, and offline harnesses are not substitutes for live acceptance.
-5. A green test run, an agent summary, or an opened PR is not acceptance. The lead reviews the exact SHA and diff, checks the tests for realistic failure construction, and independently runs checks proportional to risk before merge unless the user explicitly accepts a reduced-scope merge.
+5. A green test run, an agent summary, or an opened PR is not acceptance. The lead reviews the exact SHA and diff and checks the tests for realistic failure construction. For L1/L2, green CI plus that review is sufficient; independent local re-runs are reserved for L3 risk areas (migrations, transaction ownership, process/worker lifecycle, security boundaries) or when CI coverage is in doubt, unless the user explicitly accepts a reduced-scope merge.
 6. Return concrete GitHub review comments for defects. Allow one formal repair round. If the repaired delivery still has a merge blocker, stop delegating the same defect and let the lead take over; do not send a second repair round. Record that the original agent has stopped before editing its branch.
 7. Agents must not edit `docs/roadmap.md` or `docs/development-progress.md` unless the lead assigns that exact documentation task. The lead updates status only from verified evidence.
 8. Do not run two heavy suites, browser performance jobs, or live integration environments in parallel. Reserve ports and the performance window in the Issue, verify process/data ownership, and clean only resources proven to belong to that run.
@@ -37,7 +37,8 @@ Assignment rules:
 - `powershell -ExecutionPolicy Bypass -File .\scripts\setup-codex.ps1`: install Node/Python dependencies and apply migrations on a fresh checkout.
 - `powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1`: migrate and start the web app plus API for normal local work.
 - `npm run dev`: start Next.js and FastAPI; use `npm run dev:full` only when Redis and the RQ worker are required.
-- `npm run check`: run ESLint, Ruff, Pytest, Vitest, and the production web build.
+- `npm run check:fast`: local iteration gate — provider-neutrality, ESLint, Ruff, Pytest (pytest-xdist parallel), Vitest. Use during development.
+- `npm run check`: full gate — everything in `check:fast` plus the production web build. Enforced by CI on every PR; run locally before release-sensitive merges.
 - `npm run test:e2e`: build the frontend and run Playwright against local web/API servers.
 
 ## Coding Style & Naming Conventions
@@ -46,7 +47,7 @@ Use four spaces in Python and follow Ruff's 100-character line limit, Python 3.1
 
 ## Testing Guidelines
 
-Add regression tests with every behavior change. Prefer isolated SQLite fixtures for API tests and Testing Library/Vitest for component behavior. Name Python tests `test_<behavior>.py` and colocate frontend tests near the relevant library or component. Run targeted tests while iterating, then `npm run check` before review. Real Vertex image calls are excluded from default tests to prevent accidental cost.
+Add regression tests with every behavior change. Prefer isolated SQLite fixtures for API tests and Testing Library/Vitest for component behavior. Name Python tests `test_<behavior>.py` and colocate frontend tests near the relevant library or component. Run targeted tests while iterating and `npm run check:fast` before opening a PR; the full `npm run check` is enforced by CI. Real Vertex image calls are excluded from default tests to prevent accidental cost.
 
 ## Commit & Pull Request Guidelines
 

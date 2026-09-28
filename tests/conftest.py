@@ -10,6 +10,11 @@ from sqlalchemy.pool import StaticPool
 
 # Offline suite must not read a developer .env or inherit live credential env.
 os.environ["MANGAFLOW_DISABLE_DOTENV"] = "1"
+# pytest-xdist execnet workers spawn after this module is imported and inherit
+# os.environ. On Windows checkouts under non-ASCII paths (e.g. this repo's
+# directory), a GBK-locale worker hits UnicodeEncodeError writing its bootstrap
+# output; UTF-8 mode prevents the surrogate mojibake at the source.
+os.environ.setdefault("PYTHONUTF8", "1")
 # The API's TrustedHost allowlist defaults to loopback hosts; the offline test
 # suite exercises the app through TestClient, whose synthetic host header is
 # "testserver". Loopback enforcement itself is pinned by dedicated tests.

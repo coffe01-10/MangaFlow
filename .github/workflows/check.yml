@@ -61,4 +61,4 @@ jobs:
           pip install -r apps/api/requirements.txt -r apps/api/requirements-dev.txt
 
       - name: pytest tests/
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ -q -n auto

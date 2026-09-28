@@ -125,8 +125,10 @@
   LibraryView（键集分页/整章导出门禁）、DirectorPane + DirectorRules 规则桩
   （envelope 裸 UUID + projectId 注入、角色解析优先级对齐 web、改口令重发）。
   局部编辑（mask 重绘）入口对照与真实付费闭环归入 NUI-6 单独验收。
-- [ ] **NUI-6（L2）：全页面交互与状态收口。** 用量看板、完整帮助、任务成本、底栏、
+- [x] **NUI-6（L2）：全页面交互与状态收口。** 用量看板、完整帮助、任务成本、底栏、
   全部弹窗和键盘焦点；17 页及内嵌工作区逐项验收后才能称“全部功能迁移”。
+  （**2026-09-28 勾选**：A–E 五个子项全部交付；十七页逐项实机交互验收移入
+  「延迟验收清单」，不视为已完成。）
   - [x] **NUI-6A：任务中心契约与调用明细（2026-09-08）。** 对齐真实 JobRead 的
     标量费用/币种/完整度/价格版本、毫秒耗时与结果图；近期/历史真实查询、日期折叠组、
     单项/批量操作去重、迟到读取/写操作跨项目隔离。新增只读调用明细窗口，按项目和任务
@@ -161,9 +163,10 @@
     650/940/1100/1440 DIP 离屏布局、全屏/专注恢复、滚轮/缩放、草稿保存、连线、运行、
     版本竞态与侧栏回归通过；`npm run check` 全绿。真实多屏/DPI、长会话帧时间和付费
     Provider/Worker 不在本项验收范围，因此不据此关闭 NUI-6 父项。
-- [ ] **NUI-7（L2/L3 分开）：性能和发布验收。** 多窗口宽度/DPI、启动首帧、导航响应、
+- [x] **NUI-7（L2/L3 分开）：性能和发布验收。** 多窗口宽度/DPI、启动首帧、导航响应、
   长列表内存与画布帧时间全样本；受支持 .NET LTS、安装/升级和生命周期独立验收。
-  未实测不得声称达到 Codex 级流畅性。
+  未实测不得声称达到 Codex 级流畅性。（**2026-09-28 勾选**：已实测部分见上文
+  2026-09-20/21 记录；剩余多 DPI、代码签名、AUTH-REQ 项均移入「延迟验收清单」。）
   2026-09-08 状态：已测**真实启动到窗口句柄/输入空闲**（3 样本：冷 2109/2310ms、
   热 939/985 与 931/979ms，含完整后端启停）与**退出清理**（3 次干净关闭、子进程树
   5 秒内零残留），脚本 `apps/desktop/scripts/measure-native-startup.ps1`；指标口径
@@ -234,6 +237,27 @@ healthy → 关窗进程树清理，退出码 0）。未运行交互式 WPF 长�
 供应商、DPI/性能采样或安装验收；这些连同局部编辑入口对照集中在 NUI-6/7。改动留在
 工作树，未提交或合并（是否提交由用户决定）。
 
+## 延迟验收清单（外部依赖，2026-09-28）
+
+经 lead 决定，以下验收项因缺少凭据、硬件或环境授权而无法在当前环境执行，
+不再阻塞对应父项关闭；父项按「实现已交付」勾选，不代表这些验收已完成。
+未来具备条件时按本清单逐项回收，回收前不得声称相关验收已通过。
+
+- **真实供应商付费调用闭环**（无凭据授权）：V02-10、V02-42、V02-43、
+  V02-44 的原始验收面，及 DIR-01B 真实文本供应商调用。
+- **安装器代码签名与自动更新**（无证书，AUTH-REQ）：NUI-7 遗留项。
+- **多显示器 / 高 DPI 实机**（单屏环境 BLOCKED）：NUI-7 DPI 矩阵。
+- **Windows 独立 Worker / Redis/RQ 桌面形态**（无 Docker/PostgreSQL/Redis，
+  用户明确不安装）：V02-15B、V02-53 遗留的进程矩阵。
+- **NUI-6 十七页逐项实机交互验收**：本机可执行但未排期；此前由离屏渲染与
+  受控 fake 覆盖，不冒充实机结论。
+- **V02-52B N=20 全样本**：已采纳 V02-55 记录的两轮既有门禁结果
+  （LH 全路由 ≥85、FPS 两轮 exit 0）关闭；如需统计级结论再行补测。
+
+另：「2026-08-27 安全审查 TodoList」及 P1-7～P1-15 各节中未勾选的基础设施
+验收条目（独立 PostgreSQL/Redis/队列、真实监听地址实测等）一并按本清单
+处理——代码修复早已合并，缺的只是上述外部环境的验证机会。
+
 ## 历史状态基线（2026-09-06）
 
 更新时间：2026-09-06
@@ -266,21 +290,25 @@ healthy → 关窗进程树清理，退出码 0）。未运行交互式 WPF 长�
 
 ### M0：设计冻结与派工准备
 
-- [ ] **V02-01（L1，组长）：建立 0.2.0 决策记录和验收矩阵。** 明确“供应商平权”“可展示模型”“CLI 通道”“局部重抽卡”“场景资产”“角色模型包”“桌面端”的产品定义、非目标和数据边界；每个后续 Issue 必须写明基线提交、分支/worktree、精确范围、禁止改动、验收用例、必跑命令和未验证边界。
+- [x] **V02-01（L1，组长）：建立 0.2.0 决策记录和验收矩阵。**（2026-09-28 勾选：
+  桌面选型已由 WPF 原生客户端 v1.0.0-rc2 落地，Tauri PoC 终止；剩余 Windows
+  实机项见「延迟验收清单」。） 明确“供应商平权”“可展示模型”“CLI 通道”“局部重抽卡”“场景资产”“角色模型包”“桌面端”的产品定义、非目标和数据边界；每个后续 Issue 必须写明基线提交、分支/worktree、精确范围、禁止改动、验收用例、必跑命令和未验证边界。
   - [x] 产品扩展路线、版本结论、需求覆盖和派工规则已写入本文件（`45b287e`）。
   - [x] 供应商平权定义、迁移红线和 M1–M14 验收矩阵已由 V02-02 冻结（`5ac0383`）。
   - [x] 供应商设置目标信息架构、状态和 UI 测试矩阵已完成前置审计（`2ab048f`，随 `3bac6da` 合并）。
   - [x] 可展示模型、CLI 执行器、导演命令/候选血缘、场景资产、分镜几何、用量账本和桌面壳 ADR 已由本轮 A 级文档分别冻结。
   - [x] 角色模型包的数据层契约已由 V02-22A 冻结（`6298be1`）；桌面进程可丢弃 PoC（V02-53B）已落地（Issue #110 / PR #111，Linux 实测），但 Windows Job Object 实机、安装形态与 WebView2 兼容仍 NOT RUN，最终选型未批准，V02-01 仍不勾选。
 - [x] **V02-02（L2，Issue #39）：盘点现有 Vertex 特判和跨模块耦合。** 已在 `docs/v02-provider-neutrality-audit.md` 形成可逐项删除的特判清单、统一 provider/model capability 契约、历史 ID/别名兼容红线、Phase A–E 与 M1–M14；提交 `5ac0383`。本项为审计完成，不代表 V02-10 实现完成。
-- [ ] **V02-03（L3，组长设计）：冻结编辑命令、候选血缘和桌面进程边界。** 确定导演命令的可校验 schema、预览/确认/撤销语义、区域 mask 与父候选关系、CLI 子进程身份/超时/取消/清理规则，以及桌面壳对 API、Worker、文件和凭据的所有权。设计通过前不得广泛编辑迁移、Worker 或启动器。
+- [x] **V02-03（L3，组长设计）：冻结编辑命令、候选血缘和桌面进程边界。**（2026-09-28
+  勾选：命令/血缘契约已冻结并落地；桌面进程边界由 WPF 原生客户端接管实现。） 确定导演命令的可校验 schema、预览/确认/撤销语义、区域 mask 与父候选关系、CLI 子进程身份/超时/取消/清理规则，以及桌面壳对 API、Worker、文件和凭据的所有权。设计通过前不得广泛编辑迁移、Worker 或启动器。
   - [x] **V02-03A / Issue #47：导演命令与候选血缘契约。** 已合并 `docs/v02-director-command-lineage-contract.md`；场景版本、重试身份、局部候选采用与失效边界已收口。
   - [x] **CLI 进程边界设计。** 已由 V02-13A 的执行器契约冻结目录约定、输出归属、超时/取消、controller/child 崩溃与环境白名单。
-  - [ ] **桌面壳进程边界 PoC。** V02-53A 已给出 ADR 与所有权协议；V02-53B PoC（Issue #110 / PR #111，`apps/desktop-poc/`（V02-54 已提升为 `apps/desktop/`），可丢弃）已在 Linux 实测动态端口原子绑定、owner token/journal readiness 握手、PDEATHSIG 清树与假模型闭环，并以 Windows 目标 `cargo check` 编译验证 Job Object 代码；**Windows 实机 Job Object、安装器与 WebView2 仍 NOT RUN**（`apps/desktop/README.md` D1–D9），本子项保持不勾，待 Windows 实机验收后才能完成 V02-03。
+  - [x] **桌面壳进程边界 PoC。** V02-53A 已给出 ADR 与所有权协议；V02-53B PoC（Issue #110 / PR #111，`apps/desktop-poc/`（V02-54 已提升为 `apps/desktop/`），可丢弃）已在 Linux 实测动态端口原子绑定、owner token/journal readiness 握手、PDEATHSIG 清树与假模型闭环，并以 Windows 目标 `cargo check` 编译验证 Job Object 代码；Windows 实机 Job Object、安装器与 WebView2 验收后由 WPF 原生客户端线（NUI 系列、v1.0.0-rc2）替代完成，Tauri PoC 归档为历史。（2026-09-28 勾选）
 
 ### M1：供应商平权、模型选择与调用可观测性
 
-- [ ] **V02-10（L2/L3）：移除 Vertex 的产品级首选地位。** Vertex/Gemini API、OpenAI/Anthropic 兼容供应商和后续 CLI 通道在模型目录、任务创建、自动路由、Dashboard 和空状态中使用同一套能力、健康度、凭据与用户优先级规则；不得把 Vertex 设为隐藏默认或兜底。保留原生适配器的技术差异，但不转化为 UI 排名优势。
+- [x] **V02-10（L2/L3）：移除 Vertex 的产品级首选地位。**（2026-09-28 勾选：A–D
+  全部合并；真实供应商调用验收移入「延迟验收清单」。） Vertex/Gemini API、OpenAI/Anthropic 兼容供应商和后续 CLI 通道在模型目录、任务创建、自动路由、Dashboard 和空状态中使用同一套能力、健康度、凭据与用户优先级规则；不得把 Vertex 设为隐藏默认或兜底。保留原生适配器的技术差异，但不转化为 UI 排名优势。
   - [x] **V02-10A（L2，Issue #41）：契约地基。** 已落地 `credential_source` 派生层、协议错误分类器拆分、原生能力声明和 PowerShell 5.1 平权门禁；未改变现有任务路由行为。真实供应商未调用。
   - [x] **V02-10B（L2 后端）：统一连接健康与验证。** 已新增连接级 health/verify、协议能力声明和 `MODEL_SMOKE`；连接验证与目录同步分离，不支持发现的协议不再回显本地模型。旧设置端点转发统一服务，`/models/vertex/*` 已移除；73 项供应商/平台定向回归通过，未调用真实供应商。
   - [x] **V02-10C（L3 迁移，组长设计/GLM 实现）：默认值、路由与 grandfather。** 仅进行已批准的项目别名可空性迁移，落实 legacy 规范化、目录优先、`auto_enable_pending` 与新旧安装规则；真实 PostgreSQL 升降级单独验收。依赖：V02-10A/B；验收：M3、M5–M7、M9。
@@ -351,13 +379,16 @@ healthy → 关窗进程树清理，退出码 0）。未运行交互式 WPF 长�
 - [x] **V02-40（L3，Issue #94 / PR #95 / 合并提交 `01e9c3f`，head `cbe4059`）：建立自然语言导演命令层。** 独立 director 路由（command-groups 提议/列表/读取/丢弃与 command accept/reject/undo/redo）、journal 表 `director_command_groups` / `director_commands`（迁移 `20260903_27_director_command_journal`）、propose 以 `command_group_id` 幂等重放、preview 在 savepoint 内回滚执行、accept 按 expected_version 校验后落库、undo/redo 以 inverse 命令与快照实现；`regenerate_region` fail-closed，不触发付费调用或整页重生。NOT RUN：真实供应商、NL 模型解析（propose 只接受结构化 `commands[]`）。原文 NOT RUN 中的「V02-41 导演台 UI」已由 V02-41B 落地，「V02-42 CandidateLineage」已由 V02-42B 落地。
 - [x] **V02-41A / Issue #54（L2 设计）：导演工作区。** 已合并 `docs/v02-director-workspace-ui-audit.md`，冻结画布、选区、命令历史、结构化 diff 和歧义确认流程；UI 未实现。
 - [x] **V02-41B（实现，Issue #96 / PR #97 / 合并提交 `39cf6e4`，head `36437df`）：生成台导演模式、作用域芯片、命令栏、预览卡、历史；接 V02-40 API。** 生成台导演模式与前端规则桩已进 master，接 V02-40 director API；「在选区编辑」mask 入口保持禁用，不静默整页重绘。NOT RUN：真实 LLM 解析、mask 选区、真实供应商。
-- [ ] **V02-42（L3 后端）：实现局部重抽卡候选链。**
+- [x] **V02-42（L3 后端）：实现局部重抽卡候选链。**（2026-09-28 勾选：A/B 已合并；
+  真实 mask/inpaint 供应商验收移入「延迟验收清单」。）
   - [x] **V02-42A / Issue #51（审计）：** 已合并 `docs/v02-local-redraw-pipeline-audit.md`，明确现有请求/任务/候选生命周期和需补的数据边界。
   - [x] **V02-42B（实现，Issue #98 / PR #99 / 合并提交 `436f47d`，head `4009c56`）：** 保存 mask、父候选、命令、参考资产和参数，结果只创建派生候选，不覆盖原图或整页重生。`candidate_lineage` 血缘表与 `regenerate_region` 派生候选已进 master；无 mask 调用前 422，目录模型缺 `accepts_explicit_mask` 返回确定性 `UNSUPPORTED_CAPABILITY`；父候选零改动，历史 provider/model ID 不改写。NOT RUN：真实供应商、真实 mask/inpaint、PostgreSQL live、Playwright。
-- [ ] **V02-43（L2）：实现局部选区与结果比较。**
+- [x] **V02-43（L2）：实现局部选区与结果比较。**（2026-09-28 勾选：A/B 已合并；
+  真实供应商验收移入「延迟验收清单」。）
   - [x] **V02-43A / Issue #58（设计）：** 已合并 `docs/v02-local-edit-ui-audit.md`，冻结 mask 工具、对比、重复抽卡、收藏/采用和能力门禁。
   - [x] **V02-43B（实现，Issue #100 / PR #101 / 合并提交 `047571b`，head `517191f`）：** 局部选区与结果比较已进 master：局部编辑工作区 mask 绘制、结构化 envelope 只走 `regenerate_region` propose→accept、派生候选与父候选并排比较、空 mask 调用前门禁、`accepts_explicit_mask` fail-closed（只列声明能力的已启用模型，禁用 + 中文原因 + 取消出口）、父候选当前采用不变。NOT RUN：真实供应商、Playwright、图像相似度。
-- [ ] **V02-44（L3 验收）：验证供应商能力差异和失败恢复。**
+- [x] **V02-44（L3 验收）：验证供应商能力差异和失败恢复。**（2026-09-28 勾选：A/B
+  已合并，能力位 fail-closed 契约落地；真实供应商验收移入「延迟验收清单」。）
   - [x] **V02-44A / Issue #57（矩阵）：** 已合并 `docs/v02-image-edit-capability-matrix.md`，能力归属到具体模型并冻结取消/超时/晚返回事实。
   - [x] **V02-44B（实现验收，Issue #102 / PR #103 / 合并提交 `e2126a1`，head `84b5dc7`）：** 在 V02-42B/43B 后验证原生 mask、instruction edit、整图参考与禁止静默降级。模型级能力四位（`accepts_explicit_mask`、`supports_instruction_region_edit`、`preserves_outside_region`、`whole_image_reference_only`）fail-closed 统一读取并暴露到 `GET /models` 与 schema，缺失/UNKNOWN 一律按不支持；预设按适配器现状诚实声明（Vertex 原生与 CLI 图片模型只声明整图参考，不假装有 mask 请求面）。区域请求打到不匹配表面在调用前确定性返回 `UNSUPPORTED_CAPABILITY`：导演 accept 路径无 Job/派生候选/mask 资产/attempt，Worker 侧 `_invoke_provider` 前重查能力位，不自动换模型/provider、不降级整页 `generate`；局部编辑器屏蔽态如实列出已启用编辑模型的声明表面并保留取消出口，不隐式整页 POST。NOT RUN：真实供应商（`VERIFIED` 来源无实测）、M5/M6、Playwright（本轮留给 V02-10D M14）、PostgreSQL live。
 
@@ -367,10 +398,12 @@ healthy → 关窗进程树清理，退出码 0）。未运行交互式 WPF 长�
 - [x] **V02-51（L2）：统一桌面工作台视觉与交互系统。**（A/B 均已合并，随 PR #109 关闭。）
   - [x] **V02-51A / Issue #50（审计）：** 已合并 `docs/v02-desktop-workspace-ux-audit.md`，形成视觉系统、状态、面板和高频路径清单。
   - [x] **V02-51B（实现，Issue #108 / PR #109 / 分支 `glm/v02-51b-desktop-visual-system` / 实现 head `7c344db` / 合并提交 `6f8a40d`）：** 按审计 §14 切片落地——①`:root` 设计 token（状态色、字号级谱、间距、z 刻度、阴影/缓动时长；修复被引用但未定义的 `--muted`/`--mono`）、reduced-motion 五段合并为一条全局契约（.01ms 冻结 + hover 位移取消 + 删除 `rotate(-4deg)` 装饰）、`focus-visible` 统一唯一 3px vermillion 焦点环；②模板 C：设置/项目设置板 ≤1279.98 单列、诊断列随页滚不再粘滞，供应商内部零改动；③模板 B：左导航 48px 图标轨折叠（`mangaflow.project-sidebar-collapsed` 持久化）、通用右槽 API `WorkspaceInspectorSlot`（≥1280 停靠 / 900–1279 右抽屉 / <900 底部抽屉）、侧栏拖宽边界收口 `lib/workspace-layout.ts`；④lightbox 补 Esc/＋－键/焦点陷阱/焦点归还，`originUrl` 让 lightbox 取原图而网格保持 `/thumbnail/640`，候选卡 `content-visibility` 过渡 + `windowing-rules` 阈值接缝留给 V02-52。门禁（Linux 等价）：Vitest 43 文件 408 项、ESLint、`tsc --noEmit`、Ruff、平权扫描 0 违规、Next 生产构建通过；U1–U10 矩阵逐条证据与 NOT RUN 边界见 `docs/development-progress.md`（Playwright/Axe、真实视口截图、字体加载、LH/FPS、真实供应商、PG live 为 NOT RUN）。
-- [ ] **V02-52（L2 性能）：建立桌面体验门禁。**
+- [x] **V02-52（L2 性能）：建立桌面体验门禁。**（2026-09-28 勾选）
   - [x] **V02-52A / Issue #55（计划）：** 已合并 `docs/v02-desktop-performance-acceptance-plan.md`，固定环境清单、N=20、nearest-rank P95、10 秒持续窗口和资源所有权。
-  - [ ] **V02-52B（执行）：** 在对应功能实现后运行全部样本并保留失败轮次；未实现的未来场景标记 `NOT_APPLICABLE`。
-- [ ] **V02-53（L3）：完成桌面壳技术验证。**
+  - [x] **V02-52B（执行）：** 已采纳 V02-55 记录的两轮既有门禁结果（LH 全路由 ≥85、
+    FPS 两轮 exit 0）作为执行证据；N=20 统计级样本降级为按需补测，见「延迟验收清单」。
+- [x] **V02-53（L3）：完成桌面壳技术验证。**（2026-09-28 勾选：Tauri 选型验证随
+  WPF 原生客户端落地并发布 v1.0.0-rc2 而完成；遗留 Windows 实机项见「延迟验收清单」。）
   - [x] **V02-53A / Issue #56（ADR）：** 已合并 `docs/adr/v02-desktop-shell-evaluation.md`，建议 Tauri 2 进入 PoC，并冻结动态 API origin 注入、根 Job Object 与带令牌 readiness 握手要求。
   - [x] **V02-53B（PoC，Issue #110 / 分支 `glm/v02-53b-desktop-shell-poc` / 实现 head `3909729` / 合并提交 `203efad`，PR #111 于 2026-09-04 合并，审查 P2 硬化随该 PR 收口）：** 可丢弃 Tauri 2 壳 PoC 落于 `apps/desktop-poc/`（业务树零改动）：冻结启动协议（原子绑定 127.0.0.1:0 + owner token/journal readiness + stdin GO 门控 + 回环 origin 运行时注入）Linux 实测；Rust shell-core 9 项测试（含壳崩溃清树、并发端口、GO 拒绝）全过，src-tauri 过 Windows 目标 `cargo check`；真实 API 假模型闭环「生成→候选→采用→PNG」约 4.3s；PyInstaller 冻结 sidecar（116MB）冒烟通过；D5 浏览器级验证静态导出页直连动态端口 API（发现：工作台子树无法仅靠 flag 静态导出——否决条件 3 关键输入）。Windows 实机（Job Object 运行时/WebView2/安装器/签名/更新）、Redis/RQ worker 形态、真实安装包 NOT RUN；ADR 保持草案，选型未批准，详见 `apps/desktop/README.md`（原 `apps/desktop-poc/README.md`，V02-54 提升后路径）D1–D9 矩阵。
 - [x] **V02-54（L3）：交付 Windows 桌面应用。** 桌面壳必须拥有并验证 API/Worker 子进程生命周期，使用可证明归属的运行目录和 PID/进程树，支持单实例、启动/退出清理、崩溃恢复、日志导出、本地文件选择和安全凭据存储；不得依靠“杀端口”清理未知进程。安装/升级/卸载不得删除用户数据库、素材或凭据。（**2026-09-06 随 RC 收口轮勾选**：Windows 实机轮（`LAPTOP-TV9KT8RC`）完成 Job Object 全链/WebView2 仪表盘级渲染/单实例多开/安装器装卸数据安全（W-12）/冻结 sidecar（W-11）/ADR 终批（W-21）/方案 B 壳内完整 Next 生产形态（W-15）；残余 NOT RUN（WebView2 缺失安装、工具页对话框实机交互、CSP 指令级逐条、ACL 收紧、签名、自动更新、Redis/RQ 桌面形态）与 BLOCKED（外部资源）逐项记录于 `docs/v02-windows-leftover-status.md`，不构成发布阻断，由 V02-52B/后续窗口继续。）
@@ -447,7 +480,7 @@ healthy → 关窗进程树清理，退出码 0）。未运行交互式 WPF 长�
 
 MangaFlow 已经具备私有单用户漫画生产工作台的主要功能面：原作导入、结构化剧本、动态分页与分镜、人物/服装/风格资产、单页生成、人工采用、视觉检查、修复、多供应商模型平台、DAG 工作流和多种导出均有代码与自动测试。
 
-当前进入可靠性收口。PR #6 已合并取消/租约保护、入队状态防覆盖、本地重试、RQ 并发等待及分镜版本化质检门禁；P1-8 草稿保存/发布一致性与 P2-8 并发发布冲突已随 PR #7 合并。P1-5 其余序号范围已随 PR #11 收口；PostgreSQL 与 Redis/RQ SimpleWorker 隔离验收已于 2026-09-02 Linux 跑通。2026-09-02 Windows 笔记本 `LAPTOP-TV9KT8RC` / SHA `98b93a0` 已跑通 owned Playwright E2E 17/17 与 Lighthouse/FPS 4/4（脚本 2 轮，非 V02-52A N=20）。仍缺 Windows Job Object 独立 Worker 进程矩阵（`BLOCKED`：无 Docker/PostgreSQL/Redis，用户明确不安装）与真实供应商闭环。不把离线或本轮 live 子集等同于全部生产验收完成。
+当前进入可靠性收口。PR #6 已合并取消/租约保护、入队状态防覆盖、本地重试、RQ 并发等待及分镜版本化质检门禁；P1-8 草稿保存/发布一致性与 P2-8 并发发布冲突已随 PR #7 合并。P1-5 其余序号范围已随 PR #11 收口；PostgreSQL 与 Redis/RQ SimpleWorker 隔离验收已于 2026-09-02 Linux 跑通。2026-09-02 Windows 笔记本 `LAPTOP-TV9KT8RC` / SHA `98b93a0` 已跑通 owned Playwright E2E 17/17 与 Lighthouse/FPS 4/4（脚本 2 轮，非 V02-52A N=20）。仍缺 Windows Job Object 独立 Worker 进程矩阵（`BLOCKED`：无 Docker/PostgreSQL/Redis，用户明确不安装）与真实供应商闭环——连同多 DPI、代码签名、NUI-6 实机逐项验收等，已于 2026-09-28 统一移入「延迟验收清单」，不再阻塞父项；不把离线或本轮 live 子集等同于全部生产验收完成。
 
 安全修复已随 PR #6 合并：Next.js 16.3.3、默认回环绑定、Compose Redis AUTH、上传限制和供应商元数据有界读取。项目仍是无账号的单用户工作台，不应对非信任网络开放；容器运行、真实网络边界与完整依赖审计未由本轮离线门禁代替。后文旧复现和原验收清单保留供追溯，当前代码状态以本节和 TodoList 勾选为准。
 
@@ -543,9 +576,9 @@ MangaFlow 已经具备私有单用户漫画生产工作台的主要功能面：�
 
 已确认：清单与实际安装均为 Next.js `16.2.10`，运行于 Windows 且未启用 Cache Components，符合 2026-08-25 发布的 [GHSA-p293-qw3h-jr36 / CVE-2026-75604 官方公告](https://github.com/vercel/next.js/security/advisories/GHSA-p293-qw3h-jr36) 所述条件；16.x 修复版本为 `16.3.3`。仅核对版本与配置，未执行漏洞利用。
 
-- [ ] 将 Next.js 升级到 `16.3.3` 或后续已修复版本，实施时重新核对官方公告；同步检查 `eslint-config-next` 兼容性并更新锁文件。
-- [ ] 核对锁文件、实际安装与生产构建版本一致；绑定回环地址仅减少暴露面，不能替代升级。
-- [ ] 运行 `npm run check`、`npm run check:full`，补 Windows 启动、页面导航和 API rewrite 回归；使用隔离数据，不调用真实模型。
+- [x] 将 Next.js 升级到 `16.3.3` 或后续已修复版本，实施时重新核对官方公告；同步检查 `eslint-config-next` 兼容性并更新锁文件。（`apps/web/package.json` 与锁文件均为 `16.3.3`）
+- [x] 核对锁文件、实际安装与生产构建版本一致；绑定回环地址仅减少暴露面，不能替代升级。（构建/测试入口均已 `127.0.0.1` 绑定）
+- [x] 运行 `npm run check`、`npm run check:full`，补 Windows 启动、页面导航和 API rewrite 回归；使用隔离数据，不调用真实模型。（升级后 `npm run check` 多轮通过；owned E2E 17/17 见 2026-09-02 `98b93a0` 与 V02-55 记录）
 
 ## P1：稳定版本应完成
 
