@@ -98,7 +98,7 @@ export default function ProjectWorkspace({
   const [dismissedDeepLinkPageId, setDismissedDeepLinkPageId] = useState<string | null>(null);
   const storedDrawModel = useLocalStorageValue(`mangaflow.image-model.${id}`, "auto");
   const drawModel: ImageModelAlias | null = storedDrawModel !== "auto" ? storedDrawModel : null;
-  const [previewImage, setPreviewImage] = useState<{ url: string; label: string; candidate?: PageCandidate } | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; label: string; candidate?: PageCandidate; originRect?: { left: number; top: number; width: number; height: number } } | null>(null);
   const [localEditCandidate, setLocalEditCandidate] = useState<PageCandidate | null>(null);
   // 拖拽期间走本地状态保证逐帧跟手；松手才写入存储（写存储会通知全部订阅者）。
   const [dragSidebarWidth, setDragSidebarWidth] = useState<number | null>(null);
@@ -163,14 +163,24 @@ export default function ProjectWorkspace({
   const libraryWorkspace = useLibraryWorkspace({ id, section, activeChapterId });
   const { library } = libraryWorkspace;
 
+  // 点击打开大图时触发按钮已持有焦点，activeElement 的矩形就是 FLIP 展开
+  // 动画的起点；键盘 Enter 触发同样成立。
+  const previewOriginRect = () => {
+    const el = document.activeElement;
+    if (!(el instanceof HTMLElement)) return undefined;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return undefined;
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  };
+
   const openPreview = (url: string, label: string) => {
-    setPreviewImage({ url, label });
+    setPreviewImage({ url, label, originRect: previewOriginRect() });
   };
 
   // Generate desk previews carry the candidate so the lightbox can offer
   // 局部修改 entry into the V02-43B local edit shell.
   const openPreviewWithCandidate = (url: string, label: string, candidate?: PageCandidate) => {
-    setPreviewImage({ url, label, candidate });
+    setPreviewImage({ url, label, candidate, originRect: previewOriginRect() });
   };
 
   const draft = localDraft ?? project.data ?? null;

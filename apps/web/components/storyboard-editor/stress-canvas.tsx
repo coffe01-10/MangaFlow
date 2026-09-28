@@ -84,7 +84,7 @@ export function StressStoryboardCanvas() {
       onOpenInspector={() => undefined}
       onDeleteBubble={() => undefined}
       onBubbleBounce={() => undefined}
-      onZoomStep={(direction) => zoomTo(direction === 1 ? zoom * 1.25 : zoom / 1.25)}
+      onZoomFactor={(factor) => zoomTo(zoom * factor)}
     />
   </div>;
 }

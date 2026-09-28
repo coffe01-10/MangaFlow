@@ -328,12 +328,17 @@ describe("V02-32 触控板视口", () => {
     await screen.findByTestId("canvas-page");
     const viewport = document.querySelector(".canvas-viewport")!;
 
+    const readZoom = () => Number.parseInt(screen.getByText(/^\d+%$/).textContent ?? "0", 10);
     fireEvent.wheel(viewport, { deltaY: 120 });
-    expect(screen.getByText("100%")).toBeTruthy();
+    expect(readZoom()).toBe(100);
     fireEvent.wheel(viewport, { deltaY: -120, ctrlKey: true });
-    expect(screen.getByText("125%")).toBeTruthy();
+    const afterCtrl = readZoom();
+    expect(afterCtrl).toBeGreaterThan(100);
     fireEvent.wheel(viewport, { deltaY: -120, metaKey: true });
-    expect(screen.getByText("156%")).toBeTruthy();
+    const afterMeta = readZoom();
+    expect(afterMeta).toBeGreaterThan(afterCtrl);
+    fireEvent.wheel(viewport, { deltaY: 120, ctrlKey: true });
+    expect(readZoom()).toBeLessThan(afterMeta);
 
     expect(saveGeometry).not.toHaveBeenCalled();
     expect(updatePanel).not.toHaveBeenCalled();

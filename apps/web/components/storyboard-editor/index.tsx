@@ -1330,7 +1330,10 @@ export function StoryboardEditor({
             if (bubble && window.confirm("删除这个文字气泡？")) removeDialogue.mutate(dialogueId);
           }}
           onBubbleBounce={() => setNotice(storyboardCopy.bubbleBelongs)}
-          onZoomStep={(direction) => zoomManually(direction === 1 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)}
+          onZoomFactor={(factor) => {
+            fitModeRef.current = false;
+            setZoom((current) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, current * factor)));
+          }}
           zFlash={zFlash}
           beforePage={spreadLeft}
           afterPage={spreadRight}

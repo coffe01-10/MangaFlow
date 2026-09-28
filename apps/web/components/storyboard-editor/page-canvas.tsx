@@ -12,7 +12,7 @@
 // dragged outline (no React re-render per pointermove); state is written once
 // on pointerup.
 import type { BubbleGeometryShape, CanvasInfo, MangaPage, NormalizedRect, PanelDialogue, StoryboardPanel } from "@/lib/api";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from "react";
 
 import type { GeometryCommandChange, SoundEffectGeometry } from "./command-stack";
@@ -159,7 +159,7 @@ export function PageCanvas({
   onDeleteBubble,
   onBubbleBounce,
   onNotice,
-  onZoomStep,
+  onZoomFactor,
   zFlash,
   annotating = false,
   annotations,
@@ -196,7 +196,8 @@ export function PageCanvas({
   onDeleteBubble: (dialogueId: string) => void;
   onBubbleBounce: () => void;
   onNotice?: (text: string) => void;
-  onZoomStep: (direction: 1 | -1) => void;
+  /** 连续缩放：factor 由滚轮 deltaY 指数换算（触控板捏合是密集小步）。 */
+  onZoomFactor: (factor: number) => void;
   /** 层序命令的透明度脉冲（对齐原生 PulseZIndex）：token 变化重放一次 z-flash。 */
   zFlash?: { token: number; ids: string[] } | null;
   /** 手绘批注模式：开启后按下拖动画自由笔画，面板/气泡手势停用。 */
@@ -222,6 +223,7 @@ export function PageCanvas({
     (window as RenderStatsScope).__pageCanvasRenders = renderCountRef.current;
   });
   const pageRef = useRef<HTMLDivElement | null>(null);
+  const zoomAnchorRef = useRef<{ fx: number; fy: number; clientX: number; clientY: number } | null>(null);
   const panelRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const bubbleRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const sfxRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -666,11 +668,39 @@ export function PageCanvas({
     const onWheel = (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
-      onZoomStep(event.deltaY > 0 ? -1 : 1);
+      // 记录光标下的页面归一化点；zoom 应用后由下方 layout effect 滚动补偿，
+      // 实现「以光标为锚点」的缩放。
+      const pageEl = pageRef.current;
+      if (pageEl) {
+        const rect = pageEl.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          zoomAnchorRef.current = {
+            fx: (event.clientX - rect.left) / rect.width,
+            fy: (event.clientY - rect.top) / rect.height,
+            clientX: event.clientX,
+            clientY: event.clientY,
+          };
+        }
+      }
+      onZoomFactor(Math.exp(-event.deltaY * 0.0016));
     };
     viewport.addEventListener("wheel", onWheel, { passive: false });
     return () => viewport.removeEventListener("wheel", onWheel);
-  }, [onZoomStep, viewportRef]);
+  }, [onZoomFactor, viewportRef]);
+
+  // zoom 落入 DOM 后校正滚动：让锚点保持在光标原位。页面用 margin:auto
+  // 居中，没有滚动空间时补偿被 scrollLeft/Top 自然钳制，退化为居中缩放。
+  useLayoutEffect(() => {
+    const anchor = zoomAnchorRef.current;
+    zoomAnchorRef.current = null;
+    if (!anchor) return;
+    const viewport = viewportRef.current;
+    const pageEl = pageRef.current;
+    if (!viewport || !pageEl) return;
+    const rect = pageEl.getBoundingClientRect();
+    viewport.scrollLeft += rect.left + anchor.fx * rect.width - anchor.clientX;
+    viewport.scrollTop += rect.top + anchor.fy * rect.height - anchor.clientY;
+  }, [zoom, viewportRef]);
 
   useEffect(() => {
     if (!gesture) return;

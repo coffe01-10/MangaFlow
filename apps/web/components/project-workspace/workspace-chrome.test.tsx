@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -51,7 +51,7 @@ describe("U7 lightbox（audit §2.4/§7）", () => {
     );
   }
 
-  it("打开后焦点进入对话框，＋/－ 键调整缩放，Esc 关闭", () => {
+  it("打开后焦点进入对话框，＋/－ 键调整缩放，Esc 关闭", async () => {
     const onClose = vi.fn();
     render(<LightboxHarness onClose={onClose} />);
 
@@ -68,10 +68,11 @@ describe("U7 lightbox（audit §2.4/§7）", () => {
     expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
 
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(onClose).toHaveBeenCalledTimes(1);
+    // 退出动画 ~200ms 后才真正回调 onClose。
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
-  it("Esc 关闭后焦点回到触发缩略图（U7：关闭并焦点回触发图）", () => {
+  it("Esc 关闭后焦点回到触发缩略图（U7：关闭并焦点回触发图）", async () => {
     const onClose = vi.fn();
     render(<LightboxHarness onClose={onClose} />);
 
@@ -81,7 +82,7 @@ describe("U7 lightbox（audit §2.4/§7）", () => {
     expect(screen.getByRole("dialog", { name: "候选 1" })).toBeInTheDocument();
 
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(onClose).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(trigger).toHaveFocus();
   });
 
@@ -98,6 +99,64 @@ describe("U7 lightbox（audit §2.4/§7）", () => {
     expect(screen.getByRole("button", { name: "放大图片" })).toHaveFocus();
     fireEvent.keyDown(document, { key: "Tab" });
     expect(screen.getByRole("button", { name: "关闭大图" })).toHaveFocus();
+  });
+
+  it("滚轮连续缩放、双击在适应与放大间切换", () => {
+    render(
+      <ImageLightbox
+        preview={{ url: "http://127.0.0.1:8000/api/v1/assets/asset-1/content", label: "候选 1" }}
+        onClose={() => {}}
+      />,
+    );
+    const stage = document.querySelector(".lightbox-stage")!;
+    const readZoom = () => screen.getByRole("button", { name: /^\d+%$/ }).textContent!;
+
+    expect(readZoom()).toBe("100%");
+    fireEvent.wheel(stage, { deltaY: -120 });
+    const zoomed = Number.parseInt(readZoom(), 10);
+    expect(zoomed).toBeGreaterThan(100);
+    expect(zoomed).toBeLessThan(130);
+
+    fireEvent.doubleClick(stage);
+    expect(readZoom()).toBe("100%");
+    fireEvent.doubleClick(stage);
+    expect(readZoom()).toBe("220%");
+  });
+
+  it("放大后拖拽平移直接调整滚动位置", () => {
+    render(
+      <ImageLightbox
+        preview={{ url: "http://127.0.0.1:8000/api/v1/assets/asset-1/content", label: "候选 1" }}
+        onClose={() => {}}
+      />,
+    );
+    const stage = document.querySelector(".lightbox-stage")!;
+
+    fireEvent.doubleClick(stage);
+    expect(stage).toHaveClass("can-pan");
+
+    fireEvent.pointerDown(stage, { button: 0, clientX: 100, clientY: 100 });
+    expect(stage).toHaveClass("panning");
+    fireEvent.pointerMove(window, { clientX: 80, clientY: 60 });
+    expect(stage.scrollLeft).toBe(20);
+    expect(stage.scrollTop).toBe(40);
+    fireEvent.pointerUp(window);
+    expect(stage).not.toHaveClass("panning");
+  });
+
+  it("关闭先进入退出动画，再回调 onClose", async () => {
+    const onClose = vi.fn();
+    render(
+      <ImageLightbox
+        preview={{ url: "http://127.0.0.1:8000/api/v1/assets/asset-1/content", label: "候选 1" }}
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭大图" }));
+    expect(document.querySelector(".image-lightbox")).toHaveClass("leaving");
+    expect(onClose).not.toHaveBeenCalled();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
   it("lightbox 携带 candidate 时渲染局部修改按钮并回调", () => {
