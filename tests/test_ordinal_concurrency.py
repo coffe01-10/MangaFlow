@@ -917,6 +917,164 @@ def test_concurrent_batch_allocation_serializes_before_read(
     assert reads == [1, 2]
 
 
+def test_concurrent_workflow_run_start_guard_serializes_on_sqlite(
+    app_default_sqlite_sessions, monkeypatch
+):
+    """A double-submitted start must not mint two RUNNING runs on one scope.
+
+    lock_entity's SELECT serializes nothing on SQLite (the desktop default):
+    without reserving the single writer before the active-run check, two
+    concurrent create_workflow_run calls can both pass the guard in the
+    window before either inserts, and both runs execute paid jobs whose
+    per-run idempotency keys never collide. The wrapper below forces that
+    interleaving: the first caller through the guard pauses until the second
+    has also passed it (or times out — under the reservation the second
+    cannot pass until the first commits).
+    """
+    from app.models import WorkflowDefinition, WorkflowRun
+    from app.services.workflow_engine import (
+        create_workflow_run,
+        default_graph,
+        planning,
+        publish_workflow,
+    )
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+    with factory() as db:
+        wf = WorkflowDefinition(
+            project_id=seeded["project_id"],
+            name="并发启动工作流",
+            draft_graph=default_graph(),
+            is_active=True,
+        )
+        db.add(wf)
+        db.commit()
+        publish_workflow(db, wf)
+        workflow_id = wf.id
+
+    real_selected = planning._selected_nodes
+    guard_calls = []
+    second_passed = Event()
+
+    def interleaved_selected(graph, start_node_ids, stop_node_ids):
+        guard_calls.append(1)
+        if len(guard_calls) == 1:
+            # First through the guard: hold the window open so the other
+            # start gets past its own check before we insert. Under the
+            # writer reservation the other start is still blocked at its
+            # reservation here, so this wait times out and the first
+            # commits first — exactly the serialization under test.
+            second_passed.wait(timeout=2)
+        else:
+            second_passed.set()
+        return real_selected(graph, start_node_ids, stop_node_ids)
+
+    monkeypatch.setattr(planning, "_selected_nodes", interleaved_selected)
+
+    def start_worker(_idx):
+        with factory() as db:
+            workflow = db.get(WorkflowDefinition, workflow_id)
+            try:
+                run = create_workflow_run(
+                    db,
+                    workflow,
+                    scope_type="PAGE",
+                    scope_id=seeded["page_id"],
+                    start_node_ids=["generate"],
+                    stop_node_ids=["generate"],
+                )
+                return ("started", run.id)
+            except ValueError as error:
+                return ("refused", str(error))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(start_worker, range(2)))
+
+    started = [run_id for kind, run_id in outcomes if kind == "started"]
+    refused = [message for kind, message in outcomes if kind == "refused"]
+    assert len(started) == 1, f"expected one started run, outcomes={outcomes}"
+    assert len(refused) == 1 and "已有进行中的运行" in refused[0]
+    with factory() as db:
+        runs = list(
+            db.scalars(select(WorkflowRun).where(WorkflowRun.workflow_id == workflow_id))
+        )
+        assert len(runs) == 1
+
+
+def test_workflow_start_reads_project_after_sqlite_writer_reservation(
+    app_default_sqlite_sessions, monkeypatch
+):
+    from contextlib import contextmanager
+
+    from app.models import WorkflowDefinition, WorkflowRun, utcnow
+    from app.services import ordinal_allocator as allocator
+    from app.services.workflow_engine import create_workflow_run, default_graph, publish_workflow
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+    with factory() as db:
+        workflow = WorkflowDefinition(
+            project_id=seeded["project_id"], name="归档竞态", draft_graph=default_graph()
+        )
+        db.add(workflow)
+        db.commit()
+        publish_workflow(db, workflow)
+        workflow_id = workflow.id
+
+    real_reserve = allocator.reserve_sqlite_writer
+
+    @contextmanager
+    def archive_before_reservation(db):
+        with factory() as other:
+            other.execute(
+                update(Project).where(Project.id == seeded["project_id"]).values(deleted_at=utcnow())
+            )
+            other.commit()
+        with real_reserve(db):
+            yield
+
+    monkeypatch.setattr(allocator, "reserve_sqlite_writer", archive_before_reservation)
+    with factory() as db:
+        workflow = db.get(WorkflowDefinition, workflow_id)
+        with pytest.raises(ValueError, match="项目不存在或已归档"):
+            create_workflow_run(
+                db, workflow, scope_type="PAGE", scope_id=seeded["page_id"],
+                start_node_ids=["generate"], stop_node_ids=["generate"],
+            )
+    with factory() as db:
+        assert db.scalar(select(WorkflowRun.id)) is None
+
+
+def test_workflow_start_sqlite_writer_contention_is_classified(app_default_sqlite_sessions):
+    from app.models import WorkflowDefinition, WorkflowRun
+    from app.services.ordinal_allocator import OrdinalConflictError, reserve_sqlite_writer
+    from app.services.workflow_engine import create_workflow_run, default_graph, publish_workflow
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+    with factory() as db:
+        workflow = WorkflowDefinition(
+            project_id=seeded["project_id"], name="锁争用", draft_graph=default_graph()
+        )
+        db.add(workflow)
+        db.commit()
+        publish_workflow(db, workflow)
+        workflow_id = workflow.id
+
+    with factory() as holder, factory() as db:
+        workflow = db.get(WorkflowDefinition, workflow_id)
+        db.connection().exec_driver_sql("PRAGMA busy_timeout=1")
+        with reserve_sqlite_writer(holder), pytest.raises(OrdinalConflictError, match="冲突"):
+            create_workflow_run(
+                db, workflow, scope_type="PAGE", scope_id=seeded["page_id"],
+                start_node_ids=["generate"], stop_node_ids=["generate"],
+            )
+        assert not db.in_transaction()
+    with factory() as db:
+        assert db.scalar(select(WorkflowRun.id)) is None
+
+
 def test_candidate_and_concurrent_close_commit_in_serial_order(
     app_default_sqlite_sessions, monkeypatch
 ):

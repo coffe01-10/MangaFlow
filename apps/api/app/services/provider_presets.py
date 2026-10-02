@@ -396,7 +396,11 @@ def ensure_provider_presets(
             db.add(connection)
             db.flush()
         else:
-            profile.name = preset.name
+            # ``name`` is operator-editable via PATCH /providers (built-ins can
+            # be renamed, only deleted); re-stamping it here reverted the
+            # rename on the very next preset sync (list/resolve/readiness run
+            # this on nearly every request). Only the fields the API never
+            # exposes for editing stay preset-owned.
             profile.category = preset.category
             profile.risk_label = preset.risk_label
             profile.documentation_url = preset.documentation_url

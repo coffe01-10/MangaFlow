@@ -3,7 +3,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas import VersionToken, reject_non_finite_json
+from app.schemas import MODEL_REFERENCE_PATTERN, VersionToken, reject_non_finite_json
 
 PortDataType = Literal["text", "json", "image", "asset", "report", "boolean"]
 WorkflowScope = Literal["PROJECT", "CHAPTER", "PAGE", "CANDIDATE"]
@@ -186,7 +186,10 @@ class WorkflowRestoreRequest(BaseModel):
 
 class WorkflowNodeApproveRequest(BaseModel):
     candidate_id: str | None = None
-    image_model_alias: str | None = Field(default=None, max_length=200)
+    # Same shape+length contract as every other model_alias input: the value
+    # lands in String(64) alias columns, so a bare length cap of 200 let a
+    # schema-legal value fail mid-approval on PostgreSQL.
+    image_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
     resolution: Literal["1K", "2K", "4K"] | None = None
 
 

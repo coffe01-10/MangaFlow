@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import sys
 from collections.abc import Callable
@@ -648,47 +649,75 @@ class CLIExecutionController:
         return names
 
     def _claim(self, **values) -> None:
+        max_slots = self.settings.cli_channel_max_concurrency
         last_error: IntegrityError | None = None
-        for slot in range(1, self.settings.cli_channel_max_concurrency + 1):
+        # A concurrent _finish can free its lease_slot between our failed
+        # INSERTs and the occupancy re-check, so a full pass may observe a
+        # free slot that was taken microseconds earlier. Re-run the
+        # allocation (bounded) instead of letting a capacity conflict escape
+        # as an unclassified failure before the CLI can be launched.
+        for _pass in range(3):
+            for slot in range(1, max_slots + 1):
+                with self.session_factory() as db:
+                    db.add(
+                        CLIExecutionRun(
+                            id=values["run_id"],
+                            job_id=values["job_id"],
+                            model_call_attempt_id=values["attempt_id"],
+                            connection_id=values["connection_id"],
+                            catalog_model_id=values["model_id"],
+                            run_token=values["token"],
+                            relative_path=values["relative_path"],
+                            operation=values["operation"],
+                            state="PREPARING",
+                            cleanup_state="PENDING",
+                            lease_slot=slot,
+                            request_checksum=values["request_checksum"],
+                            output_manifest={},
+                        )
+                    )
+                    try:
+                        db.commit()
+                        return
+                    except IntegrityError as error:
+                        db.rollback()
+                        # Only slot uniqueness is capacity contention. Other
+                        # constraints (attempt, token, FK) cannot heal by
+                        # trying another slot and must keep their real cause.
+                        orig = error.orig
+                        constraint = getattr(getattr(orig, "diag", None), "constraint_name", None)
+                        slot_conflict = (
+                            constraint == "uq_cli_execution_runs_connection_slot"
+                            or (
+                                isinstance(orig, sqlite3.IntegrityError)
+                                and str(orig) == (
+                                    "UNIQUE constraint failed: cli_execution_runs.connection_id, "
+                                    "cli_execution_runs.lease_slot"
+                                )
+                            )
+                        )
+                        if not slot_conflict:
+                            raise
+                        last_error = error
             with self.session_factory() as db:
-                db.add(
-                    CLIExecutionRun(
-                        id=values["run_id"],
-                        job_id=values["job_id"],
-                        model_call_attempt_id=values["attempt_id"],
-                        connection_id=values["connection_id"],
-                        catalog_model_id=values["model_id"],
-                        run_token=values["token"],
-                        relative_path=values["relative_path"],
-                        operation=values["operation"],
-                        state="PREPARING",
-                        cleanup_state="PENDING",
-                        lease_slot=slot,
-                        request_checksum=values["request_checksum"],
-                        output_manifest={},
+                occupied = set(
+                    db.scalars(
+                        select(CLIExecutionRun.lease_slot).where(
+                            CLIExecutionRun.connection_id == values["connection_id"],
+                            CLIExecutionRun.lease_slot.is_not(None),
+                        )
                     )
                 )
-                try:
-                    db.commit()
-                    return
-                except IntegrityError as error:
-                    db.rollback()
-                    last_error = error
-        with self.session_factory() as db:
-            occupied = set(
-                db.scalars(
-                    select(CLIExecutionRun.lease_slot).where(
-                        CLIExecutionRun.connection_id == values["connection_id"],
-                        CLIExecutionRun.lease_slot.is_not(None),
-                    )
+            if len(occupied) >= max_slots:
+                raise ProviderAdapterError(
+                    "CONCURRENCY_LIMIT", "CLI 通道并发名额已满，请稍后重试", retryable=True
                 )
-            )
-        if len(occupied) >= self.settings.cli_channel_max_concurrency:
-            raise ProviderAdapterError(
-                "CONCURRENCY_LIMIT", "CLI 通道并发名额已满，请稍后重试", retryable=True
-            )
         if last_error:
-            raise last_error
+            raise ProviderAdapterError(
+                "CONCURRENCY_LIMIT",
+                "CLI 通道并发名额分配持续冲突，请稍后重试",
+                retryable=True,
+            ) from last_error
         raise RuntimeError("CLI run slot allocation failed")
 
     def _load(self, run_id: str) -> CLIExecutionRun:

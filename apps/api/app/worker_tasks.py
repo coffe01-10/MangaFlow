@@ -400,13 +400,16 @@ def _mark_worker_failure(
     is_retryable = bool(retryable and (job.attempt_count < job.max_attempts))
     target_status = JobStatus.WAITING if is_retryable else JobStatus.FAILED
 
+    # Fenced on ownership, not expiry (same #130 contract as the completion
+    # CAS and _LeaseHeartbeat._renew_once): an expired but UNRECLAIMED lease
+    # is still ours, so a starved-but-alive worker's typed failure (e.g. a
+    # RATE_LIMIT arriving after a LOCAL_TIMEOUT stopped renewal) must still
+    # be recorded. Only a janitor reclaim flipping lease_owner arbitrates.
     updated = db.execute(
         update(GenerationJob)
         .where(
             GenerationJob.id == job_id,
             GenerationJob.lease_owner == owner,
-            GenerationJob.lease_expires_at.is_not(None),
-            GenerationJob.lease_expires_at > now,
             GenerationJob.status.in_(ACTIVE_STATUSES),
             GenerationJob.status != JobStatus.CANCELLED,
         )
@@ -735,6 +738,13 @@ def execute_job(job_id: str) -> None:
             retryable=False,
         )
         if not marked:
+            # Same observability rule as the generic branch below: a silent
+            # return would swallow the typed failure with zero log output.
+            LOGGER.warning(
+                "job %s reached a terminal state or lost its lease before its "
+                "STALE_STORYBOARD_VERSION failure could be recorded",
+                job_id,
+            )
             return
         if workflow_run_id and is_final:
             # Same isolation rule as the completion path above: the failure
@@ -765,6 +775,14 @@ def execute_job(job_id: str) -> None:
             retryable=is_retryable,
         )
         if not marked:
+            # Same observability rule as the generic branch below: a silent
+            # return would swallow the typed failure with zero log output.
+            LOGGER.warning(
+                "job %s reached a terminal state or lost its lease before its "
+                "%s failure could be recorded",
+                job_id,
+                error.code,
+            )
             return
         if workflow_run_id and is_final:
             # Same isolation rule as the completion path above: the failure
@@ -798,6 +816,14 @@ def execute_job(job_id: str) -> None:
             retryable=False,
         )
         if not marked:
+            # Same observability rule as the generic branch below: a silent
+            # return would swallow the typed failure with zero log output.
+            LOGGER.warning(
+                "job %s reached a terminal state or lost its lease before its "
+                "%s failure could be recorded",
+                job_id,
+                error.error_code,
+            )
             return
         if workflow_run_id and is_final:
             try:

@@ -24,7 +24,11 @@ from app.schemas import (
     StylePaletteApproval,
 )
 from app.settings_schemas import RuntimeSettingsUpdate
-from app.workflow_schemas import WorkflowRestoreRequest, WorkflowUpdate
+from app.workflow_schemas import (
+    WorkflowNodeApproveRequest,
+    WorkflowRestoreRequest,
+    WorkflowUpdate,
+)
 from pydantic import ValidationError
 
 INT32_MAX = 2_147_483_647
@@ -64,6 +68,25 @@ def test_runtime_settings_update_rejects_every_explicit_null(field):
         RuntimeSettingsUpdate.model_validate(payload)
     # Omission (the legal "no change") keeps validating.
     assert RuntimeSettingsUpdate(version=1).model_fields_set == {"version"}
+
+
+def test_model_alias_input_is_bounded_by_the_column_width():
+    """Model aliases land in String(64) columns; the old 200-char contract
+    passed validation and failed mid-approval on PostgreSQL with an
+    unhandled StringDataRightTruncation (500) instead of a 422."""
+    long_alias = "a" + "b" * 64  # 65 chars, one past the column width
+    with pytest.raises(ValidationError):
+        ProjectUpdate(text_model_alias=long_alias, version=1)
+    with pytest.raises(ValidationError):
+        ProjectUpdate(last_image_model_alias=long_alias, version=1)
+    with pytest.raises(ValidationError):
+        WorkflowNodeApproveRequest(image_model_alias=long_alias)
+    # A full-width alias stays legal.
+    assert ProjectUpdate(text_model_alias="a" * 64, version=1).text_model_alias == "a" * 64
+    assert (
+        WorkflowNodeApproveRequest(image_model_alias="a" * 64).image_model_alias
+        == "a" * 64
+    )
 
 
 def test_poisoned_runtime_row_no_longer_breaks_reads(client, db_session):

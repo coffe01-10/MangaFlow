@@ -1224,7 +1224,12 @@ def mark_job_failed(
 
     now = utcnow()
     # Conditional claim instead of a read-check write: never clobber a live
-    # worker's unexpired lease, but still fail stuck rows whose lease died.
+    # worker's lease. Issue #130: first observed expiry does NOT prove the
+    # executor is dead — its heartbeat may be transiently starved while a
+    # paid call runs on, and its ownership-fenced completion CAS still wins
+    # on an unreclaimed row. Only close out a lease that has been cold past
+    # the reclaim-grace window, matching the janitor's reclaim boundary.
+    grace = timedelta(seconds=_lease_reclaim_grace_seconds(get_settings()))
     claimed = db.execute(
         update(GenerationJob)
         .where(
@@ -1235,7 +1240,7 @@ def mark_job_failed(
             or_(
                 GenerationJob.lease_owner.is_(None),
                 GenerationJob.lease_expires_at.is_(None),
-                GenerationJob.lease_expires_at <= now,
+                GenerationJob.lease_expires_at <= now - grace,
             ),
         )
         .values(

@@ -251,6 +251,18 @@ class AntigravityArtifactRunner:
         outcome = self.delegate.run(**kwargs)
         if outcome.cancelled or outcome.timed_out:
             return outcome
+        if getattr(outcome, "stdout_truncated", False):
+            # #241-1 parity with the Grok runner: the capture layer dropped
+            # bytes past its spill cap, so the envelope cannot be parsed and
+            # the CLI's real result — and any billed session image — is
+            # unknown. This is our failure, not the CLI's: retryable UPSTREAM
+            # instead of the terminal INVALID_OUTPUT the envelope parse would
+            # stamp below.
+            return replace(
+                outcome,
+                error_code="UPSTREAM",
+                error_message="CLI stdout 捕获被截断，无法采用 Antigravity 结果",
+            )
         if outcome.exit_code:
             code, message, _retryable = _map_failure(_decode_output(outcome))
             return replace(

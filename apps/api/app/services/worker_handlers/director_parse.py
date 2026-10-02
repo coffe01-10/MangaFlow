@@ -311,9 +311,11 @@ def _resolve_targets(
             selected = selection.get("panel_id")
             raw = selected
         if raw is None:
-            # No anchor at all → clarification, never a rejected row.
+            # No anchor at all → clarification, never a rejected row. An
+            # empty page has no options and no resolution either — that is
+            # the one case that lands as a rejected row.
             options = panel_options()
-            return None, options, options and None or "目标格不存在"
+            return None, options, None if options else "目标格不存在"
         resolved = False
         if isinstance(raw, str) and raw in {p.id for p in panels}:
             panel = next(p for p in panels if p.id == raw)

@@ -8,6 +8,8 @@ and _active_price tie-broke equal pricing windows by list order, letting
 the same attempt flip price versions between calls.
 """
 
+import pytest
+from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import GenerationJob, ModelPricingVersion, Project, utcnow
 from app.services.job_service import mark_job_failed
@@ -146,6 +148,26 @@ def test_mark_job_failed_refuses_claimed_job(db_session):
     row = db_session.get(GenerationJob, job.id)
     assert row.status == "GENERATING"
     assert row.lease_owner == "worker-1"
+
+
+@pytest.mark.parametrize("seconds_expired, should_fail", [(1, False), (61, True)])
+def test_mark_job_failed_respects_reclaim_grace(db_session, monkeypatch, seconds_expired, should_fail):
+    from datetime import timedelta
+
+    from app.services import job_service
+
+    now = utcnow()
+    monkeypatch.setattr(job_service, "utcnow", lambda: now)
+    monkeypatch.setattr(get_settings(), "job_lease_reclaim_grace_seconds", 60)
+    job = _job(
+        db_session, "grace-failure", status="GENERATING", lease_owner="worker-1",
+        lease_expires_at=now - timedelta(seconds=seconds_expired),
+    )
+    mark_job_failed(db_session, job, "WORKER_ERROR", "延迟的失败")
+    db_session.flush()
+    db_session.refresh(job)
+    assert job.status == (JobStatus.FAILED if should_fail else JobStatus.GENERATING)
+    assert job.lease_owner == (None if should_fail else "worker-1")
 
 
 def test_active_price_tie_break_is_deterministic(db_session):

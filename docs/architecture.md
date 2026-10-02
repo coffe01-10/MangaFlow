@@ -123,6 +123,8 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 发布在事务内重新读取并校验同一份草稿，PostgreSQL 先锁定工作流行并刷新 Session 缓存，再分配 revision。唯一约束冲突或 SQLite BUSY/LOCKED 会回滚整个失败事务并有限重试；耗尽返回 409，不更改已发布指针。非锁类 OperationalError 不会伪装成发布冲突。此处没有 schema 变更；真实 PostgreSQL 并发验收仍待独立环境验证。
 
+启动运行时，SQLite 在读取项目存活状态、工作流发布版本和运行范围前取得事务写锁；PostgreSQL 按项目、工作流的顺序取得行锁。存活状态校验、同范围活动运行检查与新运行及任务创建共用事务，锁保持到提交。SQLite 写锁争用返回可重新发起完整操作的 409，避免等待期间的归档漏检或重复启动。
+
 ## 6. 动态分页与逐页生成
 
 原作先拆为带字符区间和哈希的 `SourceSegment`，再映射到 Scene、Beat、剧本和 `MangaPage`。容量估算使用每页 3–8 格（`PageLayoutUpdate.panel_count` 上限，见分镜布局契约 §14）、最多 8 个气泡，中文对白/旁白软上限 120 字、硬上限 180 字；溢出时继续拆页，不压缩或删除情节。格内人物用 `VISIBLE/OFFSCREEN/MENTIONED` 表示，道具独立保存；没有实际出镜人物的场景页是合法页面。任何来源片段未映射、已有实际出镜人物却缺参考、场景服装缺失或正式风格未确认时，统一 readiness 服务拒绝候选请求。

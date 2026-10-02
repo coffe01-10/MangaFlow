@@ -28,7 +28,8 @@ from app.services.cli_executor import (
 )
 from app.services.cli_probe import CLIProbeObservation, probe_cli_connection
 from PIL import Image
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 
@@ -251,6 +252,66 @@ def test_channel_slot_is_hard_and_reusable(cli_context):
     assert caught.value.code == "CONCURRENCY_LIMIT"
     controller.execute(first, runner=SuccessRunner(), argv=("fake-cli",))
     assert _prepare(controller, second_ids)
+
+
+def test_duplicate_attempt_is_not_reclassified_as_channel_capacity(cli_context):
+    settings, _factory, controller, ids = cli_context
+    first = _prepare(controller, ids)
+    controller.execute(first, runner=SuccessRunner(), argv=("fake-cli",))
+
+    # The channel is empty, but the attempt already owns a durable run.
+    # Retrying a uniqueness violation as capacity would hide that invariant.
+    with pytest.raises(IntegrityError):
+        _prepare(controller, ids)
+    assert not any(path.name != first for path in (settings.storage_root / "cli_runs").iterdir())
+
+
+def test_slot_freed_after_failed_insert_is_retried(cli_context, monkeypatch):
+    _settings, factory, controller, ids = cli_context
+    first = _prepare(controller, ids)
+    with factory() as db:
+        original = db.get(ModelCallAttempt, ids["attempt"])
+        second = ModelCallAttempt(
+            job_id=original.job_id, project_id=original.project_id,
+            job_attempt=1, dispatch_no=2, provider="fake-cli", model_id="fake-image",
+            catalog_model_id=ids["model"], connection_id=ids["connection"],
+        )
+        db.add(second)
+        db.commit()
+        second_ids = {**ids, "attempt": second.id}
+
+    released = []
+
+    def release_on_first_conflict():
+        db = factory()
+        real_commit = db.commit
+
+        def commit():
+            try:
+                real_commit()
+            except IntegrityError:
+                db.rollback()
+                # A real slot collision, followed by the other controller's
+                # committed release before _claim re-reads channel occupancy.
+                if not released:
+                    with factory() as other:
+                        other.execute(
+                            update(CLIExecutionRun).where(CLIExecutionRun.id == first)
+                            .values(state="COMPLETED", lease_slot=None)
+                        )
+                        other.commit()
+                    released.append(first)
+                raise
+
+        monkeypatch.setattr(db, "commit", commit)
+        return db
+
+    monkeypatch.setattr(controller, "session_factory", release_on_first_conflict)
+    second_run = _prepare(controller, second_ids)
+    assert released == [first]
+    with factory() as db:
+        assert db.get(CLIExecutionRun, first).lease_slot is None
+        assert db.get(CLIExecutionRun, second_run).lease_slot == 1
 
 
 def test_reference_is_copied_without_exposing_source_name(cli_context):

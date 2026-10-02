@@ -26,7 +26,11 @@ from app.domain.storyboard_layout import (
     MIN_POLYGON_VERTICES,
 )
 
-MODEL_REFERENCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+# Aliases are stored in String(64) columns (projects, generation_jobs,
+# page_candidates), so the bound matches the storage: anything longer raised
+# an unhandled StringDataRightTruncation on PostgreSQL after passing this
+# validation (and silently stored overlong on SQLite).
+MODEL_REFERENCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
 
 # Optimistic-lock version tokens are stored in 32-bit Integer columns
 # (models.py maps every ``version``/``*_version`` column as Integer). A token

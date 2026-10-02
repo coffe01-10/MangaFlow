@@ -4,6 +4,7 @@ import logging
 from collections import defaultdict
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.domain.states import JobStatus
@@ -47,13 +48,30 @@ def create_workflow_run(
 ) -> WorkflowRun:
     # `create_job` 是模块级 monkeypatch 接缝，必须在调用时经 facade 解析。
     from app.services import workflow_engine as engine
-    from app.services.ordinal_allocator import lock_entity
+    from app.services.ordinal_allocator import (
+        OrdinalConflictError,
+        is_sqlite_lock_error,
+        lock_entity,
+        reserve_sqlite_writer,
+    )
 
     # Parent-first, shared with archive and retry; keep the lock until the
-    # run and jobs commit so the archive sweep cannot miss a new run.
-    project = lock_entity(db, Project, workflow.project_id)
+    # run and jobs commit so the archive sweep cannot miss a new run. SQLite
+    # must reserve the writer BEFORE reading liveness and scope, because its
+    # SELECT takes no lock and an archive can commit while we wait to write.
+    try:
+        with reserve_sqlite_writer(db):
+            project = lock_entity(db, Project, workflow.project_id)
+    except OperationalError as error:
+        if not is_sqlite_lock_error(error):
+            raise
+        db.rollback()
+        raise OrdinalConflictError("工作流启动写锁冲突，请重试完整操作") from error
     if project is None or project.deleted_at is not None:
         raise ValueError("项目不存在或已归档")
+    workflow = lock_entity(db, WorkflowDefinition, workflow.id)
+    if workflow is None or workflow.deleted_at is not None:
+        raise ValueError("工作流不存在或已删除")
 
     if pinned_version_id is not None:
         # retry_run clones a new run against the exact version the failed run
@@ -81,14 +99,6 @@ def create_workflow_run(
     # the same target. Locking the definition row serializes concurrent starts
     # before the check-then-insert below. Terminal runs (FAILED/CANCELLED/
     # COMPLETED) never block retry_run or a fresh start.
-    lock_entity(db, WorkflowDefinition, workflow.id)
-    # The route-side `_workflow` guard ran before this lock was granted; a
-    # concurrent delete_workflow committing in between would soft-delete the
-    # definition under a run we are about to start executing paid jobs for
-    # (#197). The lock re-read the row (populate_existing), so re-check the
-    # tombstone here like retry_run does and refuse instead of resurrecting.
-    if workflow.deleted_at is not None:
-        raise ValueError("工作流不存在或已删除")
     # PROJECT scope has two accepted spellings (scope.py's validation admits
     # scope_id == None and scope_id == project_id), and WorkflowRunCreate does
     # not normalize them. An exact scope_id match let a run started under one

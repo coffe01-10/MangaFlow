@@ -15,6 +15,7 @@ import zlib
 from io import BytesIO
 
 from app.config import get_settings
+from app.models import Asset
 from app.services.media import sanitize_stored_filename
 from PIL import Image
 
@@ -77,6 +78,22 @@ def test_hostile_filename_is_sanitized_before_storage(client, monkeypatch, tmp_p
     assert stored_name == "evil .png"
 
 
+def test_windows_reserved_suffix_is_422_not_500(client, monkeypatch, tmp_path):
+    """sanitize_stored_filename strips \\ / : but leaves < > " | ? *, so a
+    client-controlled suffix like ".png*" reached Windows file creation and
+    failed with an opaque OSError→500 after the taxonomy gave every other
+    bad input a typed 4xx."""
+    _uploads(monkeypatch, tmp_path)
+    project = client.post("/api/v1/projects", json={"name": "非法后缀"}).json()
+    response = client.post(
+        "/api/v1/assets/upload",
+        data={"project_id": project["id"], "kind": "character"},
+        files={"file": ("poster.png*", _png_bytes(), "image/png")},
+    )
+    assert response.status_code == 422
+    assert list((tmp_path / "uploads").rglob("*.png")) == []
+
+
 def test_sanitize_stored_filename_bounds():
     assert sanitize_stored_filename("..\\..\\evil.png") == "evil.png"
     assert sanitize_stored_filename("a\x00b.png") == "ab.png"
@@ -86,6 +103,23 @@ def test_sanitize_stored_filename_bounds():
     assert sanitize_stored_filename("inline/name.png") == "name.png"
     assert sanitize_stored_filename("keep.png", default="page.png") == "keep.png"
     assert sanitize_stored_filename("  ", default="page.png") == "page.png"
+
+
+def test_extensionless_upload_uses_detected_image_suffix(client, db_session, monkeypatch, tmp_path):
+    _uploads(monkeypatch, tmp_path)
+    project = client.post("/api/v1/projects", json={"name": "无扩展名参考图"}).json()
+    response = client.post(
+        "/api/v1/assets/upload",
+        data={"project_id": project["id"], "kind": "character"},
+        files={"file": ("reference", _png_bytes(), "image/png")},
+    )
+    assert response.status_code == 201, response.json()
+    asset = response.json()
+    assert asset["original_name"] == "reference"
+    assert asset["mime_type"] == "image/png"
+    stored = db_session.get(Asset, asset["id"])
+    assert stored.storage_key.endswith(".png")
+    assert (tmp_path / "uploads" / stored.storage_key).is_file()
 
 
 def test_sanitizer_neutralizes_ads_and_truncation_edges():

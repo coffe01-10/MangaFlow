@@ -23,6 +23,7 @@ from app.models import (
     ProviderConnection,
     ProviderProfile,
 )
+from app.services import cli_process_windows
 from app.services.cli_executor import CLIExecutionController, CLIProcessOutcome
 from app.services.model_router import AdapterBinding, ResolvedModel, bind_adapter
 from app.services.provider_presets import ensure_provider_presets
@@ -423,6 +424,40 @@ def test_antigravity_rejects_ambiguous_private_artifacts(db_session, tmp_path):
     assert caught.value.code == "PARTIAL_OUTPUT"
     run = db_session.scalar(select(CLIExecutionRun))
     assert (run.state, run.cleanup_state) == ("FAILED", "RETAINED")
+
+
+def test_antigravity_truncated_capture_is_retryable_upstream(db_session, tmp_path):
+    """#241-1 parity with the Grok runner: a capture spill-cap truncation means
+    the envelope cannot be parsed and the billed result is unknown — retryable
+    UPSTREAM, never a terminal INVALID_OUTPUT blaming the CLI."""
+
+    class TruncatedCaptureRunner:
+        def run(self, **_kwargs):
+            return cli_process_windows.WindowsCLIProcessOutcome(
+                0,
+                stdout=b'{"status":"SUCCESS","usage":',
+                stdout_truncated=True,
+            )
+
+    factory, settings, connection, model, job, attempt = _cli_rows(
+        db_session, tmp_path
+    )
+    adapter = _adapter(
+        factory, settings, connection, model, TruncatedCaptureRunner()
+    )
+    adapter.bind_execution_context(
+        job_id=job.id,
+        model_call_attempt_id=attempt.id,
+        lease_owner=None,
+    )
+
+    with pytest.raises(ProviderAdapterError) as caught:
+        adapter.generate_asset(ImageRequest(prompt="截断场景"))
+
+    assert caught.value.code == "UPSTREAM"
+    assert caught.value.retryable is True
+    run = db_session.scalar(select(CLIExecutionRun))
+    assert (run.state, run.error_code) == ("FAILED", "UPSTREAM")
 
 
 def test_antigravity_rejects_more_than_one_reference_before_launch(db_session, tmp_path):

@@ -623,6 +623,12 @@ class OpenAICompatibleAdapter(_CompatibleBase):
         return self._generate_image(request)
 
     def _generate_image(self, request: ImageRequest) -> ModelResponse:
+        # Same shape guard as analyze_multimodal and the Vertex/Google
+        # adapters: a reference/MIME count mismatch must degrade to a
+        # classified INVALID_INPUT failure, not escape as an unclassified
+        # ValueError from zip(strict=True) before any request is built.
+        if len(request.reference_images) != len(request.reference_mime_types):
+            raise ProviderAdapterError("INVALID_INPUT", "参考图与 MIME 类型数量不一致")
         headers = _safe_headers(self.runtime)
         if request.reference_images:
             headers.pop("Content-Type", None)

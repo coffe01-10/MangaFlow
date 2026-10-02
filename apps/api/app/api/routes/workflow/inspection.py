@@ -33,7 +33,11 @@ from app.services.job_service import (
     has_active_job,
 )
 from app.services.model_router import model_supports_resolution, resolve_model
-from app.services.ordinal_allocator import create_generation_batch
+from app.services.ordinal_allocator import (
+    BatchOrdinalConflictError,
+    commit_ordinal_transaction,
+    create_generation_batch,
+)
 
 router = APIRouter()
 
@@ -146,14 +150,21 @@ def repair_candidate(
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     project = _project_for_page(db, page)
-    batch = create_generation_batch(
-        db,
-        project_id=project.id,
-        chapter_id=page.chapter_id,
-        page_id=page.id,
-        generation_kind="REPAIR",
-        close_open_page_batches=True,
-    )
+    # Same conflict mapping as _new_batch: exhausted ordinal retries and a
+    # contended final commit are retryable 409s, not unhandled 500s on these
+    # paid-job minting endpoints.
+    try:
+        batch = create_generation_batch(
+            db,
+            project_id=project.id,
+            chapter_id=page.chapter_id,
+            page_id=page.id,
+            generation_kind="REPAIR",
+            close_open_page_batches=True,
+        )
+    except BatchOrdinalConflictError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
     # Issue #230 residual: create_generation_batch acquired (and holds) the
     # project/page locks; a concurrent delete of the original candidate can
     # have committed between the route's initial read and this point. The
@@ -280,7 +291,10 @@ def repair_candidate(
         auto_commit=False,
     )
     candidate.job_id = job.id
-    db.commit()
+    try:
+        commit_ordinal_transaction(db, BatchOrdinalConflictError)
+    except BatchOrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     db.refresh(candidate)
     job = enqueue_job(db, job)
     return CandidateQueuedRead(
@@ -310,14 +324,19 @@ def upscale_candidate(
         raise HTTPException(status_code=409, detail="升清目标必须高于当前候选清晰度")
     page = _page(db, original.page_id)
     project = _project_for_page(db, page)
-    batch = create_generation_batch(
-        db,
-        project_id=project.id,
-        chapter_id=page.chapter_id,
-        page_id=page.id,
-        generation_kind="UPSCALE",
-        close_open_page_batches=True,
-    )
+    # Same conflict mapping as the repair route (and _new_batch).
+    try:
+        batch = create_generation_batch(
+            db,
+            project_id=project.id,
+            chapter_id=page.chapter_id,
+            page_id=page.id,
+            generation_kind="UPSCALE",
+            close_open_page_batches=True,
+        )
+    except BatchOrdinalConflictError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
     # Issue #230 residual: same post-lock re-read as the repair route — a
     # concurrent delete of the original may have committed while the batch
     # allocation took the locks; refuse instead of enqueuing a paid upscale
@@ -405,7 +424,10 @@ def upscale_candidate(
         auto_commit=False,
     )
     candidate.job_id = job.id
-    db.commit()
+    try:
+        commit_ordinal_transaction(db, BatchOrdinalConflictError)
+    except BatchOrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     db.refresh(candidate)
     job = enqueue_job(db, job)
     return CandidateQueuedRead(

@@ -1209,9 +1209,46 @@ def approve_asset_reference(
     # into character/outfit reference bindings.
     _ensure_asset_blob_alive(asset, detail="设定草稿图片文件缺失，请重新生成后再审批")
 
+    def _apply_outfit() -> Outfit | None:
+        # Both callers hold the character lock before this name lookup.
+        # Different sheets have disjoint asset locks; the character lock
+        # prevents duplicate outfits and lost reference bindings between them.
+        if not payload.outfit_name:
+            return None
+        outfit_name = payload.outfit_name.strip()
+        outfit = db.scalar(
+            select(Outfit).where(
+                Outfit.character_id == character.id,
+                Outfit.name == outfit_name,
+            )
+        )
+        if not outfit:
+            outfit = Outfit(
+                project_id=character.project_id,
+                character_id=character.id,
+                name=outfit_name,
+                components={"description": payload.outfit_description},
+                locked_fields=payload.outfit_locked_fields,
+                reference_asset_ids=[asset.id],
+                status="CANONICAL",
+            )
+            db.add(outfit)
+        else:
+            outfit.components = {
+                **outfit.components,
+                "description": payload.outfit_description,
+            }
+            outfit.locked_fields = payload.outfit_locked_fields
+            outfit.reference_asset_ids = list(
+                dict.fromkeys([*outfit.reference_asset_ids, asset.id])
+            )
+            outfit.status = "CANONICAL"
+            outfit.version += 1
+        return outfit
+
     if payload.bind_character_reference:
 
-        def _bind() -> None:
+        def _bind() -> Outfit | None:
             # Contract §10.3a (issue #157): the sheet must not become this
             # character's reference while another character's package version
             # still points at the same asset (package-only bindings carry no
@@ -1224,6 +1261,9 @@ def approve_asset_reference(
             locked_asset = lock_asset_for_ownership(db, asset.id)
             if not locked_asset or locked_asset.deleted_at is not None:
                 raise HTTPException(status_code=409, detail="设定草稿图片不存在")
+            # Refresh before changing status/version: populate_existing in a
+            # later lock would discard these unflushed changes (autoflush=False).
+            lock_entity(db, Character, character.id)
             assert_asset_not_referenced_by_foreign_packages(
                 db, character_id=character.id, asset_id=asset.id
             )
@@ -1292,44 +1332,26 @@ def approve_asset_reference(
                 "NEEDS_CONFIRMATION" if character.alias_conflict else "CANONICAL"
             )
             character.version += 1
+            return _apply_outfit()
 
-        run_lock_retry(
+        outfit = run_lock_retry(
             db,
             _bind,
             conflict_detail="角色参考绑定冲突，请稍后重试",
         )
+    else:
+        def _outfit_only() -> Outfit | None:
+            locked_asset = lock_asset_for_ownership(db, asset.id)
+            if not locked_asset or locked_asset.deleted_at is not None:
+                raise HTTPException(status_code=409, detail="设定草稿图片不存在")
+            lock_entity(db, Character, character.id)
+            return _apply_outfit()
 
-    outfit = None
-    if payload.outfit_name:
-        outfit_name = payload.outfit_name.strip()
-        outfit = db.scalar(
-            select(Outfit).where(
-                Outfit.character_id == character.id,
-                Outfit.name == outfit_name,
-            )
+        outfit = run_lock_retry(
+            db,
+            _outfit_only,
+            conflict_detail="服装参考更新冲突，请稍后重试",
         )
-        if not outfit:
-            outfit = Outfit(
-                project_id=character.project_id,
-                character_id=character.id,
-                name=outfit_name,
-                components={"description": payload.outfit_description},
-                locked_fields=payload.outfit_locked_fields,
-                reference_asset_ids=[asset.id],
-                status="CANONICAL",
-            )
-            db.add(outfit)
-        else:
-            outfit.components = {
-                **outfit.components,
-                "description": payload.outfit_description,
-            }
-            outfit.locked_fields = payload.outfit_locked_fields
-            outfit.reference_asset_ids = list(
-                dict.fromkeys([*outfit.reference_asset_ids, asset.id])
-            )
-            outfit.status = "CANONICAL"
-            outfit.version += 1
 
     snapshot = dict(candidate.prompt_snapshot)
     snapshot["reference_approval"] = {

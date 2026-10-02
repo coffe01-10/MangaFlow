@@ -1598,6 +1598,37 @@ def test_non_retryable_error_immediately_marks_terminal_failure(db_session):
     assert db_session.get(GenerationJob, job.id).status == JobStatus.FAILED
 
 
+@pytest.mark.parametrize("current_owner", ["original-worker", "replacement-worker"])
+def test_expired_worker_failure_is_fenced_by_ownership(db_session, current_owner):
+    project = Project(name="过期任务的失败归属")
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id, target_type="CHAPTER", target_id="expired-failure",
+        job_type="SOURCE_PARSE", status=JobStatus.GENERATING,
+        attempt_count=1, max_attempts=3, lease_owner=current_owner,
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    marked, _, is_final = worker_tasks._mark_worker_failure(
+        db_session, job.id, "original-worker", "RATE_LIMIT", "稍后重试", retryable=True
+    )
+    db_session.refresh(job)
+    assert is_final is False
+    if current_owner == "original-worker":
+        assert marked is True
+        assert job.status == JobStatus.WAITING
+        assert job.error_code == "RATE_LIMIT"
+        assert job.lease_owner is None
+    else:
+        assert marked is False
+        assert job.status == JobStatus.GENERATING
+        assert job.error_code is None
+        assert job.lease_owner == current_owner
+
+
 def test_cancelled_job_does_not_move_to_generating_or_call_provider(db_session):
     from types import SimpleNamespace
 

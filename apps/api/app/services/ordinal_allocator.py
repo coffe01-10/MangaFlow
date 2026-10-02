@@ -89,6 +89,29 @@ def lock_entity(db: Session, model_cls, entity_id: str):
 
 
 @contextmanager
+def reserve_sqlite_writer(db: Session) -> Iterator[None]:
+    """Reserve SQLite's single writer before a check-then-act guard.
+
+    ``lock_entity`` serializes concurrent guards only on PostgreSQL (its
+    SELECT takes no lock at all on SQLite, where pysqlite legacy mode also
+    defers BEGIN until the first DML) — yet the desktop runtime is SQLite,
+    so a check-then-insert guard paired only with ``lock_entity`` lets two
+    concurrent callers both pass the check. Opening the caller's write
+    transaction with a no-op UPDATE takes the RESERVED lock for the whole
+    transaction: the loser blocks at this statement (busy_timeout applies),
+    then re-reads committed state inside its own serialized guard. No-op on
+    other dialects, where ``FOR UPDATE`` already covers it.
+    """
+    connection = db.connection()
+    if connection.dialect.name == "sqlite":
+        raw_connection = connection.connection.dbapi_connection
+        if not raw_connection.in_transaction:
+            connection.exec_driver_sql("BEGIN")
+        connection.exec_driver_sql("UPDATE projects SET version = version WHERE 0")
+    yield
+
+
+@contextmanager
 def ordinal_savepoint(db: Session) -> Iterator[None]:
     """Keep each attempt inside the caller's real transaction, including SQLite.
 
@@ -266,9 +289,12 @@ def validate_candidate_reference_selections(
         character_asset_id = selection.get("character_asset_id")
         valid_character_reference = (
             db.scalar(
-                select(CharacterReference).where(
+                select(CharacterReference)
+                .join(Asset, Asset.id == CharacterReference.asset_id)
+                .where(
                     CharacterReference.character_id == character_id,
                     CharacterReference.asset_id == character_asset_id,
+                    Asset.deleted_at.is_(None),
                 )
             )
             if character_asset_id
@@ -304,6 +330,24 @@ def validate_candidate_reference_selections(
                 raise HTTPException(status_code=409, detail="分镜指定服装还没有绑定参考图")
             if outfit_asset_id not in outfit.reference_asset_ids:
                 raise HTTPException(status_code=409, detail="请为分镜服装选择一张已绑定参考图")
+            # A soft-deleted outfit reference must not be leased into a paid
+            # job or frozen into the prompt snapshot (same liveness rule as
+            # every sibling reference path).
+            if (
+                not db.scalar(
+                    select(Asset.id).where(
+                        Asset.id == outfit_asset_id, Asset.deleted_at.is_(None)
+                    )
+                )
+            ):
+                raise HTTPException(
+                    status_code=409, detail="所选服装参考图已被删除，请刷新后重选"
+                )
+        elif outfit_asset_id:
+            # An outfit reference without its outfit was previously persisted
+            # unchecked (cross-project/deleted asset ids included) and leased
+            # via create_job(reference_asset_ids=...) — reject it outright.
+            raise HTTPException(status_code=409, detail="选择服装参考图前请先选择服装")
         normalized_selections[character_id] = {
             "character_asset_id": character_asset_id,
             "outfit_id": outfit_id,

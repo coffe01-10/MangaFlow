@@ -162,10 +162,23 @@ class CodexCLIProbeAdapter:
                 latency_ms=_elapsed_ms(started),
             )
         if outcome.exit_code != 0:
+            # Only a recognisable auth marker is terminal. Any other nonzero
+            # exit (a locked CODEX_HOME config file, a transient CLI crash)
+            # stays UNKNOWN like the Grok/Antigravity probes: classifying it
+            # as UNAUTHENTICATED flips the whole channel to a terminal auth
+            # failure until a manual re-verify.
+            text = _decode_output(outcome)
+            if "not logged in" in text.casefold():
+                return CLIProbeObservation(
+                    status="FAILED",
+                    error_code="UNAUTHENTICATED",
+                    message="Codex CLI 尚未登录",
+                    latency_ms=_elapsed_ms(started),
+                )
             return CLIProbeObservation(
-                status="FAILED",
-                error_code="UNAUTHENTICATED",
-                message="Codex CLI 尚未登录",
+                status="UNKNOWN",
+                error_code="CLI_LOGIN_UNKNOWN",
+                message="Codex CLI 登录状态无法确认",
                 latency_ms=_elapsed_ms(started),
             )
         return CLIProbeObservation(

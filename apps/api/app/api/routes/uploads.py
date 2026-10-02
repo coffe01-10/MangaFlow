@@ -1,4 +1,5 @@
 import hashlib
+import re
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -56,6 +57,8 @@ from app.services.ordinal_allocator import lock_entity
 router = APIRouter()
 CHUNK_SIZE = 1024 * 1024
 REFERENCE_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+# Dot + 1-10 lowercase alphanumerics: every allowed upload type qualifies.
+_SAFE_SUFFIX = re.compile(r"\.[a-z0-9]{1,10}")
 ASSET_KINDS = {
     "character": "CHARACTER_REFERENCE",
     "outfit": "OUTFIT_REFERENCE",
@@ -297,6 +300,13 @@ def upload_asset(
 
     safe_name = sanitize_stored_filename(file.filename or "upload")
     suffix = Path(safe_name).suffix.lower()
+    # sanitize_stored_filename strips \ / : but leaves Windows-reserved
+    # characters (< > " | ? *), so a client-controlled suffix like ".png*"
+    # would fail destination creation with an opaque OSError→500 below (and
+    # an overlong suffix could exceed path limits). The real type is
+    # re-derived from the bytes by inspect_upload_image anyway.
+    if suffix and not _SAFE_SUFFIX.fullmatch(suffix):
+        raise HTTPException(status_code=422, detail="文件扩展名无效")
     asset_id = str(uuid4())
     project_dir = settings.upload_root / project_id
     project_dir.mkdir(parents=True, exist_ok=True)

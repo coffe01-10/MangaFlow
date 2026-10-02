@@ -53,6 +53,7 @@ from app.services.provider_presets import (
 from app.services.worker_handlers import provider as worker_provider
 from fastapi import HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 
 
 class SmokeResult(BaseModel):
@@ -157,6 +158,23 @@ def test_presets_seed_default_provider_catalog(client):
     antigravity_connection = antigravity["connections"][0]
     assert antigravity_connection["credential_source"] == "CLI_SESSION"
     assert antigravity_connection["nonsecret_config"]["cli_executable"] == "agy"
+
+
+def test_preset_sync_preserves_operator_renamed_builtin(db_session):
+    settings = get_settings()
+    ensure_provider_presets(db_session, settings, auto_commit=True)
+    profile = db_session.scalar(
+        select(ProviderProfile).where(ProviderProfile.preset_key == "openai")
+    )
+    profile.name = "我的 OpenAI"
+    db_session.commit()
+
+    # The preset sync runs on nearly every request (provider list, model
+    # resolution, readiness); it must not silently revert an operator's
+    # rename of a built-in profile.
+    ensure_provider_presets(db_session, settings, auto_commit=True)
+    db_session.expire_all()
+    assert db_session.get(ProviderProfile, profile.id).name == "我的 OpenAI"
 
 
 def test_new_vertex_preset_uses_one_shot_auto_enable_and_declared_models(

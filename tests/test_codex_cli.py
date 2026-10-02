@@ -124,6 +124,22 @@ def test_codex_probe_fails_closed_for_missing_login_or_automation(failure, expec
     assert adapter.capability().error_code == expected
 
 
+def test_codex_probe_login_non_auth_failure_stays_unknown():
+    def runner(argv: tuple[str, ...]) -> CLIProcessOutcome:
+        if argv[-2:] == ("login", "status"):
+            # A transient infrastructure blip (e.g. a virus scanner holding a
+            # lock on CODEX_HOME) exits nonzero without any auth marker — it
+            # must not take the channel offline as a terminal auth failure.
+            return CLIProcessOutcome(1, stderr=b"error: config file is locked")
+        return _fake_probe_runner(argv)
+
+    adapter = _probe_adapter(command_runner=runner)
+    assert adapter.presence().status == "PASSED"
+    observation = adapter.login()
+    assert observation.status == "UNKNOWN"
+    assert observation.error_code == "CLI_LOGIN_UNKNOWN"
+
+
 def test_unconfigured_codex_connection_can_run_read_only_probe(
     client, db_session, monkeypatch
 ):

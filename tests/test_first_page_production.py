@@ -102,6 +102,10 @@ def test_concept_sheet_can_be_approved_as_character_and_outfit_reference(
     assert reference.is_canonical is True
     assert outfit.reference_asset_ids == [asset.id]
     assert outfit.name == "深色葬礼正装"
+    approved_character = db_session.get(Character, character["id"])
+    db_session.refresh(approved_character)
+    assert approved_character.status.value == "CANONICAL"
+    assert approved_character.version == character["version"] + 1
 
     retracted = client.delete(
         f"/api/v1/asset-candidates/{candidate_id}/approve-reference"
