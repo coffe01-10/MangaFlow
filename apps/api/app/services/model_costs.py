@@ -17,16 +17,13 @@ from sqlalchemy.orm import Session
 
 from app.models import ModelCallAttempt, ModelPricingVersion
 from app.provider_schemas import ModelPricingVersionCreate
-from app.services.usage_ledger import USAGE_VALUE_CAP
+from app.services.usage_ledger import USAGE_VALUE_CAP, output_token_quantity
 
 _MILLION = Decimal(1_000_000)
 _DISPLAY_QUANTUM = Decimal("0.000001")
 _USAGE_ALIASES = {
     "input_tokens": ("input_tokens", "prompt_tokens", "prompt_token_count"),
-    # Thinking aliases are a last-resort output bucket (mirrors
-    # usage_ledger._OUTPUT_ALIASES): a standard output alias wins when present,
-    # and the keys must stay KNOWN so thinking rows do not count as unmapped
-    # usage and force PARTIAL estimates (issue #209).
+    # Keep the aliases known; output_token_quantity owns their billing semantics.
     "output_tokens": (
         "output_tokens",
         "completion_tokens",
@@ -330,6 +327,11 @@ def _normalized_usage(usage: dict | None) -> tuple[dict[str, Decimal], bool]:
         return {}, False
     normalized: dict[str, Decimal] = {}
     for unit, aliases in _USAGE_ALIASES.items():
+        if unit == "output_tokens":
+            value = output_token_quantity(usage)
+            if value is not None:
+                normalized[unit] = value
+            continue
         for alias in aliases:
             if alias not in usage:
                 continue

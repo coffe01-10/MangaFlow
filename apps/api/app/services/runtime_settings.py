@@ -27,6 +27,7 @@ LEASE_GEOMETRY_MESSAGE = (
     "job_lease_seconds 不得大于 job_timeout_seconds：心跳停止后续约后，"
     "卡死的任务将在租约剩余时间和回收宽限期内无法被回收"
 )
+CLI_TIMEOUT_MESSAGE = "cli_run_timeout_seconds 不得大于 job_timeout_seconds"
 
 
 def _effective_lease_geometry(overrides: dict[str, Any], settings: Settings) -> tuple[int, int]:
@@ -174,12 +175,12 @@ def apply_runtime_overrides(db: Session, settings: Settings) -> None:
     if not overrides:
         return
     # The lease/timeout pair is applied atomically: a row poisoned before the
-    # update-boundary guard (lease above timeout, or a runtime timeout below
-    # the boot lease) must not recreate the wedged geometry in the live
+    # update-boundary guard (timeout below the lease or the CLI call budget)
+    # must not recreate the invalid geometry in the live
     # process. The stored row stays untouched for reads; the next valid PATCH
     # repairs it. This mirrors the defense-in-depth stance of _safe_overrides.
     lease, timeout = _effective_lease_geometry(overrides, settings)
-    if lease <= timeout:
+    if lease <= timeout and settings.cli_run_timeout_seconds <= timeout:
         if "job_timeout_seconds" in overrides:
             settings.job_timeout_seconds = timeout
         if "job_lease_seconds" in overrides:
@@ -229,6 +230,14 @@ def update_runtime_settings(
                 f"{LEASE_GEOMETRY_MESSAGE}"
                 f"（当前生效组合：job_lease_seconds={lease}，"
                 f"job_timeout_seconds={timeout}，请将两者调整为租约不大于超时后重试）"
+            ),
+        )
+    if settings.cli_run_timeout_seconds > timeout:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{CLI_TIMEOUT_MESSAGE}（当前 cli_run_timeout_seconds="
+                f"{settings.cli_run_timeout_seconds}，job_timeout_seconds={timeout}）"
             ),
         )
     if row:

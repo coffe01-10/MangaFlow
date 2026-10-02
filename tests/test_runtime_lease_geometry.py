@@ -28,6 +28,7 @@ def pinned_settings(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "job_timeout_seconds", 900)
     monkeypatch.setattr(settings, "job_lease_seconds", 120)
+    monkeypatch.setattr(settings, "cli_run_timeout_seconds", 120)
     return settings
 
 
@@ -217,3 +218,36 @@ def test_valid_pair_rehydrates_both_sides(db_session):
     apply_runtime_overrides(db_session, settings)
     assert settings.job_timeout_seconds == 600
     assert settings.job_lease_seconds == 300
+
+
+def test_patch_timeout_below_cli_timeout_is_rejected(client, db_session, pinned_settings):
+    response = client.patch(
+        "/api/v1/settings/runtime",
+        json={"version": 1, "job_timeout_seconds": 30, "job_lease_seconds": 30},
+    )
+    assert response.status_code == 422
+    assert "cli_run_timeout_seconds" in response.json()["detail"]
+    assert db_session.get(AppSetting, "runtime") is None
+    assert pinned_settings.job_timeout_seconds == 900
+
+
+def test_cli_timeout_poison_is_not_applied_and_can_be_repaired(
+    client, db_session, pinned_settings
+):
+    db_session.add(
+        AppSetting(
+            key="runtime",
+            value={"job_timeout_seconds": 30, "job_lease_seconds": 30},
+            version=7,
+        )
+    )
+    db_session.commit()
+    apply_runtime_overrides(db_session, pinned_settings)
+    assert pinned_settings.job_timeout_seconds == 900
+    assert pinned_settings.job_lease_seconds == 120
+    response = client.patch(
+        "/api/v1/settings/runtime", json={"version": 7, "job_timeout_seconds": 120}
+    )
+    assert response.status_code == 200, response.text
+    assert pinned_settings.job_timeout_seconds == 120
+    assert pinned_settings.job_lease_seconds == 30

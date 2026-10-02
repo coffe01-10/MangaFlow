@@ -12,7 +12,7 @@ import logging
 
 from sqlalchemy import delete, select, update
 
-from app.domain.states import CharacterPresence
+from app.domain.states import CharacterPresence, JobStatus
 from app.model_adapters.base import ProviderAdapterError, StructuredRequest
 from app.models import (
     Beat,
@@ -522,6 +522,12 @@ def _run_story_parse(db, job: GenerationJob) -> None:
             completed_chunks,
             len(chunks),
         )
+
+    # The worker takes a JOB lock before dispatch. Release it through the
+    # owned progress commit before the audit service inserts its job FK on
+    # another connection; FOR UPDATE would block that insert on PostgreSQL.
+    # No script output has been staged at this point.
+    execution._commit_owned_progress(db, job, status=JobStatus.GENERATING, progress=45)
 
     def generate_chunk(
         chunk: list[SourceSegment], chunk_label: str

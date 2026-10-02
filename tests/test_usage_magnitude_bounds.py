@@ -41,6 +41,16 @@ def test_normalize_usage_keeps_values_at_the_cap():
     assert normalized.usage_status == "PARTIAL"
 
 
+def test_summed_gemini_output_above_cap_is_not_stored():
+    normalized = normalize_usage({
+        "prompt_token_count": 10,
+        "candidates_token_count": USAGE_VALUE_CAP,
+        "thoughts_token_count": 1,
+    })
+    assert normalized.output_tokens is None
+    assert normalized.usage_status == "PARTIAL"
+
+
 def test_finalize_succeeds_with_garbage_usage_magnitude(db_session):
     meta = ModelCallAttemptMeta(
         job_id=None,

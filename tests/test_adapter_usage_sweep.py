@@ -702,7 +702,7 @@ def test_thinking_token_row_reaches_complete():
     )
     assert normalized.usage_status == "COMPLETE"
     assert normalized.input_tokens == 10
-    assert normalized.output_tokens == 20
+    assert normalized.output_tokens == 50
 
 
 def test_reasoning_tokens_act_as_last_resort_output_bucket():
@@ -734,7 +734,7 @@ def test_model_costs_mirrors_thinking_and_cached_keys():
         }
     )
     assert has_unmapped is False
-    assert quantities["output_tokens"] == 20
+    assert quantities["output_tokens"] == 50
 
     quantities, _ = _normalized_usage(
         {"prompt_tokens": 100, "completion_tokens": 50, "cache_read_tokens": 40}

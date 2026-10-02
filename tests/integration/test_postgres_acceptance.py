@@ -59,6 +59,17 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from tests.test_parse_audit_transactions import run_parse_with_independent_audit
+
+
+@pytest.mark.parametrize("job_type", ["SOURCE_PARSE", "DIRECTOR_PARSE"])
+def test_pg_parse_audit_does_not_wait_on_its_worker_job_lock(
+    live_pg_session_factory, monkeypatch, job_type
+):
+    # This uses actual worker dispatch, handler progress commits and autonomous
+    # audit INSERTs on separate PG connections; only the paid adapter is fake.
+    run_parse_with_independent_audit(live_pg_session_factory, monkeypatch, job_type)
+
 
 def test_pg_usage_migration_roundtrip(live_pg_isolated_schema):
     engine, _schema = live_pg_isolated_schema

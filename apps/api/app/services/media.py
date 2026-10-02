@@ -77,12 +77,11 @@ def inspect_upload_image(
         with Image.open(path) as image:
             image.verify()
         with Image.open(path) as image:
+            fields = _inspected_image_fields(image, max_pixels=max_pixels, max_side=max_side)
             # verify() deliberately skips entropy data; load() forces the
             # full decode so truncated bodies raise instead of passing.
             image.load()
-            return _inspected_image_fields(
-                image, max_pixels=max_pixels, max_side=max_side
-            )
+            return fields
     except DecompressionBombError as error:
         raise ValueError("图片像素数超过上限") from error
     except (UnidentifiedImageError, OSError, SyntaxError) as error:
@@ -109,10 +108,9 @@ def inspect_image_bytes(
         with Image.open(io.BytesIO(data)) as image:
             image.verify()
         with Image.open(io.BytesIO(data)) as image:
+            fields = _inspected_image_fields(image, max_pixels=max_pixels, max_side=max_side)
             image.load()
-            return _inspected_image_fields(
-                image, max_pixels=max_pixels, max_side=max_side
-            )
+            return fields
     except DecompressionBombError as error:
         raise ValueError("图片像素数超过上限") from error
     except (UnidentifiedImageError, OSError, SyntaxError) as error:

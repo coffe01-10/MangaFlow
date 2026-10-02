@@ -41,21 +41,23 @@ export function useSourceWorkspace({
   const importSource = useMutation({
     mutationFn: () => {
       setImportNotice("");
-      // Capture compose-box ownership at save time: a slow save resolving
-      // after the user opened a different chapter must not clear the newly
-      // loaded revision (same guard shape as use-assets-workspace).
+      // Preserve edits made while saving, including edits to the same chapter.
       const savedEditingId = editingChapterId;
+      const savedText = sourceText;
+      const savedTitle = sourceTitle;
       return (savedEditingId
-        ? api.reviseSource(savedEditingId, sourceTitle.trim(), sourceText).then(() => ({ chapters: [], total_characters: 0 }))
-        : api.importSource(id, sourceTitle.trim(), sourceText)
-      ).then((result) => ({ ...result, savedEditingId }));
+        ? api.reviseSource(savedEditingId, savedTitle.trim(), savedText).then(() => ({ chapters: [], total_characters: 0 }))
+        : api.importSource(id, savedTitle.trim(), savedText)
+      ).then((result) => ({ ...result, savedEditingId, savedText, savedTitle }));
     },
-    onSuccess: ({ savedEditingId, ...result }) => {
-      if (editingChapterId !== savedEditingId) {
+    onSuccess: ({ savedEditingId, savedText, savedTitle, ...result }) => {
+      queryClient.invalidateQueries({ queryKey: ["chapters", id] });
+      queryClient.invalidateQueries({ queryKey: ["revisions"] });
+      queryClient.invalidateQueries({ queryKey: ["script"] });
+      queryClient.invalidateQueries({ queryKey: ["pages"] });
+      if (editingChapterId !== savedEditingId || sourceText !== savedText || sourceTitle !== savedTitle) {
         // The form moved to different content while the save was in flight:
         // refresh the server-side lists, but leave the compose box alone.
-        queryClient.invalidateQueries({ queryKey: ["chapters", id] });
-        queryClient.invalidateQueries({ queryKey: ["revisions"] });
         return;
       }
       const chapterId = result.chapters[0]?.id ?? savedEditingId;
@@ -65,12 +67,8 @@ export function useSourceWorkspace({
       setImportNotice(
         savedEditingId
           ? "已保存为新修订。需要时可在下方章节上点击“修改原文”查看历史版本。"
-          : `已导入「${sourceTitle.trim() || "正文"}」。下一步：点击“生成漫画剧本”把这一章结构化成场景与情节拍。`,
+          : `已导入「${savedTitle.trim() || "正文"}」。下一步：点击“生成漫画剧本”把这一章结构化成场景与情节拍。`,
       );
-      queryClient.invalidateQueries({ queryKey: ["chapters", id] });
-      queryClient.invalidateQueries({ queryKey: ["revisions"] });
-      queryClient.invalidateQueries({ queryKey: ["script"] });
-      queryClient.invalidateQueries({ queryKey: ["pages"] });
     },
   });
 
@@ -82,18 +80,19 @@ export function useSourceWorkspace({
       // user opened a revision or typed new text must not clear it.
       const savedEditingId = editingChapterId;
       const savedText = sourceText;
+      const savedTitle = sourceTitle;
       return api.uploadSource(
         id,
         sourceTitle.trim() || file.name.replace(/\.(txt|md|markdown)$/i, ""),
         file,
-      ).then((result) => ({ result, savedEditingId, savedText }));
+      ).then((result) => ({ result, savedEditingId, savedText, savedTitle }));
     },
-    onSuccess: ({ result, savedEditingId, savedText }) => {
+    onSuccess: ({ result, savedEditingId, savedText, savedTitle }) => {
       queryClient.invalidateQueries({ queryKey: ["chapters", id] });
       queryClient.invalidateQueries({ queryKey: ["revisions"] });
       queryClient.invalidateQueries({ queryKey: ["script"] });
       queryClient.invalidateQueries({ queryKey: ["pages"] });
-      if (editingChapterId !== savedEditingId || sourceText !== savedText) {
+      if (editingChapterId !== savedEditingId || sourceText !== savedText || sourceTitle !== savedTitle) {
         // The compose box moved to different content (another chapter's
         // revision, or freshly typed text) while the upload was in flight:
         // refresh the server-side lists, but leave the box and the selected

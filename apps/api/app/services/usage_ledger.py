@@ -43,12 +43,8 @@ from app.usage_schemas import (
 )
 
 _INPUT_ALIASES = ("input_tokens", "prompt_tokens", "prompt_token_count")
-# Thinking-model aliases come last: when a standard output alias is present it
-# already covers the billable output (Vertex reports candidates_token_count
-# separately from thoughts_token_count), so the reasoning keys act only as a
-# last-resort output bucket — but they must stay KNOWN either way, otherwise
-# every thinking-model row has an unmapped positive key and freezes at PARTIAL
-# (issue #209).
+# Standard totals include reasoning. Gemini instead reports visible candidates
+# and thoughts separately; output_token_quantity sums those two buckets.
 _OUTPUT_ALIASES = (
     "output_tokens",
     "completion_tokens",
@@ -156,6 +152,23 @@ def _first_value(payload: dict[str, Any], paths: tuple[tuple[str, ...], ...]) ->
     return None
 
 
+def output_token_quantity(payload: dict[str, Any]) -> Decimal | None:
+    """Bill Gemini candidates plus thoughts; never add reasoning to a total."""
+    total = _first_value(payload, (("output_tokens",), ("completion_tokens",)))
+    if total is not None:
+        return total
+    candidates = _nonnegative_integer(payload.get("candidates_token_count"))
+    if candidates is not None:
+        raw_thoughts = payload.get("thoughts_token_count")
+        thoughts = _nonnegative_integer(raw_thoughts)
+        if raw_thoughts is not None and thoughts is None:
+            return None
+        return _nonnegative_integer(candidates + (thoughts or Decimal(0)))
+    return _first_value(
+        payload, (("thoughts_token_count",), ("reasoning_tokens",), ("thinking_tokens",))
+    )
+
+
 def normalize_usage(
     usage: dict | None,
     *,
@@ -165,7 +178,7 @@ def normalize_usage(
 
     payload = usage if isinstance(usage, dict) else {}
     input_tokens = _first_value(payload, tuple((key,) for key in _INPUT_ALIASES))
-    output_tokens = _first_value(payload, tuple((key,) for key in _OUTPUT_ALIASES))
+    output_tokens = output_token_quantity(payload)
     cached_input_tokens = _first_value(payload, _CACHED_PATHS)
     output_images = _first_value(payload, tuple((key,) for key in _IMAGE_ALIASES))
     has_unmapped_positive = any(

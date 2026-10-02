@@ -88,6 +88,23 @@ def _attempt(
     return row
 
 
+def test_gemini_thoughts_are_billed_even_with_legacy_structured_output(db_session):
+    job = _seed_job(db_session)
+    _price(db_session, input_rate="0", output_rate="1")
+    attempt = _attempt(
+        db_session, job, dispatch_no=1, started_at=datetime(2026, 2, 1, tzinfo=UTC),
+        usage={"prompt_token_count": 100, "candidates_token_count": 100,
+               "thoughts_token_count": 900, "total_token_count": 1100},
+    )
+    # Existing rows carry the previously undercounted structured column too;
+    # pricing must use the preserved provider payload instead of that value.
+    attempt.output_tokens = Decimal(100)
+    db_session.commit()
+    estimate = estimate_jobs(db_session, [job.id])[job.id]
+    assert estimate.status == "AVAILABLE"
+    assert estimate.value == Decimal("0.001000")
+
+
 def test_known_price_counts_failed_retry_and_route_switch_attempts(db_session):
     job = _seed_job(db_session)
     started = datetime(2026, 2, 1, tzinfo=UTC)

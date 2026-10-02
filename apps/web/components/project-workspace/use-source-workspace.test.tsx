@@ -68,6 +68,45 @@ describe("useSourceWorkspace 关键行为", () => {
     expect(screen.getByRole("status")).toBeTruthy();
   });
 
+  it.each([
+    ["import", "text"], ["import", "title"],
+    ["revise", "text"], ["revise", "title"],
+    ["file", "text"], ["file", "title"],
+  ] as const)("%s 保存期间修改 %s，成功响应保留未保存的输入", async (mode, field) => {
+    let finish!: () => void;
+    const saveApi = mode === "revise" ? reviseApi : mode === "file" ? uploadApi : importApi;
+    saveApi.mockImplementation(() => new Promise<never>((resolve) => {
+      finish = () => resolve({ chapters: [{ id: "saved" }], total_characters: 100 } as never);
+    }));
+    const selected: (string | null)[] = [];
+    const getHook = renderProbe((chapterId) => selected.push(chapterId));
+    await act(async () => {
+      getHook().setEditingChapterId(mode === "revise" ? "chapter-a" : null);
+      getHook().setSourceText("已提交的原文");
+    });
+    await act(async () => {
+      if (mode === "file") {
+        getHook().importSourceFile.mutate(new File(["原文"], "chapter.txt"));
+      } else {
+        getHook().importSource.mutate();
+      }
+    });
+    await waitFor(() => expect(saveApi).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      if (field === "text") getHook().setSourceText("保存期间新写的原文");
+      else getHook().setSourceTitle("保存期间新写的标题");
+    });
+    await act(async () => { finish(); });
+    await waitFor(() => expect(
+      mode === "file" ? getHook().importSourceFile.isSuccess : getHook().importSource.isSuccess,
+    ).toBe(true));
+    expect(getHook().sourceText).toBe(field === "text" ? "保存期间新写的原文" : "已提交的原文");
+    expect(getHook().sourceTitle).toBe(field === "title" ? "保存期间新写的标题" : "第一章");
+    expect(getHook().editingChapterId).toBe(mode === "revise" ? "chapter-a" : null);
+    expect(getHook().importNotice).toBe("");
+    expect(selected).toEqual([]);
+  });
+
   it("输入框有未导入原文时，加载章节修订必须先确认；取消则不覆盖", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     const getHook = renderProbe();

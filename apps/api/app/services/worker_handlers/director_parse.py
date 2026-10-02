@@ -26,6 +26,7 @@ from app.domain.director_commands import (
     CommandEnvelope,
     CommandGroupStatus,
 )
+from app.domain.states import JobStatus
 from app.model_adapters.base import ProviderAdapterError, StructuredRequest
 from app.models import (
     Chapter,
@@ -41,7 +42,7 @@ from app.models import (
 )
 from app.services.ai_schemas import DirectorParseOutput
 from app.services.director_commands import attach_parse_commands
-from app.services.worker_handlers import provider
+from app.services.worker_handlers import execution, provider
 from app.services.worker_handlers.provider import _invoke_provider
 
 LOGGER = logging.getLogger(__name__)
@@ -564,6 +565,10 @@ def _run_director_parse(db: Session, job: GenerationJob) -> None:
 
     context = _build_context(db, project_id, page)
     prompt = _build_prompt(utterance, context, selection)
+    # Release the worker's JOB lock before the independent audit insert takes
+    # a foreign-key lock on that row. Only model selection/progress is pending;
+    # command output remains in the final lease-fenced worker transaction.
+    execution._commit_owned_progress(db, job, status=JobStatus.GENERATING, progress=45)
     started = time.monotonic()
     output: DirectorParseOutput
     try:

@@ -1088,7 +1088,7 @@ def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(
     assert claimed_a.lease_owner == owner_a
 
     # 模拟 Worker A 超时导致租约过期
-    claimed_a.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    claimed_a.lease_expires_at = datetime.now(UTC) - timedelta(minutes=2)
     db_session.commit()
 
     # 同一进程内的 Worker B 抢占任务
@@ -1207,7 +1207,7 @@ def test_worker_failure_interleaved_with_reclaimed_lease_does_not_mark_failed(db
         attempt_count=1,
         max_attempts=3,
         lease_owner="old-worker-a",
-        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+        lease_expires_at=datetime.now(UTC) - timedelta(minutes=2),
     )
     db_session.add(job)
     db_session.commit()

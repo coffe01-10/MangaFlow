@@ -122,6 +122,20 @@ def test_normalize_usage_preserves_unknown_and_supports_nested_cache():
     assert unknown_unit.input_tokens is None
 
 
+def test_output_totals_include_gemini_thoughts_without_double_counting_reasoning():
+    for usage, expected in (
+        ({"candidates_token_count": 100, "thoughts_token_count": 900}, 1000),
+        ({"candidates_token_count": 100, "thoughts_token_count": 0}, 100),
+        ({"candidates_token_count": 100}, 100),
+        ({"thoughts_token_count": 900}, 900),
+        ({"completion_tokens": 1000, "reasoning_tokens": 900}, 1000),
+        ({"output_tokens": 1000, "thinking_tokens": 900}, 1000),
+    ):
+        normalized = normalize_usage({"input_tokens": 100, **usage})
+        assert normalized.output_tokens == expected
+        assert normalized.usage_status == "COMPLETE"
+
+
 def test_dispatch_replay_dimensions_finalize_and_output_attachment(db_session):
     job, candidate = _seed_page_job(db_session)
     dimensions = resolve_usage_dimensions(db_session, job)

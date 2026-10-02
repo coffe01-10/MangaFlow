@@ -2,7 +2,7 @@ import logging
 import os
 import socket
 import time
-from datetime import timedelta
+from datetime import UTC, timedelta
 from threading import Event, Lock, Thread
 from uuid import uuid4
 
@@ -30,7 +30,6 @@ from app.services.worker_handlers.execution import (
     JobLeaseLostError,
     StaleStoryboardVersionError,
     _ensure_job_not_cancelled,
-    _lease_is_expired,
 )
 from app.services.worker_handlers.inspection import _run_inspection
 from app.services.worker_handlers.page_generate import _run_page_generate
@@ -257,7 +256,17 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
     if not job or job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
         return None
     now = utcnow()
-    expired = job.status in ACTIVE_STATUSES and _lease_is_expired(job.lease_expires_at)
+    from app.services.job_service import _lease_reclaim_grace_seconds
+
+    reclaim_cutoff = now - timedelta(seconds=_lease_reclaim_grace_seconds(get_settings()))
+    expires_at = job.lease_expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    expired = (
+        job.status in ACTIVE_STATUSES
+        and expires_at is not None
+        and expires_at <= reclaim_cutoff
+    )
     if job.status not in CLAIMABLE_STATUSES and not expired:
         return None
     bind = db.get_bind() if hasattr(db, "get_bind") else getattr(db, "bind", None)
@@ -285,7 +294,7 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
             GenerationJob.status.in_(ACTIVE_STATUSES),
             or_(
                 GenerationJob.lease_expires_at.is_(None),
-                GenerationJob.lease_expires_at > now,
+                GenerationJob.lease_expires_at > reclaim_cutoff,
             ),
         )
         .scalar_subquery()
@@ -303,7 +312,7 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
         else:
             claim_filter.append(GenerationJob.lease_owner.is_(None))
         if job.lease_expires_at is not None:
-            claim_filter.append(GenerationJob.lease_expires_at <= now)
+            claim_filter.append(GenerationJob.lease_expires_at <= reclaim_cutoff)
         else:
             claim_filter.append(GenerationJob.lease_expires_at.is_(None))
     else:

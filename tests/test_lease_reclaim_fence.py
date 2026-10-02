@@ -165,6 +165,80 @@ def test_derived_grace_matches_heartbeat_geometry():
     )
 
 
+def test_direct_claim_honors_reclaim_grace(db_session, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "job_lease_reclaim_grace_seconds", 60)
+    job = _seed_leased_job(db_session, "直接认领宽限", expired_seconds_ago=1)
+    assert worker_tasks._claim_job(db_session, job.id, "successor") is None
+    db_session.expire_all()
+    assert job.lease_owner == "starved-worker"
+    assert job.attempt_count == 1
+
+    job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=61)
+    db_session.commit()
+    claimed = worker_tasks._claim_job(db_session, job.id, "successor")
+    assert claimed is not None
+    assert claimed.lease_owner == "successor"
+    assert claimed.attempt_count == 2
+
+
+def test_grace_held_job_still_occupies_project_concurrency(db_session, monkeypatch):
+    monkeypatch.setattr(get_settings(), "job_lease_reclaim_grace_seconds", 60)
+    active = _seed_leased_job(db_session, "宽限期并发名额", expired_seconds_ago=1)
+    project = db_session.get(Project, active.project_id)
+    project.default_concurrency = 1
+    queued = GenerationJob(
+        project_id=project.id, target_type="CHAPTER", target_id="other-chapter",
+        job_type="SOURCE_PARSE", status=JobStatus.QUEUED,
+    )
+    db_session.add(queued)
+    db_session.commit()
+    assert worker_tasks._claim_job(db_session, queued.id, "other-worker") is None
+    db_session.expire_all()
+    active.lease_expires_at = datetime.now(UTC) - timedelta(seconds=61)
+    db_session.commit()
+    assert worker_tasks._claim_job(db_session, queued.id, "other-worker") is not None
+
+
+def test_claim_cas_rechecks_grace_after_a_concurrent_renewal(tmp_path, monkeypatch):
+    from app.database import Base
+    from sqlalchemy import create_engine
+    from sqlalchemy.sql.dml import Update
+
+    monkeypatch.setattr(get_settings(), "job_lease_reclaim_grace_seconds", 60)
+    path = tmp_path / "claim-race.sqlite"
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        Base.metadata.create_all(engine)
+        factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+        with factory() as claimant:
+            job = _seed_leased_job(claimant, "认领时续约", expired_seconds_ago=61)
+            execute = claimant.execute
+            renewed = False
+
+            def renew_before_claim(statement, *args, **kwargs):
+                nonlocal renewed
+                if not renewed and isinstance(statement, Update):
+                    renewed = True
+                    # Another real connection renews after the eligibility
+                    # read, but before the claimant's ownership CAS executes.
+                    with factory() as original_worker:
+                        original_worker.execute(update(GenerationJob).where(
+                            GenerationJob.id == job.id,
+                        ).values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1)))
+                        original_worker.commit()
+                return execute(statement, *args, **kwargs)
+
+            monkeypatch.setattr(claimant, "execute", renew_before_claim)
+            assert worker_tasks._claim_job(claimant, job.id, "successor") is None
+            claimant.expire_all()
+            assert job.lease_owner == "starved-worker"
+            assert job.attempt_count == 1
+    finally:
+        engine.dispose()
+        path.unlink(missing_ok=True)
+
+
 def test_completion_lease_lost_logs_double_spend_warning(db_session, monkeypatch, caplog):
     """The completion-side CAS failure (worker_tasks) raises JobLeaseLostError;
     its rollback discards the handler's uncommitted paid output. That discard

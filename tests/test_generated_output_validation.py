@@ -24,9 +24,10 @@ from app.models import (
     PageCandidate,
     Project,
 )
+from app.services.media import inspect_image_bytes, inspect_upload_image
 from app.services.worker_handlers.asset_generate import _save_asset_candidate
 from app.services.worker_handlers.page_generate import _save_generated_asset
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from sqlalchemy import select
 
 
@@ -34,6 +35,29 @@ def _image_bytes(fmt: str, size: int = 8) -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", (size, size), (100, 100, 100)).save(buffer, format=fmt)
     return buffer.getvalue()
+
+
+@pytest.mark.parametrize("from_file", [False, True])
+@pytest.mark.parametrize("limits", [dict(max_pixels=16, max_side=128),
+                                   dict(max_pixels=10000, max_side=16)])
+def test_image_bounds_reject_before_decoding(tmp_path, monkeypatch, from_file, limits):
+    data = _image_bytes("PNG", size=64)
+
+    def unexpected_decode(_image):
+        pytest.fail("oversized image must be rejected before allocating decoded pixels")
+
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, "load", unexpected_decode)
+    if from_file:
+        path = tmp_path / "oversized.png"
+        path.write_bytes(data)
+        try:
+            with pytest.raises(ValueError, match="上限"):
+                inspect_upload_image(path, **limits)
+        finally:
+            path.unlink()
+    else:
+        with pytest.raises(ValueError, match="上限"):
+            inspect_image_bytes(data, **limits)
 
 
 @pytest.fixture
