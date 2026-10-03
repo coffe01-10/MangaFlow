@@ -283,7 +283,72 @@ def upgrade() -> None:
         batch.create_index("ix_inspection_results_candidate_id", ["candidate_id"])
 
 
+_DOWNGRADE_TABLES = (
+    "export_bundles",
+    "page_source_segments",
+    "asset_candidates",
+    "page_candidates",
+    "generation_batches",
+    "character_references",
+    "script_revisions",
+    "source_segments",
+    "inspection_results",
+)
+_DOWNGRADE_COLUMNS = {
+    "inspection_results": ("candidate_id", "generation_record_id"),
+    "generation_jobs": (
+        "lease_expires_at",
+        "lease_owner",
+        "finished_at",
+        "started_at",
+        "scheduled_at",
+        "idempotency_key",
+        "progress",
+    ),
+    "manga_pages": (
+        "continuity_status",
+        "selected_candidate_id",
+        "source_coverage",
+        "estimated_bubbles",
+        "estimated_text_chars",
+        "revision_no",
+    ),
+    "assets": ("deleted_at",),
+    "characters": (
+        "primary_name",
+        "aliases",
+        "aliases_normalized",
+        "alias_conflict",
+    ),
+    "projects": ("last_image_model_alias",),
+}
+
+
+def _downgrade_preflight() -> None:
+    """Fail fast when the schema is not in this revision's post-upgrade shape.
+
+    Without this check a downgrade against an already-downgraded (or crashed
+    mid-way) database dies part-way through the drops, leaving a mixed schema
+    that no migration head matches. Verify every object before dropping any.
+    """
+
+    inspector = sa.inspect(op.get_bind())
+    existing_tables = set(inspector.get_table_names())
+    missing = [table for table in _DOWNGRADE_TABLES if table not in existing_tables]
+    for table, columns in _DOWNGRADE_COLUMNS.items():
+        if table not in existing_tables:
+            continue
+        present = {column["name"] for column in inspector.get_columns(table)}
+        missing.extend(f"{table}.{column}" for column in columns if column not in present)
+    if missing:
+        raise RuntimeError(
+            "refusing downgrade: expected schema objects are missing "
+            "(already downgraded or partially migrated): " + ", ".join(missing)
+        )
+
+
 def downgrade() -> None:
+    _downgrade_preflight()
     with op.batch_alter_table("inspection_results") as batch:
         batch.drop_index("ix_inspection_results_candidate_id")
         batch.drop_constraint("fk_inspection_results_candidate_id", type_="foreignkey")

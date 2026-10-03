@@ -15,6 +15,7 @@ from app.models import (
     Scene,
 )
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 
@@ -1383,6 +1384,147 @@ def test_character_package_migration_refuses_partial_schema(tmp_path, monkeypatc
         command.upgrade(config, "head")
 
 
+def test_character_package_backfill_rerun_completes_partial_state(
+    tmp_path, monkeypatch
+):
+    """A crashed mid-backfill re-run must finish missing pieces, not crash on
+    the unique indexes — the backfill used to INSERT every character's
+    package unconditionally."""
+    import importlib.util
+    from datetime import UTC, datetime
+
+    database_url = f"sqlite:///{(tmp_path / 'pkg-rerun.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260901_24")
+    _seed_package_upgrade_database(database_url)
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        char_b_version = connection.execute(
+            text(
+                "SELECT v.id FROM character_model_package_versions v "
+                "JOIN character_model_packages p ON p.id = v.package_id "
+                "WHERE p.character_id = 'char-b'"
+            )
+        ).scalar_one()
+        # Crash shape A: version exists but its relation rows were never
+        # (or only partially) written.
+        connection.execute(
+            text(
+                "DELETE FROM character_model_package_version_references "
+                "WHERE version_id = :vid"
+            ),
+            {"vid": char_b_version},
+        )
+        connection.execute(
+            text(
+                "DELETE FROM character_model_package_version_outfits "
+                "WHERE version_id = :vid"
+            ),
+            {"vid": char_b_version},
+        )
+        # Crash shape B: the character's package+version never landed at all.
+        connection.execute(
+            text(
+                "DELETE FROM character_model_package_versions WHERE package_id IN "
+                "(SELECT id FROM character_model_packages WHERE character_id = 'char-c')"
+            )
+        )
+        connection.execute(
+            text("DELETE FROM character_model_packages WHERE character_id = 'char-c'")
+        )
+    engine.dispose()
+
+    spec = importlib.util.spec_from_file_location(
+        "migration_20260902_25",
+        "apps/api/migrations/versions/20260902_25_character_model_packages.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        module._backfill_packages(connection, datetime.now(UTC))
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM character_model_packages")
+        ).scalar_one() == 3
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM character_model_package_versions")
+        ).scalar_one() == 3
+        assert connection.execute(
+            text(
+                "SELECT COUNT(*) FROM character_model_package_version_references "
+                "WHERE version_id = :vid"
+            ),
+            {"vid": char_b_version},
+        ).scalar_one() == 3
+        # A fully-populated re-run is a strict no-op.
+        module._backfill_packages(connection, datetime.now(UTC))
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM character_model_packages")
+        ).scalar_one() == 3
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM character_model_package_versions")
+        ).scalar_one() == 3
+    engine.dispose()
+
+
+def test_director_journal_migration_completes_partial_table_adoption(
+    tmp_path, monkeypatch
+):
+    """A database that adopted only one of the two journal tables via
+    create_all must still upgrade — the pair check used to require BOTH
+    tables present before it skipped creation."""
+    database_url = f"sqlite:///{(tmp_path / 'journal-partial.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260902_26")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        Base.metadata.tables["director_command_groups"].create(connection)
+    engine.dispose()
+
+    command.upgrade(config, "20260903_27")
+
+    engine = create_engine(database_url)
+    tables = set(inspect(engine).get_table_names())
+    assert {"director_command_groups", "director_commands"} <= tables
+    engine.dispose()
+
+
+def test_revision_01_downgrade_preflights_missing_objects(tmp_path, monkeypatch):
+    """Downgrade must refuse before dropping anything when the schema is not
+    in this revision's post-upgrade shape — previously it died part-way
+    through the drops and left a schema no revision head matches."""
+    database_url = f"sqlite:///{(tmp_path / 'rev01-preflight.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260714_01")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE source_segments"))
+    engine.dispose()
+
+    with pytest.raises(RuntimeError, match="already downgraded or partially migrated"):
+        command.downgrade(config, "949d8856e6a4")
+
+    engine = create_engine(database_url)
+    remaining = set(inspect(engine).get_table_names())
+    # The preflight raised before the first drop: nothing else was removed
+    # and the alembic head stayed at this revision.
+    assert "page_candidates" in remaining
+    assert "export_bundles" in remaining
+    engine.dispose()
+    with create_engine(database_url).connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260714_01"
+        )
+
+
 def test_storyboard_layout_columns_migration_roundtrip(tmp_path, monkeypatch):
     """L1: pure nullable JSON additions round-trip on an empty database."""
     database_url = f"sqlite:///{(tmp_path / 'layout-columns.db').as_posix()}"
@@ -1792,7 +1934,7 @@ def test_legacy_page_version_constraint_removed_with_data_preserved(
             text("SELECT sql FROM sqlite_master WHERE name = 'manga_pages'")
         ).scalar_one()
         assert "page_number, version)" in ddl
-        with pytest.raises(Exception, match="UNIQUE constraint failed"):
+        with pytest.raises(IntegrityError, match="UNIQUE constraint failed"):
             connection.execute(
                 text(
                     "INSERT INTO manga_pages (id, chapter_id, page_number,"
