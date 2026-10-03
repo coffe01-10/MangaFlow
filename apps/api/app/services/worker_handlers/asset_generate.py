@@ -338,14 +338,31 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
             ),
         }
     else:
-        raise RuntimeError("资产生成目标类型无效")
+        raise ProviderAdapterError(
+            "INVALID_INPUT", "资产生成目标类型无效", retryable=False
+        )
     if batch.target_type == "OUTFIT":
+        # #643-class deterministic pre-call failures: lapsed references cannot
+        # be conjured by a retry — fail terminally, not as retryable
+        # WORKER_ERROR burning max_attempts.
         if not character_references:
-            raise RuntimeError("服装所属角色的参考图已失效，请重新绑定后再生成")
+            raise ProviderAdapterError(
+                "INVALID_INPUT",
+                "服装所属角色的参考图已失效，请重新绑定后再生成",
+                retryable=False,
+            )
         if not outfit_references:
-            raise RuntimeError("服装参考图已失效，请重新绑定后再生成")
+            raise ProviderAdapterError(
+                "INVALID_INPUT",
+                "服装参考图已失效，请重新绑定后再生成",
+                retryable=False,
+            )
     if batch.target_type == "STYLE" and not references:
-        raise RuntimeError("漫画风格参考图已失效，请重新绑定后再生成")
+        raise ProviderAdapterError(
+            "INVALID_INPUT",
+            "漫画风格参考图已失效，请重新绑定后再生成",
+            retryable=False,
+        )
     prompt_payload = {
         "target_type": batch.target_type,
         "variant": candidate.variant,
@@ -418,7 +435,9 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         )
     )
     if {item.id for item in current_assets} != set(reference_ids):
-        raise RuntimeError("参考图在生成前发生变化，已停止模型调用")
+        raise ProviderAdapterError(
+            "INVALID_INPUT", "参考图在生成前发生变化，已停止模型调用", retryable=False
+        )
     # #643: deterministic missing-file preflight must end the job terminally
     # instead of classifying as retryable WORKER_ERROR.
     reference_bytes = [_asset_blob_bytes(asset) for asset in references]
@@ -439,6 +458,10 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
             "UNSUPPORTED_CAPABILITY", "所选模型不支持当前输出清晰度"
         )
     provider._validate_reference_capacity(binding, len(reference_bytes))
+    # Same fence as _commit_owned_progress: prove lease ownership before the
+    # commit publishes the prompt snapshot / catalog ids staged above — a
+    # reclaimed lease must not still land this attempt's pre-call writes.
+    execution._ensure_job_not_cancelled(db, job)
     db.commit()
     response = provider._invoke_provider(
         db,

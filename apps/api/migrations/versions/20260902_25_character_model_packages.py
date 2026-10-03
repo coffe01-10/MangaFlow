@@ -178,173 +178,209 @@ def _backfill_packages(bind, now) -> None:
     CharacterReference/Outfit bindings with a deterministic angle mapping; the
     slot collision rule appends a ``-{n}`` suffix so the backfill can never
     violate the ``(version_id, role, label)`` uniqueness constraint.
+
+    Idempotent per granularity: a re-run after a crash mid-backfill finds each
+    character's package, each package's V1 and each version's relations
+    already present and inserts only the missing pieces — the previous
+    unconditional bulk INSERTs would have hit the unique indexes on the very
+    first re-run.
     """
+
+    import uuid
 
     characters = bind.execute(
         sa.text("SELECT id, project_id FROM characters ORDER BY created_at, id")
     ).mappings()
 
-    package_rows = []
-    version_rows = []
-    packed_packages = []
     for character in characters:
-        import uuid
-
-        package_id = str(uuid.uuid4())
-        version_id = str(uuid.uuid4())
-        package_rows.append(
-            {
-                "id": package_id,
-                "character_id": character["id"],
-                "project_id": character["project_id"],
-                "identity_spec": json.dumps({}),
-                "visual_spec": json.dumps({}),
-                "negative_constraints": json.dumps([]),
-                "published_version_id": None,
-                "status": "ACTIVE",
-                "created_at": now,
-                "updated_at": now,
-                "version": 1,
-            }
-        )
-        version_rows.append(
-            {
-                "id": version_id,
-                "package_id": package_id,
-                "version_number": 1,
-                "status": "DRAFT",
-                "spec_snapshot": json.dumps(
-                    {
-                        "identity_spec": {},
-                        "visual_spec": {},
-                        "negative_constraints": [],
-                        "frozen_from": "migration",
-                    }
+        package_id = bind.execute(
+            sa.text(
+                "SELECT id FROM character_model_packages WHERE character_id = :cid"
+            ),
+            {"cid": character["id"]},
+        ).scalar_one_or_none()
+        if package_id is None:
+            package_id = str(uuid.uuid4())
+            bind.execute(
+                sa.text(
+                    "INSERT INTO character_model_packages ("
+                    "id, character_id, project_id, identity_spec, visual_spec, "
+                    "negative_constraints, published_version_id, status, created_at, "
+                    "updated_at, version"
+                    ") VALUES ("
+                    ":id, :character_id, :project_id, :identity_spec, :visual_spec, "
+                    ":negative_constraints, :published_version_id, :status, :created_at, "
+                    ":updated_at, :version"
+                    ")"
                 ),
-                "derived_from_version_id": None,
-                "published_at": None,
-                "created_at": now,
-                "updated_at": now,
-                "version": 1,
-            }
-        )
-        packed_packages.append((package_id, version_id, character["id"]))
-
-    bind.execute(
-        sa.text(
-            "INSERT INTO character_model_packages ("
-            "id, character_id, project_id, identity_spec, visual_spec, "
-            "negative_constraints, published_version_id, status, created_at, "
-            "updated_at, version"
-            ") VALUES ("
-            ":id, :character_id, :project_id, :identity_spec, :visual_spec, "
-            ":negative_constraints, :published_version_id, :status, :created_at, "
-            ":updated_at, :version"
-            ")"
-        ),
-        package_rows,
-    )
-    bind.execute(
-        sa.text(
-            "INSERT INTO character_model_package_versions ("
-            "id, package_id, version_number, status, spec_snapshot, "
-            "derived_from_version_id, published_at, created_at, updated_at, "
-            "version"
-            ") VALUES ("
-            ":id, :package_id, :version_number, :status, :spec_snapshot, "
-            ":derived_from_version_id, :published_at, :created_at, :updated_at, "
-            ":version"
-            ")"
-        ),
-        version_rows,
-    )
-
-    for package_id, version_id, character_id in packed_packages:
-        _backfill_version_relations(bind, package_id, version_id, character_id, now)
+                {
+                    "id": package_id,
+                    "character_id": character["id"],
+                    "project_id": character["project_id"],
+                    "identity_spec": json.dumps({}),
+                    "visual_spec": json.dumps({}),
+                    "negative_constraints": json.dumps([]),
+                    "published_version_id": None,
+                    "status": "ACTIVE",
+                    "created_at": now,
+                    "updated_at": now,
+                    "version": 1,
+                },
+            )
+        version_id = bind.execute(
+            sa.text(
+                "SELECT id FROM character_model_package_versions "
+                "WHERE package_id = :pid AND version_number = 1"
+            ),
+            {"pid": package_id},
+        ).scalar_one_or_none()
+        if version_id is None:
+            version_id = str(uuid.uuid4())
+            bind.execute(
+                sa.text(
+                    "INSERT INTO character_model_package_versions ("
+                    "id, package_id, version_number, status, spec_snapshot, "
+                    "derived_from_version_id, published_at, created_at, updated_at, "
+                    "version"
+                    ") VALUES ("
+                    ":id, :package_id, :version_number, :status, :spec_snapshot, "
+                    ":derived_from_version_id, :published_at, :created_at, :updated_at, "
+                    ":version"
+                    ")"
+                ),
+                {
+                    "id": version_id,
+                    "package_id": package_id,
+                    "version_number": 1,
+                    "status": "DRAFT",
+                    "spec_snapshot": json.dumps(
+                        {
+                            "identity_spec": {},
+                            "visual_spec": {},
+                            "negative_constraints": [],
+                            "frozen_from": "migration",
+                        }
+                    ),
+                    "derived_from_version_id": None,
+                    "published_at": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "version": 1,
+                },
+            )
+        _backfill_version_relations(bind, package_id, version_id, character["id"], now)
 
 
 def _backfill_version_relations(bind, package_id, version_id, character_id, now) -> None:
     import uuid
 
-    reference_rows = bind.execute(
+    # Each relation set is all-or-nothing per INSERT, so "any row present"
+    # means that set already completed; skipping keeps a re-run from
+    # colliding on the (version_id, role, label) / (version_id, outfit_id)
+    # unique indexes.
+    if bind.execute(
         sa.text(
-            "SELECT cr.asset_id, cr.angle, cr.created_at, cr.id "
-            "FROM character_references cr "
-            "JOIN assets a ON a.id = cr.asset_id "
-            "WHERE cr.character_id = :character_id AND a.deleted_at IS NULL "
-            "ORDER BY cr.created_at, cr.id"
+            "SELECT COUNT(*) FROM character_model_package_version_references "
+            "WHERE version_id = :vid"
         ),
-        {"character_id": character_id},
-    ).mappings()
+        {"vid": version_id},
+    ).scalar_one():
+        references_done = True
+    else:
+        references_done = False
+    outfits_done = bool(
+        bind.execute(
+            sa.text(
+                "SELECT COUNT(*) FROM character_model_package_version_outfits "
+                "WHERE version_id = :vid"
+            ),
+            {"vid": version_id},
+        ).scalar_one()
+    )
+    if references_done and outfits_done:
+        return
 
-    occupied_slots: dict[tuple[str, str], bool] = {}
-    inserts = []
-    for reference in reference_rows:
-        role, label = _angle_to_role_label(reference["angle"])
-        if (role, label) in occupied_slots:
-            base = reference["angle"].strip() or "unspecified"
-            if role in _CORE_ROLES:
-                # Core roles forbid labels (schema CHECK); a duplicate core
-                # slot degrades to ``extra`` with its original text label.
-                role = "extra"
-                label = base
-            suffix = 2
-            while (role, label) in occupied_slots:
-                label = f"{base}-{suffix}"
-                suffix += 1
-        occupied_slots[(role, label)] = True
-        inserts.append(
+    if not references_done:
+        reference_rows = bind.execute(
+            sa.text(
+                "SELECT cr.asset_id, cr.angle, cr.created_at, cr.id "
+                "FROM character_references cr "
+                "JOIN assets a ON a.id = cr.asset_id "
+                "WHERE cr.character_id = :character_id AND a.deleted_at IS NULL "
+                "ORDER BY cr.created_at, cr.id"
+            ),
+            {"character_id": character_id},
+        ).mappings()
+
+        occupied_slots: dict[tuple[str, str], bool] = {}
+        inserts = []
+        for reference in reference_rows:
+            role, label = _angle_to_role_label(reference["angle"])
+            if (role, label) in occupied_slots:
+                base = reference["angle"].strip() or "unspecified"
+                if role in _CORE_ROLES:
+                    # Core roles forbid labels (schema CHECK); a duplicate core
+                    # slot degrades to ``extra`` with its original text label.
+                    role = "extra"
+                    label = base
+                suffix = 2
+                while (role, label) in occupied_slots:
+                    label = f"{base}-{suffix}"
+                    suffix += 1
+            occupied_slots[(role, label)] = True
+            inserts.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "version_id": version_id,
+                    "asset_id": reference["asset_id"],
+                    "role": role,
+                    "label": label,
+                    "sort_order": 0,
+                    "created_at": now,
+                }
+            )
+        if inserts:
+            bind.execute(
+                sa.text(
+                    "INSERT INTO character_model_package_version_references ("
+                    "id, version_id, asset_id, role, label, sort_order, created_at"
+                    ") VALUES ("
+                    ":id, :version_id, :asset_id, :role, :label, :sort_order, :created_at"
+                    ")"
+                ),
+                inserts,
+            )
+
+    if not outfits_done:
+        outfit_rows = bind.execute(
+            sa.text(
+                "SELECT id FROM outfits WHERE character_id = :character_id "
+                "ORDER BY created_at, id"
+            ),
+            {"character_id": character_id},
+        ).mappings()
+        outfit_inserts = [
             {
                 "id": str(uuid.uuid4()),
                 "version_id": version_id,
-                "asset_id": reference["asset_id"],
-                "role": role,
-                "label": label,
-                "sort_order": 0,
+                "outfit_id": outfit["id"],
+                "is_default": False,
+                "sort_order": index,
                 "created_at": now,
             }
-        )
-    if inserts:
-        bind.execute(
-            sa.text(
-                "INSERT INTO character_model_package_version_references ("
-                "id, version_id, asset_id, role, label, sort_order, created_at"
-                ") VALUES ("
-                ":id, :version_id, :asset_id, :role, :label, :sort_order, :created_at"
-                ")"
-            ),
-            inserts,
-        )
-
-    outfit_rows = bind.execute(
-        sa.text(
-            "SELECT id FROM outfits WHERE character_id = :character_id "
-            "ORDER BY created_at, id"
-        ),
-        {"character_id": character_id},
-    ).mappings()
-    outfit_inserts = [
-        {
-            "id": str(uuid.uuid4()),
-            "version_id": version_id,
-            "outfit_id": outfit["id"],
-            "is_default": False,
-            "sort_order": index,
-            "created_at": now,
-        }
-        for index, outfit in enumerate(outfit_rows)
-    ]
-    if outfit_inserts:
-        bind.execute(
-            sa.text(
-                "INSERT INTO character_model_package_version_outfits ("
-                "id, version_id, outfit_id, is_default, sort_order, created_at"
-                ") VALUES ("
-                ":id, :version_id, :outfit_id, :is_default, :sort_order, :created_at"
-                ")"
-            ),
-            outfit_inserts,
-        )
+            for index, outfit in enumerate(outfit_rows)
+        ]
+        if outfit_inserts:
+            bind.execute(
+                sa.text(
+                    "INSERT INTO character_model_package_version_outfits ("
+                    "id, version_id, outfit_id, is_default, sort_order, created_at"
+                    ") VALUES ("
+                    ":id, :version_id, :outfit_id, :is_default, :sort_order, :created_at"
+                    ")"
+                ),
+                outfit_inserts,
+            )
 
 
 def upgrade() -> None:

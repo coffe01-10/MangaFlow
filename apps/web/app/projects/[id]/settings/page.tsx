@@ -10,6 +10,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { creatorVisibleModels } from "@/lib/model-visibility";
+import { useUnsavedChangesGuard } from "@/lib/unsaved-changes-guard";
 
 type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "consistency_check_enabled" | "default_text_model_id" | "text_model_alias">;
 
@@ -153,32 +154,12 @@ export default function ProjectSettingsPage() {
     || localDraft.text_model_alias !== project.data.text_model_alias
   ));
   // 离开守卫镜像 script-editor：beforeunload 拦刷新/关闭，捕获阶段拦站内
-  // 锚点（返回工作区 Link），有未保存修改时先确认。
-  useEffect(() => {
-    if (!settingsDirty) return;
-    const beforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    const click = (event: MouseEvent) => {
-      if (event.defaultPrevented) return;
-      const target = event.target;
-      const anchor = target instanceof Element ? target.closest("a[href]") : null;
-      if (!anchor) return;
-      const href = anchor.getAttribute("href") ?? "";
-      if (!href.startsWith("/") || href === window.location.pathname) return;
-      if (!window.confirm("当前项目设置尚未保存，离开页面会丢弃这些修改。仍要离开吗？")) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    };
-    window.addEventListener("beforeunload", beforeUnload);
-    document.addEventListener("click", click, true);
-    return () => {
-      window.removeEventListener("beforeunload", beforeUnload);
-      document.removeEventListener("click", click, true);
-    };
-  }, [settingsDirty]);
+  // 锚点（返回工作区 Link），有未保存修改时先确认。REQUEST_NAVIGATION 事件
+  // 再补上 CommandPalette 这类不走锚点的 router.push 路径。
+  useUnsavedChangesGuard(
+    settingsDirty,
+    "当前项目设置尚未保存，离开页面会丢弃这些修改。仍要离开吗？",
+  );
 
   return (
     <AppShell>

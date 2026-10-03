@@ -3,6 +3,7 @@ import { createEvent, fireEvent, render, screen, waitFor, within } from "@testin
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, api, type ModelCapability, type Project, type StyleProfile } from "@/lib/api";
+import { requestNavigation } from "@/lib/unsaved-changes-guard";
 
 import ProjectSettingsPage from "./page";
 
@@ -222,6 +223,23 @@ describe("ProjectSettingsPage 未保存草稿离开守卫（#546-4）", () => {
     await screen.findByText("项目设置已保存");
     fireEvent.click(link);
     expect(confirmSpy).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
+  });
+
+  it("非锚点导航（CommandPalette router.push）同样被脏草稿否决", async () => {
+    // REQUEST_NAVIGATION 是可取消桥接事件：脏页面 preventDefault 即否决，
+    // 覆盖此前 router.push 绕过锚点拦截静默丢草稿的路径。
+    renderPage();
+    await screen.findByRole("radiogroup", { name: "工作方式" });
+    fireEvent.click(within(screen.getByRole("group", { name: "草稿清晰度" }))
+      .getByRole("button", { name: "2K" }));
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    expect(requestNavigation("/")).toBe(false);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("尚未保存"));
+    // 用户确认后放行。
+    confirmSpy.mockReturnValue(true);
+    expect(requestNavigation("/")).toBe(true);
     confirmSpy.mockRestore();
   });
 });

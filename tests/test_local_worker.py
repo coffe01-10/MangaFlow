@@ -1867,7 +1867,9 @@ def test_execute_job_defers_when_concurrency_slot_is_busy(db_session, monkeypatc
     monkeypatch.setattr(worker_tasks, "SessionLocal", factory)
     deferred: list[str] = []
     monkeypatch.setattr(
-        worker_tasks, "_defer_concurrency_wait", lambda job_id: deferred.append(job_id)
+        worker_tasks,
+        "_defer_concurrency_wait",
+        lambda job_id, *args, **kwargs: deferred.append(job_id),
     )
     worker_tasks.execute_job(waiting.id)
     assert deferred == [waiting.id]

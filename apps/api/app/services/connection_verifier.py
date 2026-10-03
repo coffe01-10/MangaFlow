@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 from datetime import UTC, datetime
 from statistics import median
 from time import perf_counter
@@ -53,6 +54,8 @@ from app.services.worker_handlers.model_call_audit import (
     begin_model_call_attempt,
     finalize_model_call_attempt,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class _SmokeResult(BaseModel):
@@ -333,6 +336,12 @@ def _verify_model_smoke(
     binding = None
     current_operation = operation
     attempt_ids: list[str] = []
+    # Only the attempt that began and has not yet finalized may be written
+    # FAILED on the error paths below: attempt_ids[-1] can point at a
+    # SUCCEEDED row from a previous run when the failure lands between
+    # iterations (e.g. bind_adapter for run 2 raising after run 1
+    # finalized), and the finalize CAS refuses to rewrite a terminal row.
+    open_attempt_id: str | None = None
     request_token = uuid4().hex
     provider_profile = db.get(ProviderProfile, connection.provider_id)
     provider_name = (
@@ -368,6 +377,7 @@ def _verify_model_smoke(
                 )
             )
             attempt_ids.append(attempt_id)
+            open_attempt_id = attempt_id
             started = perf_counter()
             if current_operation == "structured_text":
                 result = binding.adapter.generate_structured(
@@ -419,6 +429,7 @@ def _verify_model_smoke(
                     len(images) if isinstance(images, (list, tuple)) else None
                 ),
             )
+            open_attempt_id = None
             tested_operations.add(current_operation)
             latencies.append(round((perf_counter() - started) * 1000))
             if binding and binding.selected_key:
@@ -468,9 +479,9 @@ def _verify_model_smoke(
         attach_attempt_probe(attempt_ids, probe.id)
         return probe
     except ProviderAdapterError as error:
-        if attempt_ids:
+        if open_attempt_id is not None:
             finalize_model_call_attempt(
-                attempt_ids[-1],
+                open_attempt_id,
                 outcome="FAILED",
                 error_code=error.code,
                 error_message=error.user_message,
@@ -509,16 +520,22 @@ def _verify_model_smoke(
     except Exception:
         # A paid smoke run must not leave its attempt pending when the adapter
         # raises an unclassified exception (e.g. malformed response handling).
-        if attempt_ids:
+        if open_attempt_id is not None:
             db.rollback()
             try:
                 finalize_model_call_attempt(
-                    attempt_ids[-1],
+                    open_attempt_id,
                     outcome="FAILED",
                     error_code="UPSTREAM",
                     error_message="模型冒烟测试异常中止",
                 )
             except Exception:
+                # A refused/failed finalize must not hide the attribution
+                # gap: log it so the pending audit row is discoverable.
+                LOGGER.warning(
+                    "MODEL_SMOKE attempt %s could not be finalized FAILED",
+                    open_attempt_id,
+                )
                 db.rollback()
         model.success_rate = (
             0.0 if model.success_rate is None else round(model.success_rate * 0.8, 4)

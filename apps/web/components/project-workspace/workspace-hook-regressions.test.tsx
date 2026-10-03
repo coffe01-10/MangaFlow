@@ -8,13 +8,14 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   api,
   type Character,
+  type GenerationBatch,
   type GenerationWorkbench,
   type InspectionResult,
   type Job,
@@ -48,6 +49,7 @@ const upscaleApi = vi.spyOn(api, "upscaleCandidate");
 const uploadApi = vi.spyOn(api, "uploadAsset");
 const bindReferenceApi = vi.spyOn(api, "bindCharacterReference");
 const characterPackagesApi = vi.spyOn(api, "characterPackagesAll");
+const startBatchApi = vi.spyOn(api, "startBatch");
 
 function pageFixture(overrides: Partial<MangaPage> = {}): MangaPage {
   return {
@@ -570,6 +572,35 @@ describe("资产上传用途守卫", () => {
     expect(bindReferenceApi).not.toHaveBeenCalled();
     expect(workspace().selectedOutfitAssets).toEqual([]);
     expect(workspace().selectedStyleAssets).toEqual([]);
+  });
+});
+
+describe("建批在途守卫（双击不重复建批）", () => {
+  it("startBatch 在途时二次 mutate 不再发请求，finally 覆盖整个请求期", async () => {
+    // return await 回归：旧代码 mutationFn 直接 return Promise，finally 在
+    // 请求仍在途时复位守卫，双击窗口内会发出第二个建批请求。
+    let release: ((batch: GenerationBatch) => void) | null = null;
+    startBatchApi.mockImplementation(
+      () => new Promise<GenerationBatch>((resolve) => { release = resolve; }),
+    );
+    const { workspace } = renderGenerationProbe();
+    await vi.waitFor(() => expect(workspace().selectedPage?.id).toBe("page-1"));
+    act(() => {
+      workspace().startBatch.mutate();
+      workspace().startBatch.mutate();
+    });
+    await vi.waitFor(() => expect(startBatchApi).toHaveBeenCalledTimes(1));
+    expect(workspace().startBatch.isError).toBe(true);
+    // 请求落地后守卫释放：后续点击可正常发起（mutation 状态面只反映
+    // 最近一次调用，所以直接以调用次数断言守卫已复位）。
+    startBatchApi.mockResolvedValue({ id: "batch-2" } as never);
+    await act(async () => {
+      release!({ id: "batch-new" } as never);
+    });
+    act(() => {
+      workspace().startBatch.mutate();
+    });
+    await vi.waitFor(() => expect(startBatchApi).toHaveBeenCalledTimes(2));
   });
 });
 

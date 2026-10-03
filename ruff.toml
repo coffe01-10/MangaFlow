@@ -4,6 +4,9 @@
 # I/UP/B/SIM) — the documented lint set was silently unenforced there.
 
 line-length = 100
+# The project requires Python 3.12 (apps/api/pyproject.toml); without this,
+# root-scoped checks flag 3.11+ builtins like BaseExceptionGroup as F821.
+target-version = "py312"
 
 [lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -13,3 +16,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # reflowing them is churn without defect value. Everything else in the
 # configured set (unused imports, import hygiene, bugbear, simplify) applies.
 "tests/**" = ["E501"]
+# One-off acceptance/seed scripts carry the same long Chinese messages and
+# URLs; real violations (imports, bugbear, simplify) still apply.
+"scripts/**" = ["E501"]

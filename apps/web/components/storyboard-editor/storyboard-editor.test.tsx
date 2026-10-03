@@ -292,6 +292,38 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     await waitFor(() => expect(panelEl("panel-1").style.left).toBe("20%"));
   });
 
+  it("S2b 撤销后做不同编辑再保存：同栈深不同载荷必须换新 request_id", async () => {
+    saveGeometry.mockReset();
+    const updated = {
+      ...makeStoryboard(),
+      panels: [makePanel({ bounds: { x: 0.25, y: 0.135, width: 0.4, height: 0.3 } }), panel2],
+    };
+    saveGeometry.mockRejectedValueOnce(new Error("网络中断")).mockResolvedValue(updated as never);
+    renderEditor();
+    stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+    const element = panelEl("panel-1");
+    fireEvent.pointerDown(element, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.click(screen.getByRole("button", { name: "保存本页" }));
+    await waitFor(() => expect(saveGeometry).toHaveBeenCalledTimes(1));
+    const firstId = saveGeometry.mock.calls[0][1].request_id;
+    await screen.findByText("网络中断");
+
+    // 撤销回到同一栈深，再拖到不同位置——载荷变了，旧 request_id 复用会让
+    // 服务端按「同 id 异内容」回 409，形成永远打不通的重试循环。
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    fireEvent.pointerDown(element, { button: 0, pointerId: 2, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 2, clientX: 196, clientY: 132 });
+    fireEvent.pointerUp(window, { pointerId: 2, clientX: 196, clientY: 132 });
+    fireEvent.click(screen.getByRole("button", { name: "保存本页" }));
+    await waitFor(() => expect(saveGeometry).toHaveBeenCalledTimes(2));
+    const second = saveGeometry.mock.calls[1][1];
+    expect(second.request_id).toBeTruthy();
+    expect(second.request_id).not.toBe(firstId);
+    expect(payloadPanel(second, "panel-1").bounds.x).toBe(0.25);
+  });
+
   it("S3 拖动中 Esc：不发请求，几何回到 drag-start", async () => {
     renderEditor();
     stubRect(await screen.findByTestId("canvas-page"), 640, 903);
@@ -1154,6 +1186,28 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
       { text: "咚…", x: 0.2, y: 0.1, rotation: 15, size: 0.05 },
       { text: "轰…", x: 0.7, y: 0.6, rotation: 0, size: null },
     ]);
+  });
+
+  it("S25e 逗号列表敲分隔符不被吞：尾部空段保留，保存时才清洗空项", async () => {
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    const propsInput = screen.getByLabelText("场景道具（用逗号分隔）") as HTMLInputElement;
+    // 敲入「白菊，」：分隔符必须留在输入框里，否则用户永远打不出第二项。
+    fireEvent.change(propsInput, { target: { value: "白菊，" } });
+    expect(propsInput.value).toBe("白菊，");
+    fireEvent.change(propsInput, { target: { value: "白菊，香炉，" } });
+    expect(propsInput.value).toBe("白菊，香炉，");
+    const sfxInput = screen.getByLabelText("拟声词（用逗号分隔）") as HTMLInputElement;
+    fireEvent.change(sfxInput, { target: { value: "咚…，" } });
+    expect(sfxInput.value).toBe("咚…，");
+    // 保存时统一清洗：空段/空白项不进入 PATCH 载荷。
+    updatePanel.mockReset().mockResolvedValue({} as never);
+    fireEvent.click(screen.getByRole("button", { name: "保存本格分镜" }));
+    await waitFor(() => expect(updatePanel).toHaveBeenCalledTimes(1));
+    const payload = updatePanel.mock.calls[0][1] as any;
+    expect(payload.props).toEqual(["白菊", "香炉"]);
+    expect(payload.sound_effects).toEqual([{ text: "咚…" }]);
   });
 
   it("S25b 删除中间拟声词：未变条目按文本锚定，保留各自几何而非滑到前者位置", async () => {

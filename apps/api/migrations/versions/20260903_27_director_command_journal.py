@@ -22,83 +22,91 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     inspector = sa.inspect(op.get_bind())
     existing = set(inspector.get_table_names())
-    if "director_command_groups" in existing and "director_commands" in existing:
-        # Adopted from Base.metadata.create_all on an early local database.
-        return
-    op.create_table(
-        "director_command_groups",
-        sa.Column("id", sa.String(length=36), primary_key=True),
-        sa.Column("project_id", sa.String(length=36), nullable=False),
-        sa.Column("command_group_id", sa.String(length=36), nullable=False),
-        sa.Column("page_id", sa.String(length=36), nullable=True),
-        sa.Column("status", sa.String(length=32), nullable=False, server_default="PROPOSED"),
-        sa.Column("first_result", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
-        sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["page_id"], ["manga_pages.id"], ondelete="SET NULL"),
-        sa.UniqueConstraint(
-            "project_id",
-            "command_group_id",
-            name="uq_director_command_groups_project_group",
-        ),
-    )
-    op.create_index(
-        "ix_director_command_groups_project_id",
-        "director_command_groups",
-        ["project_id"],
-    )
-    op.create_index(
-        "ix_director_command_groups_page_id",
-        "director_command_groups",
-        ["page_id"],
-    )
-    op.create_table(
-        "director_commands",
-        sa.Column("id", sa.String(length=36), primary_key=True),
-        sa.Column("project_id", sa.String(length=36), nullable=False),
-        sa.Column("group_id", sa.String(length=36), nullable=False),
-        sa.Column("command_id", sa.String(length=36), nullable=False),
-        sa.Column("command_group_id", sa.String(length=36), nullable=False),
-        sa.Column("retry_of_command_id", sa.String(length=36), nullable=True),
-        sa.Column("inverse_of_command_id", sa.String(length=36), nullable=True),
-        sa.Column("operation", sa.String(length=48), nullable=False),
-        sa.Column("status", sa.String(length=32), nullable=False, server_default="PROPOSED"),
-        sa.Column("target", sa.JSON(), nullable=False),
-        sa.Column("expected_version", sa.JSON(), nullable=False),
-        sa.Column("payload", sa.JSON(), nullable=False),
-        sa.Column("source", sa.JSON(), nullable=False),
-        sa.Column("diff", sa.JSON(), nullable=True),
-        sa.Column("error", sa.JSON(), nullable=True),
-        sa.Column("inverse_payload", sa.JSON(), nullable=True),
-        sa.Column("before_snapshot", sa.JSON(), nullable=True),
-        sa.Column("storyboard_version_after", sa.Integer(), nullable=True),
-        sa.Column("envelope_created_at", sa.String(length=64), nullable=False, server_default=""),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
-        sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(
-            ["group_id"], ["director_command_groups.id"], ondelete="CASCADE"
-        ),
-        sa.UniqueConstraint(
-            "project_id",
-            "command_id",
-            name="uq_director_commands_project_command",
-        ),
-    )
-    op.create_index(
-        "ix_director_commands_project_id",
-        "director_commands",
-        ["project_id"],
-    )
-    op.create_index("ix_director_commands_group_id", "director_commands", ["group_id"])
-    op.create_index(
-        "ix_director_commands_command_group_id",
-        "director_commands",
-        ["command_group_id"],
-    )
+    # Adopted-from-create_all support is per table, not per pair: a partial
+    # adoption (only one of the two tables exists — e.g. a crashed upgrade or
+    # a create_all that ran mid-schema) must still create the missing table
+    # instead of crashing on ``CREATE TABLE`` for the present one.
+    if "director_command_groups" not in existing:
+        op.create_table(
+            "director_command_groups",
+            sa.Column("id", sa.String(length=36), primary_key=True),
+            sa.Column("project_id", sa.String(length=36), nullable=False),
+            sa.Column("command_group_id", sa.String(length=36), nullable=False),
+            sa.Column("page_id", sa.String(length=36), nullable=True),
+            sa.Column("status", sa.String(length=32), nullable=False, server_default="PROPOSED"),
+            sa.Column("first_result", sa.JSON(), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
+            sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
+            sa.ForeignKeyConstraint(["page_id"], ["manga_pages.id"], ondelete="SET NULL"),
+            sa.UniqueConstraint(
+                "project_id",
+                "command_group_id",
+                name="uq_director_command_groups_project_group",
+            ),
+        )
+        op.create_index(
+            "ix_director_command_groups_project_id",
+            "director_command_groups",
+            ["project_id"],
+        )
+        op.create_index(
+            "ix_director_command_groups_page_id",
+            "director_command_groups",
+            ["page_id"],
+        )
+    if "director_commands" not in existing:
+        op.create_table(
+            "director_commands",
+            sa.Column("id", sa.String(length=36), primary_key=True),
+            sa.Column("project_id", sa.String(length=36), nullable=False),
+            sa.Column("group_id", sa.String(length=36), nullable=False),
+            sa.Column("command_id", sa.String(length=36), nullable=False),
+            sa.Column("command_group_id", sa.String(length=36), nullable=False),
+            sa.Column("retry_of_command_id", sa.String(length=36), nullable=True),
+            sa.Column("inverse_of_command_id", sa.String(length=36), nullable=True),
+            sa.Column("operation", sa.String(length=48), nullable=False),
+            sa.Column("status", sa.String(length=32), nullable=False, server_default="PROPOSED"),
+            sa.Column("target", sa.JSON(), nullable=False),
+            sa.Column("expected_version", sa.JSON(), nullable=False),
+            sa.Column("payload", sa.JSON(), nullable=False),
+            sa.Column("source", sa.JSON(), nullable=False),
+            sa.Column("diff", sa.JSON(), nullable=True),
+            sa.Column("error", sa.JSON(), nullable=True),
+            sa.Column("inverse_payload", sa.JSON(), nullable=True),
+            sa.Column("before_snapshot", sa.JSON(), nullable=True),
+            sa.Column("storyboard_version_after", sa.Integer(), nullable=True),
+            sa.Column(
+                "envelope_created_at",
+                sa.String(length=64),
+                nullable=False,
+                server_default="",
+            ),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
+            sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
+            sa.ForeignKeyConstraint(
+                ["group_id"], ["director_command_groups.id"], ondelete="CASCADE"
+            ),
+            sa.UniqueConstraint(
+                "project_id",
+                "command_id",
+                name="uq_director_commands_project_command",
+            ),
+        )
+        op.create_index(
+            "ix_director_commands_project_id",
+            "director_commands",
+            ["project_id"],
+        )
+        op.create_index("ix_director_commands_group_id", "director_commands", ["group_id"])
+        op.create_index(
+            "ix_director_commands_command_group_id",
+            "director_commands",
+            ["command_group_id"],
+        )
 
 
 def downgrade() -> None:

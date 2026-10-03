@@ -61,6 +61,7 @@ export function SfxNode({
         style={{ left: "50%", top: "-1.6em" }}
         onPointerDown={(event) => {
           event.stopPropagation();
+          if (event.button !== 0) return;
           onHandlePointerDown?.("rotate", event);
         }}
       />
@@ -72,6 +73,7 @@ export function SfxNode({
         style={{ left: "calc(50% + 1.2em)", top: "calc(50% + 0.9em)" }}
         onPointerDown={(event) => {
           event.stopPropagation();
+          if (event.button !== 0) return;
           onHandlePointerDown?.("scale", event);
         }}
       />

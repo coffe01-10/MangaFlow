@@ -19,11 +19,8 @@ for _path in (str(_REPO / "apps" / "api"), str(_REPO / "scripts")):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
-from app.domain.states import Resolution
-from app.models import (
+from app.domain.states import Resolution  # noqa: E402
+from app.models import (  # noqa: E402
     Asset,
     Chapter,
     GenerationBatch,
@@ -33,6 +30,8 @@ from app.models import (
     Panel,
     Project,
 )
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
 
 PAGES = 120
 CANDIDATES_PER_PAGE = 5
@@ -93,7 +92,8 @@ def seed_long_list(db_url: str, storage_root: Path, candidates: int = 600) -> di
             job = GenerationJob(
                 project_id=project.id, target_type="PAGE", target_id=page.id,
                 job_type="PAGE_GENERATION", status="COMPLETED",
-                idempotency_key=f"nui67-long-{candidates}-{number}",
+                # idempotency_key 全局唯一：带项目后缀才能往同一库重复播种。
+                idempotency_key=f"nui67-long-{candidates}-{number}-{project.id[:8]}",
                 finished_at=now - timedelta(minutes=pages_total - number),
             )
             session.add(job)

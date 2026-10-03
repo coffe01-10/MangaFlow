@@ -159,7 +159,15 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
         chapter = _scope_chapter(db, run)
         if not chapter:
             raise WorkflowNodeExecutionError("分页与分镜节点必须使用章节、页面或候选范围")
-        pages = plan_chapter_pages(db, chapter, replace_existing=False)
+        try:
+            pages = plan_chapter_pages(db, chapter, replace_existing=False)
+        except HTTPException as error:
+            # plan_chapter_pages 的确定性前置失败（章节无可用原文、格序号
+            # 冲突重试耗尽）以 HTTPException(409) 抛出；与下方 output.export
+            # 分支同纪律转成 NODE_PRECONDITION_FAILED——落入 worker 的
+            # generic 分支会被当作可重试 WORKER_ERROR 空转 max_attempts，
+            # 且可操作原因被「未分类异常」文案掩盖。
+            raise WorkflowNodeExecutionError(str(error.detail)) from error
         node_run.output_refs = {
             "job_id": job.id,
             "node_type": node_run.node_type,

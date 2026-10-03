@@ -6,9 +6,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
 from app.domain.states import Resolution
 from app.models import (
     Asset,
@@ -26,6 +23,8 @@ from app.models import (
     ScriptRevision,
     SourceRevision,
 )
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 MISSING_NAME = "e2e-gate-missing"
 FAILED_NAME = "e2e-gate-failed"
@@ -132,7 +131,10 @@ def _page_with_candidate(
         session.add(
             InspectionResult(
                 candidate_id=candidate.id,
-                storyboard_version=storyboard_version if ack_version == storyboard_version else storyboard_version,
+                # Stamp the version the candidate was built on so stale-board
+                # fixtures carry inspections at the old version, not the
+                # current page.storyboard_version.
+                storyboard_version=candidate.based_on_storyboard_version,
                 category=category,
                 outcome=outcome,
                 score=1.0 if outcome in {"PASS", "MATCH", "ACCEPTABLE"} else 0.1,

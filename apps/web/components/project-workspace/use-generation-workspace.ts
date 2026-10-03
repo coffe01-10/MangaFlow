@@ -251,13 +251,15 @@ export function useGenerationWorkspace({
   // mutationFn，ref 检查因此在第二次点击的 await 之前完成。
   const startBatchInFlight = useRef(false);
   const startBatch = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (startBatchInFlight.current) throw new Error("新批次请求已在进行中，请勿重复点击");
       startBatchInFlight.current = true;
       try {
         const issue = getPageStructureIssue(selectedPage);
         if (issue) throw new Error(issue);
-        return api.startBatch(selectedPage!.id);
+        // return await：finally 只覆盖同步段，不 await 的话请求仍在途守卫
+        // 就被复位，双击窗口内照样重复建批次。
+        return await api.startBatch(selectedPage!.id);
       } finally {
         startBatchInFlight.current = false;
       }
@@ -291,7 +293,9 @@ export function useGenerationWorkspace({
         if (!pageReadiness.data?.ready) throw new Error(pageReadiness.isLoading ? "正在检查页面生产条件" : "页面生产准备尚未完成，请先处理阻塞项");
         if (!generationReferenceReady) throw new Error("请为本页每个入镜人物选择人物参考图，并补齐分镜指定服装的参考图");
         const batch = currentBatch ?? await api.startBatch(selectedPage!.id);
-        return api.generateCandidate(
+        // return await：不 await 时 finally 在 generateCandidate 仍在途即
+        // 复位守卫，双击窗口内会重复入队付费任务。
+        return await api.generateCandidate(
           batch.id,
           requireDrawModel(),
           draftResolution,

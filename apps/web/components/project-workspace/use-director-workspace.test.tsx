@@ -8,6 +8,7 @@ import {
   type Character,
   type DirectorCommand,
   type DirectorCommandGroup,
+  type DirectorUtteranceQueued,
   type MangaPage,
   type ScriptScene,
   type StoryboardPanel,
@@ -17,6 +18,8 @@ import { useDirectorWorkspace } from "./use-director-workspace";
 
 const proposeApi = vi.spyOn(api, "directorProposeCommandGroup");
 const groupsApi = vi.spyOn(api, "directorCommandGroups");
+const submitUtteranceApi = vi.spyOn(api, "directorSubmitUtterance");
+const groupApi = vi.spyOn(api, "directorCommandGroup");
 
 function pageFixture(overrides: Partial<MangaPage> = {}): MangaPage {
   return {
@@ -234,5 +237,73 @@ describe("useDirectorWorkspace propose 失败回滚解析文案（#648）", () =
     expect(result.current.preview).toBeNull();
     expect(result.current.previewPlan).toBeNull();
     expect(result.current.planState).toBeNull();
+  });
+});
+
+describe("director 工作区在途守卫与澄清上下文", () => {
+  beforeEach(() => {
+    proposeApi.mockReset();
+    groupsApi.mockReset().mockResolvedValue([]);
+    submitUtteranceApi.mockReset();
+    groupApi.mockReset();
+  });
+
+  it("propose 在途时二次提交只发一个请求（isPending 传播滞后不顶事）", async () => {
+    let release: ((group: DirectorCommandGroup) => void) | null = null;
+    proposeApi.mockImplementation(
+      () => new Promise<DirectorCommandGroup>((resolve) => { release = resolve; }),
+    );
+    const { result } = renderDirectorHook();
+    act(() => {
+      result.current.setDraft({ utterance: "改成 6 格", retryOfCommandId: null });
+    });
+    act(() => {
+      result.current.submitForPreview();
+      // 同一拍内的第二次点击：isPending 尚未渲染落地，只能靠同步 ref 拦截。
+      result.current.submitForPreview();
+    });
+    await waitFor(() => expect(proposeApi).toHaveBeenCalledTimes(1));
+    // 被拦下的一次落到 notice，不静默消失。
+    expect(result.current.notice).toContain("请勿重复点击");
+    await act(async () => {
+      release!(groupFixture());
+    });
+    await waitFor(() => expect(result.current.preview?.command_group_id).toBe("group-1"));
+  });
+
+  it("submitForParse 在途时二次调用不再发出付费解析请求", async () => {
+    let release: ((queued: DirectorUtteranceQueued) => void) | null = null;
+    submitUtteranceApi.mockImplementation(
+      () => new Promise<DirectorUtteranceQueued>((resolve) => { release = resolve; }),
+    );
+    const { result } = renderDirectorHook();
+    act(() => {
+      result.current.setDraft({ utterance: "帮我把这一格改热闹点", retryOfCommandId: null });
+    });
+    act(() => {
+      result.current.submitForParse();
+      result.current.submitForParse();
+    });
+    await waitFor(() => expect(submitUtteranceApi).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      release!({
+        job_id: "job-double-submit",
+        job_status: "QUEUED",
+        command_group_id: "group-1",
+        idempotent_replay: false,
+      });
+    });
+  });
+
+  it("applyClarifyOption 命中气泡时回填宿主格 panelId", () => {
+    const { result } = renderDirectorHook();
+    act(() => {
+      result.current.applyClarifyOption({ kind: "dialogue", id: "dialogue-1" });
+    });
+    expect(result.current.selection).toEqual({
+      kind: "dialogue",
+      dialogueId: "dialogue-1",
+      panelId: "panel-1",
+    });
   });
 });

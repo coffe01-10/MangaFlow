@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPalette, COLLECT_COMMANDS, type StudioCommand } from "./command-palette";
+import { REQUEST_NAVIGATION } from "@/lib/unsaved-changes-guard";
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
@@ -31,5 +32,27 @@ describe("global command palette", () => {
     expect(action).not.toHaveBeenCalled();
     expect(screen.getByRole("option")).toBeDisabled();
     window.removeEventListener(COLLECT_COMMANDS, collect);
+  });
+  it("dirty page can veto palette navigation via REQUEST_NAVIGATION", () => {
+    // A dirty page listens on REQUEST_NAVIGATION and preventDefaults it; the
+    // palette must then skip router.push instead of silently dropping drafts.
+    render(<CommandPalette />);
+    const veto = (event: Event) => event.preventDefault();
+    window.addEventListener(REQUEST_NAVIGATION, veto);
+    try {
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+      const search = screen.getByRole("combobox");
+      fireEvent.change(search, { target: { value: "设置" } });
+      fireEvent.keyDown(search, { key: "Enter" });
+      expect(push).not.toHaveBeenCalled();
+      // Veto lifted → same command navigates normally.
+      window.removeEventListener(REQUEST_NAVIGATION, veto);
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+      fireEvent.change(screen.getByRole("combobox"), { target: { value: "设置" } });
+      fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+      expect(push).toHaveBeenCalledWith("/settings");
+    } finally {
+      window.removeEventListener(REQUEST_NAVIGATION, veto);
+    }
   });
 });

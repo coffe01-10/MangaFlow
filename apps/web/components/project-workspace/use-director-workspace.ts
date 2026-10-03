@@ -114,6 +114,13 @@ export function useDirectorWorkspace({
   // 晚到的 onSuccess 会把旧页的命令组重新种进新页工作区（组若为 PREVIEWED，
   // 「确认执行」甚至会对旧页的命令生效）。发起变更时记下当时的 page.id，
   // 回调发现页面已换就整个结果作废。
+  // React Query's isPending notifies asynchronously, so a rapid double
+  // submit can enter mutationFn twice before the pending flag renders.
+  // These refs are set synchronously inside mutationFn and held until the
+  // underlying request settles — the paid utterance parse and the journal
+  // propose must never mint duplicates from one accidental double click.
+  const parseInFlightRef = useRef(false);
+  const proposeInFlightRef = useRef(false);
   const journalMutationPageIdRef = useRef<string | null>(page?.id ?? null);
   const markJournalMutationStart = useCallback(() => {
     journalMutationPageIdRef.current = page?.id ?? null;
@@ -133,12 +140,18 @@ export function useDirectorWorkspace({
   }, [id, page, queryClient]);
 
   const propose = useMutation({
-    mutationFn: (envelope: DirectorCommandEnvelope) => {
-      markJournalMutationStart();
-      return api.directorProposeCommandGroup(id, {
-        command_group_id: envelope.command_group_id,
-        commands: [envelope],
-      });
+    mutationFn: async (envelope: DirectorCommandEnvelope) => {
+      if (proposeInFlightRef.current) throw new Error("预览请求已在进行中，请勿重复点击");
+      proposeInFlightRef.current = true;
+      try {
+        markJournalMutationStart();
+        return await api.directorProposeCommandGroup(id, {
+          command_group_id: envelope.command_group_id,
+          commands: [envelope],
+        });
+      } finally {
+        proposeInFlightRef.current = false;
+      }
     },
     onSuccess: (group) => {
       if (!journalMutationPageStillActive()) return;
@@ -176,8 +189,11 @@ export function useDirectorWorkspace({
   // setState-in-effect) and fails closed on timeout.
   const parseUtterance = useMutation({
     mutationFn: async (): Promise<DirectorCommandGroup> => {
-      markJournalMutationStart();
-      const selectionPayload = !selection || selection.kind === "page"
+      if (parseInFlightRef.current) throw new Error("AI 解析请求已在进行中，请勿重复点击");
+      parseInFlightRef.current = true;
+      try {
+        markJournalMutationStart();
+        const selectionPayload = !selection || selection.kind === "page"
         ? undefined
         : selection.kind === "panel"
           ? { kind: "panel" as const, panel_id: selection.panelId }
@@ -211,6 +227,9 @@ export function useDirectorWorkspace({
         if (group.status !== "PARSING") return group;
       }
       throw new Error("AI 解析超时：任务仍在进行，可稍后到命令历史查看结果");
+      } finally {
+        parseInFlightRef.current = false;
+      }
     },
     onSuccess: (group) => {
       if (!journalMutationPageStillActive()) return;
@@ -253,14 +272,19 @@ export function useDirectorWorkspace({
       if (option.kind === "panel" && option.id) {
         setSelection({ kind: "panel", panelId: option.id });
       } else if (option.kind === "dialogue" && option.id) {
-        setSelection({ kind: "dialogue", dialogueId: option.id, panelId: "" });
+        // The clarify option only carries the dialogue id — recover the
+        // owning panel so the selection can retarget resolvePanelTarget;
+        // a blank panelId silently dropped the panel context downstream.
+        const owner = panels.find((panel) =>
+          panel.dialogues.some((dialogue) => dialogue.id === option.id));
+        setSelection({ kind: "dialogue", dialogueId: option.id, panelId: owner?.id ?? "" });
       } else if (option.kind === "character" && option.id) {
         setSelection({ kind: "character", characterId: option.id });
       }
       setNlClarify(null);
       inputRef.current?.focus();
     },
-    [],
+    [panels],
   );
 
   const accept = useMutation({

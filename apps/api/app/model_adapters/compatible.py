@@ -714,10 +714,22 @@ class OpenAICompatibleAdapter(_CompatibleBase):
         if encoded:
             return base64.b64decode(encoded)
         url = item.get("url")
-        if not url or not str(url).startswith("https://"):
+        if not isinstance(url, str) or not url:
             raise ProviderAdapterError("INVALID_OUTPUT", "图片结果缺少安全的下载地址")
         try:
-            validate_provider_url(str(url), allow_query=True)
+            # Same network policy the request layer applies in _request ->
+            # provider_http_client: the runtime's private-network and
+            # http-loopback allowances must apply here too, otherwise this
+            # prevalidation rejects a URL the fetch would have permitted
+            # (e.g. an http loopback image host on a dev rig). The scheme
+            # gate stays inside validate_provider_url — http non-loopback is
+            # still rejected unless allow_http_loopback is on.
+            validate_provider_url(
+                url,
+                allow_private=self.runtime.allow_private_networks,
+                allow_http_loopback=self.runtime.allow_http_loopback,
+                allow_query=True,
+            )
         except ProviderUrlUnresolvedError as error:
             raise ProviderAdapterError(
                 "UPSTREAM", "图片下载域名暂时无法解析，请稍后重试", retryable=True
@@ -726,7 +738,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             raise ProviderAdapterError(
                 "INVALID_OUTPUT", "图片下载地址指向了不允许的网络"
             ) from error
-        response = self._request("GET", str(url), headers={})
+        response = self._request("GET", url, headers={})
         if not response.headers.get("content-type", "").startswith("image/"):
             raise ProviderAdapterError("INVALID_OUTPUT", "图片下载地址返回了非图片内容")
         return response.content

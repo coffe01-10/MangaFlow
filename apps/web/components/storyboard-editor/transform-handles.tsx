@@ -104,6 +104,7 @@ export function TransformHandles({
         style={handleStyle(position.left, position.top)}
         onPointerDown={disabled ? undefined : (event) => {
           event.stopPropagation();
+          if (event.button !== 0) return;
           onHandlePointerDown?.(name as HandleName | "tail" | "anchor" | "rotate", event);
         }}
       />;
