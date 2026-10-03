@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -281,6 +281,11 @@ class CLIExecutionController:
                     # 一次用户取消重分类为可重试 UPSTREAM，可能再跑一次付费任务。
                     with contextlib.suppress(ProviderAdapterError, OSError, SQLAlchemyError):
                         error.usage = self._read_result(run_id, run_directory).usage
+                    error.retain_artifacts = True
+                elif outcome.cancelled:
+                    # 探针取消同样是 TerminateJobObject 强杀一个可能已计费的
+                    # 子进程：与下方超时路径对称地保留运行目录——_diagnostics
+                    # 刚写入的 stdout/stderr 日志是仅有的计费与诊断证据。
                     error.retain_artifacts = True
                 raise error
             if outcome.timed_out:
@@ -561,15 +566,29 @@ class CLIExecutionController:
         """Fail an abandoned run only if it is still in a recoverable state."""
 
         with self.session_factory() as db:
-            row = db.get(CLIExecutionRun, run_id)
-            if row is None:
+            # Conditional UPDATE keeps the recoverable-state check atomic with
+            # the write: a controller _finish committing COMPLETED between
+            # the recover SELECT and this statement must win (its result and
+            # slot release stay untouched), which a bare read-then-write
+            # cannot guarantee — the loser's rowcount is simply 0.
+            updated = db.execute(
+                update(CLIExecutionRun)
+                .where(
+                    CLIExecutionRun.id == run_id,
+                    CLIExecutionRun.state.in_(("PREPARING", "RUNNING")),
+                    CLIExecutionRun.lease_slot.is_not(None),
+                )
+                .values(
+                    state="FAILED",
+                    lease_slot=None,
+                    finished_at=datetime.now(UTC),
+                    error_code="CRASH",
+                    error_message=_sanitize_message(error_message),
+                )
+            )
+            if updated.rowcount != 1:
+                db.rollback()
                 return False
-            if row.state not in ("PREPARING", "RUNNING") or row.lease_slot is None:
-                return False
-            row.state, row.lease_slot = "FAILED", None
-            row.finished_at = datetime.now(UTC)
-            row.error_code = "CRASH"
-            row.error_message = _sanitize_message(error_message)
             db.commit()
         return True
 

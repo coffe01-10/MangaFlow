@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.domain.director_commands import (
@@ -37,7 +37,11 @@ from app.services.candidate_lineage import create_region_regeneration
 from app.services.content_workflow import apply_page_layout
 from app.services.editor import project_id_for_page
 from app.services.job_service import enqueue_job
-from app.services.ordinal_allocator import lock_entity
+from app.services.ordinal_allocator import (
+    is_sqlite_lock_error,
+    lock_entity,
+    reserve_sqlite_writer,
+)
 from app.services.storyboard_edits import (
     DIALOGUE_RESTORE_FIELDS,
     PANEL_RESTORE_FIELDS,
@@ -1393,8 +1397,23 @@ def submit_utterance(db: Session, project_id: str, body: dict) -> dict:
     from app.domain.states import JobStatus
     from app.services.job_service import ACTIVE_JOB_STATUSES, create_job
 
-    _owned_project(db, project_id)
-    page = db.get(MangaPage, body["page_id"])
+    # Serialize the PARSE_IN_FLIGHT check-then-act below: the guard is a bare
+    # SELECT and two concurrent submits for the same page could both pass it
+    # and each mint a paid DIRECTOR_PARSE job. On PostgreSQL the page row
+    # FOR UPDATE serializes same-page submits until the winner commits (the
+    # loser's check then sees the committed job); on SQLite reserving the
+    # single writer BEFORE any read gives the same serialization — a stale
+    # read snapshot surfaces as a controlled 409 instead of a double insert
+    # (mirrors the run-start guard in workflow_engine.planning).
+    try:
+        with reserve_sqlite_writer(db):
+            _owned_project(db, project_id)
+            page = lock_entity(db, MangaPage, body["page_id"])
+    except OperationalError as error:
+        if not is_sqlite_lock_error(error):
+            raise
+        db.rollback()
+        raise _http_409("解析提交与并发写入冲突，请重试") from error
     if page is None or project_id_for_page(db, page) != project_id:
         raise _http_422("目标页不存在")
     chapter = db.get(Chapter, page.chapter_id)
