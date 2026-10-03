@@ -485,6 +485,41 @@ describe("director rules 规则桩（V02-41B）", () => {
     if (plan.kind !== "clarify") return;
     expect(plan.options.map((option) => option.id)).toEqual(["dialogue-1", "dialogue-2"]);
   });
+
+  it("引号内载荷不触发重画拒绝：「台词改成「把第3格重画」」编成台词改写", () => {
+    const plan = compileDirectorCommand(baseInput({
+      selection: { kind: "dialogue", dialogueId: "dialogue-1", panelId: "panel-1" },
+      utterance: "台词改成「把第3格重画」",
+    }));
+    expect(plan.kind).toBe("command");
+    if (plan.kind !== "command") return;
+    expect(plan.envelope.operation).toBe("update_dialogue");
+    expect(plan.envelope.payload).toEqual({ target_text: "把第3格重画" });
+    // 引号里的「第3格」是台词内容，不得劫持目标格。
+    expect(plan.envelope.target.panel_id).toBe("panel-1");
+  });
+
+  it("「第 N 格」改台词且选中气泡在其它格时落到目标格首个气泡", () => {
+    // 修复 findIndex(-1)：所选气泡不在目标格时不得误报「没有可选气泡」。
+    const panel2 = panelFixture({
+      id: "panel-2",
+      reading_order: 2,
+      dialogues: [{
+        ...panelFixture().dialogues[0],
+        id: "dialogue-9",
+        panel_id: "panel-2",
+        target_text: "旧台词",
+      }],
+    });
+    const plan = compileDirectorCommand(baseInput({
+      panels: [panelFixture(), panel2],
+      selection: { kind: "dialogue", dialogueId: "dialogue-1", panelId: "panel-1" },
+      utterance: "第 2 格台词改成「新台词」",
+    }));
+    expect(plan.kind).toBe("command");
+    if (plan.kind !== "command") return;
+    expect(plan.envelope.target).toMatchObject({ panel_id: "panel-2", dialogue_id: "dialogue-9" });
+  });
 });
 
 describe("selection helpers", () => {

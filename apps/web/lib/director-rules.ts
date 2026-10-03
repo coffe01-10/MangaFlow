@@ -208,6 +208,14 @@ function characterClarifyOptions(
   }));
 }
 
+/**
+ * Spans enclosed in 「」『』“”"…" are command payload (new dialogue text),
+ * never intent vocabulary. Every intent gate matches on quote-stripped text:
+ * 「台词改成「把第3格重画」」must compile to a dialogue rewrite, not trip the
+ * mask-redraw refusal — and the quoted 「第3格」 must not retarget the panel.
+ */
+const QUOTED_SPAN = /[「『“"][^」』”"]{0,200}[」』”"]/g;
+
 function quotedText(utterance: string): string | null {
   const quoted = utterance.match(/[「『“"]([^」』”"]{1,200})[」』”"]/);
   if (quoted?.[1]) return quoted[1].trim();
@@ -235,7 +243,7 @@ function resolvePanelTarget(
   needsDialogue: boolean,
 ): ResolvedTarget {
   const ordered = orderedPanels(panels);
-  const mentionedOrder = parsePanelNumber(utterance);
+  const mentionedOrder = parsePanelNumber(utterance.replace(QUOTED_SPAN, " "));
   let panel: StoryboardPanel | null = null;
   if (mentionedOrder != null) {
     panel = panelByOrder(ordered, mentionedOrder);
@@ -270,9 +278,15 @@ function resolvePanelTarget(
       return { panel, dialogueIndex: null, reason: `格 ${panel.reading_order} 没有气泡` };
     }
     if (selection?.kind === "dialogue") {
-      dialogueIndex = dialogues.findIndex((item) => item.id === selection.dialogueId);
+      const selected = dialogues.findIndex((item) => item.id === selection.dialogueId);
+      // findIndex miss (-1) is not a null sentinel: the selected bubble may
+      // live in another panel — fall through to the ordinal/clarify path
+      // instead of letting dialogues[-1] masquerade as "no bubbles".
+      if (selected >= 0) dialogueIndex = selected;
     }
-    const bubbleMatch = utterance.match(/第\s*([0-9]|[一二三四五六七八])\s*(?:句|气泡|个气泡)/);
+    const bubbleMatch = utterance.replace(QUOTED_SPAN, " ").match(
+      /第\s*([0-9]|[一二三四五六七八])\s*(?:句|气泡|个气泡)/,
+    );
     if (dialogueIndex == null && bubbleMatch) {
       const bubbleOrder = parseOrdinal(bubbleMatch[1]);
       if (bubbleOrder != null && bubbleOrder >= 1 && bubbleOrder <= dialogues.length) {
@@ -342,11 +356,17 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
     return { kind: "clarify", reason: "请输入一句导演指令", options: [] };
   }
 
+  // Quoted spans are payload (see QUOTED_SPAN): every intent gate below —
+  // redraw refusal, layout count, cast add/remove, expression, shot/camera —
+  // matches on intentText so dialogue content like 「把第3格重画」 cannot
+  // reach the vocabulary it only carries as new bubble text.
+  const intentText = utterance.replace(QUOTED_SPAN, " ");
+
   // Pixel redraw / mask intents: the command bar only edits storyboard
   // fields — mask strokes cannot ride on a text command. Point at the local
   // edit shell (V02-43B) which compiles the drawn regions into a real
   // regenerate_region command; never silently fall back to a whole page.
-  if (/重画|重绘|重新生成|重新抽|重抽|局部|选区|蒙版|mask|涂/.test(utterance)) {
+  if (/重画|重绘|重新生成|重新抽|重抽|局部|选区|蒙版|mask|涂/.test(intentText)) {
     return {
       kind: "unsupported",
       reason:
@@ -355,7 +375,7 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
   }
 
   // Whole-page layout: 「改成 6 格」. Explicit verbs avoid matching 「第 3 格」.
-  const layoutMatch = utterance.match(/(?:改成|改为|变成|换成|调整为?|分成|划分为?)\s*([3-8]|[一二三四五六七八])\s*格/);
+  const layoutMatch = intentText.match(/(?:改成|改为|变成|换成|调整为?|分成|划分为?)\s*([3-8]|[一二三四五六七八])\s*格/);
   if (layoutMatch) {
     if (input.pageGenerationPending) {
       return {
@@ -433,7 +453,7 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
   // first: a character named 小雨 must not satisfy the 雨 pattern and hijack
   // 「去掉小雨」/「小雨微笑」 into a scene-level weather change. Cast and
   // expression branches below keep matching on the original utterance.
-  const nameStripped = stripCharacterMentions(utterance, input.characters);
+  const nameStripped = stripCharacterMentions(intentText, input.characters);
   const weather = WEATHER_LABELS.find(([pattern]) => pattern.test(nameStripped));
   const timeLabel = TIME_LABELS.find(([pattern]) => pattern.test(nameStripped));
   if (weather || timeLabel) {
@@ -482,7 +502,7 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
       weatherValue ? `天气→${weatherValue}` : null,
       timeLabel ? `时间→${timeLabel[1]}` : null,
     ].filter(Boolean).join("、");
-    const panelNote = parsePanelNumber(utterance);
+    const panelNote = parsePanelNumber(intentText);
     const scopeNote = panelNote != null ? `（含格 ${panelNote}）` : "";
     return buildPlan(input, {
       operation: "update_scene_context",
@@ -501,8 +521,8 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
   }
 
   // Panel cast: remove / add a character on a panel.
-  const removeMatch = utterance.match(/(?:去掉|移除|拿掉|删除|清空)\s*(.+)/);
-  const addMatch = utterance.match(/(.+?)(?:出现在|登场|走进|加入|入镜)/);
+  const removeMatch = intentText.match(/(?:去掉|移除|拿掉|删除|清空)\s*(.+)/);
+  const addMatch = intentText.match(/(.+?)(?:出现在|登场|走进|加入|入镜)/);
   if (removeMatch || addMatch) {
     const characterResolution = resolveCharacter(input.characters, input.panels, input.selection, utterance);
     if (!characterResolution.character) {
@@ -566,7 +586,7 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
 
   // Expression: 让X在格N微笑 / 格N里X皱眉. The panel must already contain the
   // character, otherwise accept would 409 (表情只能指定给本格出现的角色).
-  const expression = EXPRESSIONS.find(([pattern]) => pattern.test(utterance));
+  const expression = EXPRESSIONS.find(([pattern]) => pattern.test(intentText));
   if (expression) {
     const characterResolution = resolveCharacter(input.characters, input.panels, input.selection, utterance);
     if (!characterResolution.character) {
@@ -604,8 +624,8 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
   }
 
   // Shot / camera on a panel.
-  const shot = SHOT_TYPES.find(([pattern]) => pattern.test(utterance));
-  const camera = CAMERA_ANGLES.find(([pattern]) => pattern.test(utterance));
+  const shot = SHOT_TYPES.find(([pattern]) => pattern.test(intentText));
+  const camera = CAMERA_ANGLES.find(([pattern]) => pattern.test(intentText));
   if (shot || camera) {
     const resolved = resolvePanelTarget(input.panels, input.selection, utterance, false);
     if (resolved.clarify) return toClarify(resolved);
