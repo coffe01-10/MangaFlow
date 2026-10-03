@@ -806,7 +806,9 @@ export function StoryboardEditor({
         geometry: isPolygonPanel(panel) && stored
           ? { ...stored, z_order: meta?.z_order ?? stored.z_order }
           : {
-            type: "rect",
+            // 载荷先存局部变量再进返回值，失去上下文类型后字面量会被拓宽成
+            // string，as const 钉回 PanelGeometryShape 的 "rect"。
+            type: "rect" as const,
             rect: bounds,
             rotation: meta?.rotation ?? stored?.rotation ?? 0,
             z_order: meta?.z_order ?? stored?.z_order ?? panel.reading_order,

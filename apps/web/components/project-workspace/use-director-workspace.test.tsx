@@ -8,6 +8,7 @@ import {
   type Character,
   type DirectorCommand,
   type DirectorCommandGroup,
+  type DirectorUtteranceQueued,
   type MangaPage,
   type ScriptScene,
   type StoryboardPanel,
@@ -271,9 +272,9 @@ describe("director 工作区在途守卫与澄清上下文", () => {
   });
 
   it("submitForParse 在途时二次调用不再发出付费解析请求", async () => {
-    let release: ((group: DirectorCommandGroup) => void) | null = null;
+    let release: ((queued: DirectorUtteranceQueued) => void) | null = null;
     submitUtteranceApi.mockImplementation(
-      () => new Promise<DirectorCommandGroup>((resolve) => { release = resolve; }),
+      () => new Promise<DirectorUtteranceQueued>((resolve) => { release = resolve; }),
     );
     const { result } = renderDirectorHook();
     act(() => {
@@ -285,7 +286,12 @@ describe("director 工作区在途守卫与澄清上下文", () => {
     });
     await waitFor(() => expect(submitUtteranceApi).toHaveBeenCalledTimes(1));
     await act(async () => {
-      release!(groupFixture({ status: "NEEDS_CLARIFICATION" }));
+      release!({
+        job_id: "job-double-submit",
+        job_status: "QUEUED",
+        command_group_id: "group-1",
+        idempotent_replay: false,
+      });
     });
   });
 
