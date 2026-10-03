@@ -7,11 +7,11 @@ and name conflicts return 409.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.helpers import ensure_project_scope, reject_required_nulls
+from app.api.helpers import bump_version, ensure_project_scope, reject_required_nulls
 from app.api.routes.uploads import _ensure_asset_not_in_active_job
 from app.database import get_db
 from app.models import (
@@ -68,17 +68,9 @@ def _scene_asset(db: Session, project_id: str, asset_id: str) -> SceneAsset:
     return asset
 
 
-def _variant_read(db: Session, variant: SceneAssetVariant) -> SceneAssetVariantRead:
-    references = list(
-        db.scalars(
-            select(SceneAssetVariantReference)
-            .where(SceneAssetVariantReference.variant_id == variant.id)
-            .order_by(
-                SceneAssetVariantReference.sort_order,
-                SceneAssetVariantReference.created_at,
-            )
-        )
-    )
+def _variant_read_from_refs(
+    variant: SceneAssetVariant, references: list[SceneAssetVariantReference]
+) -> SceneAssetVariantRead:
     return SceneAssetVariantRead.model_validate(variant).model_copy(
         update={
             "references": [
@@ -88,22 +80,27 @@ def _variant_read(db: Session, variant: SceneAssetVariant) -> SceneAssetVariantR
     )
 
 
-def _scene_asset_read(db: Session, asset: SceneAsset) -> SceneAssetRead:
-    references = list(
-        db.scalars(
-            select(SceneAssetReference)
-            .where(SceneAssetReference.scene_asset_id == asset.id)
-            .order_by(SceneAssetReference.created_at)
-        )
+def _variant_read(db: Session, variant: SceneAssetVariant) -> SceneAssetVariantRead:
+    return _variant_read_from_refs(
+        variant,
+        list(
+            db.scalars(
+                select(SceneAssetVariantReference)
+                .where(SceneAssetVariantReference.variant_id == variant.id)
+                .order_by(
+                    SceneAssetVariantReference.sort_order,
+                    SceneAssetVariantReference.created_at,
+                )
+            )
+        ),
     )
-    variants = [
-        _variant_read(db, variant)
-        for variant in db.scalars(
-            select(SceneAssetVariant)
-            .where(SceneAssetVariant.scene_asset_id == asset.id)
-            .order_by(SceneAssetVariant.created_at, SceneAssetVariant.id)
-        )
-    ]
+
+
+def _scene_asset_read_from_parts(
+    asset: SceneAsset,
+    references: list[SceneAssetReference],
+    variants: list[SceneAssetVariantRead],
+) -> SceneAssetRead:
     return SceneAssetRead.model_validate(asset).model_copy(
         update={
             "references": [
@@ -112,6 +109,64 @@ def _scene_asset_read(db: Session, asset: SceneAsset) -> SceneAssetRead:
             "variants": variants,
         }
     )
+
+
+def _scene_asset_read(db: Session, asset: SceneAsset) -> SceneAssetRead:
+    return _scene_asset_reads(db, [asset])[0]
+
+
+def _scene_asset_reads(db: Session, assets: list[SceneAsset]) -> list[SceneAssetRead]:
+    """Assemble reads for a page of assets with three batched queries total.
+
+    The per-asset variant (_variant_read → one query each) and reference
+    selects would otherwise turn a 200-row page into hundreds of statements.
+    """
+
+    asset_ids = [item.id for item in assets]
+    if not asset_ids:
+        return []
+    references_by_asset: dict[str, list[SceneAssetReference]] = {}
+    for reference in db.scalars(
+        select(SceneAssetReference)
+        .where(SceneAssetReference.scene_asset_id.in_(asset_ids))
+        .order_by(SceneAssetReference.created_at)
+    ):
+        references_by_asset.setdefault(reference.scene_asset_id, []).append(reference)
+    variants_by_asset: dict[str, list[SceneAssetVariant]] = {}
+    variants = list(
+        db.scalars(
+            select(SceneAssetVariant)
+            .where(SceneAssetVariant.scene_asset_id.in_(asset_ids))
+            .order_by(SceneAssetVariant.created_at, SceneAssetVariant.id)
+        )
+    )
+    for variant in variants:
+        variants_by_asset.setdefault(variant.scene_asset_id, []).append(variant)
+    references_by_variant: dict[str, list[SceneAssetVariantReference]] = {}
+    variant_ids = [variant.id for variant in variants]
+    if variant_ids:
+        for reference in db.scalars(
+            select(SceneAssetVariantReference)
+            .where(SceneAssetVariantReference.variant_id.in_(variant_ids))
+            .order_by(
+                SceneAssetVariantReference.sort_order,
+                SceneAssetVariantReference.created_at,
+            )
+        ):
+            references_by_variant.setdefault(reference.variant_id, []).append(reference)
+    return [
+        _scene_asset_read_from_parts(
+            item,
+            references_by_asset.get(item.id, []),
+            [
+                _variant_read_from_refs(
+                    variant, references_by_variant.get(variant.id, [])
+                )
+                for variant in variants_by_asset.get(item.id, [])
+            ],
+        )
+        for item in assets
+    ]
 
 
 @router.get("/projects/{project_id}/scene-assets", response_model=list[SceneAssetRead])
@@ -129,29 +184,36 @@ def list_scene_assets(
     query = select(SceneAsset).where(SceneAsset.project_id == project_id)
     if not include_deleted:
         query = query.where(SceneAsset.deleted_at.is_(None))
-    assets = list(
+    if status_filter:
+        try:
+            status_value = AssetStatus(status_filter)
+        except ValueError:
+            # An out-of-enum filter can never match; keep the historical
+            # empty-list contract instead of surfacing a 500.
+            return []
+        query = query.where(SceneAsset.status == status_value)
+    if place:
+        # Portable startswith on the JSON scalar (works on both SQLite's
+        # json_extract and PG's ->>): substr avoids LIKE escaping rules.
+        query = query.where(
+            func.substr(SceneAsset.structured["place"].as_string(), 1, len(place)) == place
+        )
+    if interior is not None:
+        # Same JSON-boolean extraction as source_coverage['complete'] in
+        # projects.list_pages; a missing key yields NULL and never matches.
+        query = query.where(SceneAsset.structured["interior"].as_boolean().is_(interior))
+    page = list(
         db.scalars(
             query.order_by(
                 SceneAsset.deleted_at.is_(None).desc(),
                 SceneAsset.name,
                 SceneAsset.id,
             )
+            .offset(offset)
+            .limit(limit)
         )
     )
-    if status_filter:
-        assets = [item for item in assets if item.status.value == status_filter]
-    if place:
-        assets = [
-            item
-            for item in assets
-            if str((item.structured or {}).get("place") or "").startswith(place)
-        ]
-    if interior is not None:
-        assets = [
-            item for item in assets if (item.structured or {}).get("interior") is interior
-        ]
-    page = assets[offset : offset + limit]
-    return [_scene_asset_read(db, item) for item in page]
+    return _scene_asset_reads(db, page)
 
 
 @router.post(
@@ -249,7 +311,7 @@ def restore_scene_asset(
     if asset.deleted_at is None:
         return _scene_asset_read(db, asset)
     asset.deleted_at = None
-    asset.version += 1
+    bump_version(db, asset)
     mark_pages_for_scene_asset_review(db, asset.id)
     try:
         db.commit()
@@ -292,7 +354,7 @@ def delete_scene_asset(project_id: str, asset_id: str, db: Session = Depends(get
             _ensure_asset_not_in_active_job(db, reference_asset)
     mark_pages_for_scene_asset_review(db, asset.id)
     asset.deleted_at = utcnow()
-    asset.version += 1
+    bump_version(db, asset)
     db.commit()
 
 
@@ -519,7 +581,7 @@ def delete_scene_asset_variant(
     if not variant or variant.scene_asset_id != asset_id:
         raise HTTPException(status_code=404, detail="场景变体不存在")
     variant.deleted_at = utcnow()
-    variant.version += 1
+    bump_version(db, variant)
     mark_pages_for_scene_asset_review(db, asset_id)
     db.commit()
 

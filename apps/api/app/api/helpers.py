@@ -5,7 +5,7 @@ from typing import Any, Protocol
 from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -281,6 +281,30 @@ def reject_required_nulls(model_cls: Any, changes: Mapping[str, Any]) -> None:
             cleaned = sanitize_surrogates(value)
             if cleaned is not value:
                 changes[key] = cleaned
+
+
+def bump_version(db: Session, obj: Any) -> None:
+    """Atomically advance ``obj``'s optimistic-concurrency token.
+
+    Teardown paths bump the version of related rows the request never
+    claimed (reference detach, candidate/asset retract, entity cascades).
+    An ORM ``obj.version += 1`` writes back ``read + 1`` computed from a
+    possibly stale snapshot: a concurrent PATCH that already advanced the
+    row would be regressed, resurrecting a superseded token and letting it
+    pass a later optimistic-concurrency check — the same hazard documented
+    at ``_recompute_project_conflicts`` in characters.py. The conditional
+    UPDATE increments whatever value is current at write time; ``expire``
+    keeps the identity-map copy honest for later serialization.
+    """
+
+    cls = type(obj)
+    db.execute(
+        update(cls)
+        .where(cls.id == obj.id)
+        .values(version=cls.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    db.expire(obj, ["version"])
 
 
 def asset_read(asset: Asset) -> AssetRead:

@@ -218,8 +218,10 @@ def retry(
     # unchanged row as a 200 "success"; reject those no-ops up front.
     if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
         raise HTTPException(status_code=409, detail="当前状态的任务不能重试")
-    if job.attempt_count >= job.max_attempts:
-        raise HTTPException(status_code=409, detail="任务已达到最大重试次数")
+    # No attempt_count gate here: manual retry is a user-authorized new
+    # round, and reset_for_retry's claim writes attempt_count=0 precisely so
+    # a job FAILED on budget exhaustion (the most common FAILED shape, and
+    # the one the UI's unconditional 重试 button targets) can be revived.
     # A dependency-blocked WAITING child (parent job not COMPLETED) must not
     # reach reset_for_retry: it would revive a FAILED run to phantom RUNNING
     # before enqueue_job's dependency gate refuses the enqueue, leaving the

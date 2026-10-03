@@ -101,16 +101,17 @@ def test_retry_still_resets_failed_job(client, db_session, monkeypatch):
 def test_retry_of_attempt_exhausted_job_resets_the_attempt_budget(
     client, db_session, monkeypatch
 ):
-    """预算耗尽的任务：路由明确拒绝；服务层若被未来调用方直接唤醒则发放新预算。
+    """预算耗尽的 FAILED 任务必须能经路由手动重试，且复活时发放新预算。
 
     attempt_count == max_attempts 的任务若被复活为 WAITING 而不重置预算，
     _claim_job 的 attempt_count < max_attempts 认领门永远不满足，任务会在
-    WAITING→QUEUED→认领失败（误报 CONCURRENCY_LIMIT）之间无限循环。路由
-    已拒绝该输入（下方 409 固定）；服务级重置是纵深防御。
+    WAITING→QUEUED→认领失败（误报 CONCURRENCY_LIMIT）之间无限循环。
+    reset_for_retry 的认领 CAS 为此写入 attempt_count=0——手动重试是用户
+    显式授权的新一轮。前端对所有 FAILED 任务无条件展示「重试」按钮，路由
+    若在此返回 409，预算耗尽这一最常见的 FAILED 形态将永远无法重试。
     """
 
     from app.config import get_settings
-    from app.services.job_service import reset_for_retry
 
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
     exhausted = _seed_job(
@@ -124,13 +125,7 @@ def test_retry_of_attempt_exhausted_job_resets_the_attempt_budget(
 
     response = client.post(f"/api/v1/jobs/{exhausted.id}/retry")
 
-    assert response.status_code == 409, response.json()
-    assert "最大重试次数" in response.json()["detail"]
-
-    # 纵深防御：直接调用服务层（未来可能的调用方）必须发放新预算。
-    db_session.expire_all()
-    row = db_session.get(GenerationJob, exhausted.id)
-    reset_for_retry(db_session, row)
+    assert response.status_code == 200, response.json()
     db_session.expire_all()
     revived = db_session.get(GenerationJob, exhausted.id)
     assert revived.status == JobStatus.WAITING

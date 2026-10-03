@@ -9,6 +9,7 @@ from sqlalchemy.orm.exc import ObjectDeletedError
 
 from app.api.helpers import (
     asset_candidate_read,
+    bump_version,
     character_references,
     ensure_project_scope,
     reject_required_nulls,
@@ -1415,7 +1416,7 @@ def retract_asset_reference(
                 if outfit.reference_asset_ids
                 else AssetStatus.NEEDS_CONFIRMATION
             )
-            outfit.version += 1
+            bump_version(db, outfit)
     character = db.get(Character, character_id)
     if character:
         # Issue #211-3: tombstoned assets must not count as remaining
@@ -1432,7 +1433,7 @@ def retract_asset_reference(
         )
         if not has_other_reference:
             character.status = AssetStatus.NEEDS_CONFIRMATION
-        character.version += 1
+        bump_version(db, character)
 
     snapshot["reference_approval"] = {
         **approval,
@@ -1440,6 +1441,6 @@ def retract_asset_reference(
         "retracted": True,
     }
     candidate.prompt_snapshot = snapshot
-    candidate.version += 1
+    bump_version(db, candidate)
     db.commit()
     return {"candidate_id": candidate.id, "approved": False}

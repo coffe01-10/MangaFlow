@@ -13,7 +13,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_read, ensure_project_scope
+from app.api.helpers import asset_read, bump_version, ensure_project_scope
 from app.config import get_settings
 from app.database import get_db
 from app.models import (
@@ -151,7 +151,7 @@ def _detach_reference_asset(db: Session, asset: Asset) -> None:
         )
         if not _live_reference_exists(db, remaining_asset_ids):
             character.status = AssetStatus.NEEDS_CONFIRMATION
-        character.version += 1
+        bump_version(db, character)
     for outfit in db.scalars(select(Outfit).where(Outfit.project_id == asset.project_id)):
         if asset.id not in outfit.reference_asset_ids:
             continue
@@ -163,7 +163,7 @@ def _detach_reference_asset(db: Session, asset: Asset) -> None:
         # reference images flagged as unconfirmed.
         if not _live_reference_exists(db, outfit.reference_asset_ids):
             outfit.status = AssetStatus.NEEDS_CONFIRMATION
-        outfit.version += 1
+        bump_version(db, outfit)
     styles = db.scalars(
         select(StyleProfile).where(StyleProfile.project_id == asset.project_id)
     )
@@ -180,7 +180,7 @@ def _detach_reference_asset(db: Session, asset: Asset) -> None:
         profile.pop("test_candidate_id", None)
         style.profile = profile
         style.status = StyleStatus.DRAFT
-        style.version += 1
+        bump_version(db, style)
     affected_scene_asset_ids = set(
         db.scalars(
             select(SceneAssetReference.scene_asset_id).where(
@@ -233,7 +233,7 @@ def _detach_reference_asset(db: Session, asset: Asset) -> None:
         )
         if not _live_reference_exists(db, list(remaining_ids)):
             scene_asset.status = AssetStatus.NEEDS_CONFIRMATION
-        scene_asset.version += 1
+        bump_version(db, scene_asset)
 
 
 @router.get("", response_model=list[AssetRead])
@@ -366,7 +366,6 @@ def upload_asset(
                 raise HTTPException(status_code=409, detail="同内容的生成素材已存在")
 
             remove_thumbnails(settings.upload_root, existing.id)
-            thumbnail_asset_id = existing.id
             thumbnails = create_thumbnails(destination, settings.upload_root, existing.id)
             # Issue #210-1: the resurrect used to be a read-then-act full-row
             # rewrite with a blind version += 1, so two concurrent re-uploads
@@ -434,10 +433,11 @@ def upload_asset(
                         continue
                 # Lost the claim: unlink only OUR file. The thumbnails live
                 # under thumbnails/{existing.id}/, a namespace shared with the
-                # concurrent winner's committed keys, so the generic cleanup
-                # below must not remove them (point it at the fresh uuid dir,
-                # which was never created).
-                thumbnail_asset_id = asset_id
+                # concurrent winner's committed keys, and thumbnail_asset_id
+                # deliberately still points at the fresh uuid dir (which was
+                # never created) so the generic cleanup below cannot remove
+                # them. The same applies to a failed db.commit above: the
+                # rolled-back row keeps referencing that shared directory.
                 raise HTTPException(
                     status_code=409,
                     detail="素材状态已变化，请重新上传",

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.helpers import (
     asset_candidate_read,
+    bump_version,
     candidate_read,
     candidate_version_state,
     ensure_project_scope,
@@ -320,9 +321,9 @@ def delete_candidate(
                     if outfit.reference_asset_ids
                     else AssetStatus.NEEDS_CONFIRMATION
                 )
-                outfit.version += 1
+                bump_version(db, outfit)
             asset.deleted_at = deleted_at
-            asset.version += 1
+            bump_version(db, asset)
         for character_id in affected_character_ids:
             character = db.get(Character, character_id)
             if not character:
@@ -338,7 +339,7 @@ def delete_candidate(
             )
             if not has_other_reference:
                 character.status = AssetStatus.NEEDS_CONFIRMATION
-            character.version += 1
+            bump_version(db, character)
     # The worker resolves its generation target without a deleted_at filter
     # and would attach the paid result to this soft-deleted row, so an active
     # job must be cancelled here (same guard for PageCandidate and
