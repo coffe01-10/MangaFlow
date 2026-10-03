@@ -762,13 +762,23 @@ def test_workflow_approval_failure_rolls_back_batch_atomically(file_sessions):
     db = factory()
     try:
         # Step 1: create batch (uncommitted, flushed in savepoint)
-        _batch = create_generation_batch(
+        create_generation_batch(
             db,
             project_id=seeded["project_id"],
             chapter_id=seeded["chapter_id"],
             page_id=seeded["page_id"],
             generation_kind="PAGE",
         )
+        db.flush()
+        # Prove the batch was actually pending before the failure — without
+        # this, a silently broken create_generation_batch satisfies the
+        # zero-orphan assertion vacuously and the test verifies nothing.
+        pending = db.scalars(
+            select(GenerationBatch).where(
+                GenerationBatch.project_id == seeded["project_id"]
+            )
+        ).all()
+        assert len(pending) == 1
         # Step 2: simulated downstream failure (e.g., job creation or validation error)
         raise RuntimeError("Downstream workflow step failure")
     except RuntimeError:

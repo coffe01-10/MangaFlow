@@ -38,31 +38,50 @@ def test_compose_publishes_data_services_on_loopback_with_auth():
     assert "redis://:mangaflow-dev@127.0.0.1:6379/0" in env_example
 
 
-def test_api_rejects_non_trusted_host_headers():
+def test_api_rejects_non_trusted_host_headers(monkeypatch):
     """The unauthenticated loopback API must refuse foreign Host headers so a
     DNS-rebinded attacker page cannot reach it same-origin (CORS is irrelevant
     for same-origin requests; the Host allowlist is the actual boundary)."""
 
+    from app.config import get_settings
     from app.main import app as production_app
     from fastapi import FastAPI
     from fastapi.middleware.trustedhost import TrustedHostMiddleware
     from fastapi.testclient import TestClient
 
     # Production app: configured allowlist (loopback) or "*" in the offline
-    # test environment; assert the middleware is actually installed.
-    middleware_types = {
-        type(mw.cls) if hasattr(mw, "cls") else type(mw)
-        for mw in production_app.user_middleware
-    }
-    assert any(
-        mw is TrustedHostMiddleware or str(mw).endswith("TrustedHostMiddleware")
-        for mw in middleware_types
-    ) or any("TrustedHost" in str(mw) for mw in production_app.user_middleware)
+    # test environment; assert the middleware is actually installed AND wired
+    # to the live settings value — middleware presence alone would still pass
+    # if main.py stopped reading api_trusted_hosts.
+    wired = next(
+        mw for mw in production_app.user_middleware if "TrustedHost" in str(mw)
+    )
+    wired_hosts = list(getattr(wired, "kwargs", {}).get("allowed_hosts") or [])
+    configured = [
+        host.strip()
+        for host in get_settings().api_trusted_hosts.split(",")
+        if host.strip()
+    ]
+    assert wired_hosts == configured
 
-    # Behavior: fresh app with the production default allowlist rejects a
-    # rebinded host and accepts loopback hosts.
+    # Behavior: rebuild the middleware against the production DEFAULT allowlist
+    # — conftest pins API_TRUSTED_HOSTS="*" so TestClient's synthetic
+    # "testserver" host works; delenv + cache_clear re-reads the real default.
+    monkeypatch.delenv("API_TRUSTED_HOSTS", raising=False)
+    get_settings.cache_clear()
+    try:
+        default_hosts = [
+            host.strip()
+            for host in get_settings().api_trusted_hosts.split(",")
+            if host.strip()
+        ]
+    finally:
+        get_settings.cache_clear()
+    assert "*" not in default_hosts
+    assert "localhost" in default_hosts and "127.0.0.1" in default_hosts
+
     isolated = FastAPI()
-    isolated.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1"])
+    isolated.add_middleware(TrustedHostMiddleware, allowed_hosts=default_hosts)
 
     @isolated.get("/probe")
     def probe():

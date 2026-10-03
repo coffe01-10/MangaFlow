@@ -18,6 +18,7 @@ from app.api.helpers import reject_required_nulls
 from app.database import get_db
 from app.main import app
 from app.models import AIModel, Project, ProviderConnection, ProviderProfile
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -26,10 +27,10 @@ def test_guard_flags_only_non_nullable_columns():
 
 
 def test_guard_raises_listing_offenders():
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         reject_required_nulls(Project, {"name": None})
-    detail = getattr(exc_info.value, "detail", "")
-    assert "name" in str(detail)
+    assert exc_info.value.status_code == 422
+    assert "name" in str(exc_info.value.detail)
 
 
 def test_project_patch_rejects_null_name(client, db_session):

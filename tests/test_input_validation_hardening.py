@@ -29,6 +29,7 @@ from app.workflow_schemas import (
     WorkflowRestoreRequest,
     WorkflowUpdate,
 )
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 INT32_MAX = 2_147_483_647
@@ -595,9 +596,9 @@ def test_connection_test_type_operation_mapping():
     assert _connection_test_operation("VISION") == "multimodal_analysis"
     assert _connection_test_operation("IMAGE") == "image_generate"
     assert _connection_test_operation("CREDENTIALS") is None
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         _connection_test_operation("BENCHMARK")
-    assert getattr(exc_info.value, "status_code", None) == 422
+    assert exc_info.value.status_code == 422
 
 
 def test_connection_test_request_literal_pins_declared_types():
