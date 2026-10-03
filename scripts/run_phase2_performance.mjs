@@ -71,7 +71,7 @@ async function main() {
   await assertPortFree(8000);
   await assertPortFree(3000);
   await mkdir(OUT_DIR, { recursive: true });
-  summary.runtime_dir = `mangaflow-e2e-${RUN_ID}`;
+  summary.runtime_dir = runtimeDir;
 
   const apiEnv = {
     ...process.env,

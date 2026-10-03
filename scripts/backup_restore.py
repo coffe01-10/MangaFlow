@@ -19,10 +19,10 @@ import stat
 import subprocess
 import sys
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 MANIFEST_NAME = "manifest.json"
 OWNER_MARKER_NAME = ".mangaflow-backup-restore-owner"
@@ -305,9 +305,8 @@ def resolve_manifest_target(
     for hop in _path_chain(target):
         if hop == root.parent:
             break
-        if hop.exists() or hop.is_symlink() or hop.is_junction():
-            if hop != root:
-                _reject_reparse(hop, label="manifest target")
+        if (hop.exists() or hop.is_symlink() or hop.is_junction()) and hop != root:
+            _reject_reparse(hop, label="manifest target")
     tgt_key = os.path.normcase(str(target))
     previous_target = seen_target.get(tgt_key)
     if previous_target is not None:
@@ -934,15 +933,15 @@ def _copy_archive(
     interrupt_after: int | None,
     after_file: CopyHook | None,
 ) -> None:
-    copied = 0
-    for relative, source, entry in validate_manifest_paths(archive, manifest):
+    for copied, (relative, source, entry) in enumerate(
+        validate_manifest_paths(archive, manifest), start=1
+    ):
         target = destination.joinpath(*relative.split("/"))
         digest, size = _copy_file(source, target, root=destination)
         if digest != entry["sha256"] or entry["bytes"] != size:
             raise BackupRestoreError(
                 "HASH_MISMATCH", f"restore hash mismatch for {relative}"
             )
-        copied += 1
         _maybe_interrupt(copied, interrupt_after, after_file, source, target)
     _write_json(destination / MANIFEST_NAME, manifest)
 

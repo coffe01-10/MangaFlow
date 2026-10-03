@@ -11,8 +11,6 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image
-
 from backup_restore import (
     FIXTURE_KIND,
     FIXTURE_MARKER_NAME,
@@ -22,6 +20,7 @@ from backup_restore import (
     read_schema_revision,
     run_alembic_upgrade,
 )
+from PIL import Image
 
 QUALITY_CATEGORIES = ("SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY")
 

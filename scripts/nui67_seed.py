@@ -27,11 +27,8 @@ for _path in (str(_REPO / "apps" / "api"), str(_REPO / "scripts")):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
-from app.domain.states import Resolution
-from app.models import (
+from app.domain.states import Resolution  # noqa: E402
+from app.models import (  # noqa: E402
     AIModel,
     AppSetting,
     Asset,
@@ -65,6 +62,8 @@ from app.models import (
     StyleProfile,
     WorkflowDefinition,
 )
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
 
 DATASET_TAG = "NUI67"
 
@@ -455,11 +454,14 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
         )
 
         # --- 任务页:完成/失败任务 + 生成记录 + 调用尝试 ---
+        # idempotency_key 有全局唯一索引：不加项目后缀时往同一开发库重跑
+        # seeder 会直接 IntegrityError，而不是得到第二份对照数据。
+        run_tag = main.id[:8]
         job_done = GenerationJob(
             project_id=main.id, target_type="PAGE", target_id=pages[0].id,
             job_type="PAGE_GENERATION", status="COMPLETED",
             attempt_count=1, model_alias="image.nano_banana_2",
-            idempotency_key=f"{DATASET_TAG.lower()}-job-done",
+            idempotency_key=f"{DATASET_TAG.lower()}-job-done-{run_tag}",
             scheduled_at=now - timedelta(days=1), started_at=now - timedelta(days=1) + timedelta(seconds=1),
             finished_at=now - timedelta(days=1) + timedelta(seconds=6),
         )
@@ -467,7 +469,7 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
             project_id=main.id, target_type="PAGE", target_id=pages[1].id,
             job_type="PAGE_GENERATION", status="FAILED",
             attempt_count=2, model_alias="image.nano_banana_pro",
-            idempotency_key=f"{DATASET_TAG.lower()}-job-failed",
+            idempotency_key=f"{DATASET_TAG.lower()}-job-failed-{run_tag}",
             error_code="PROVIDER_RATE_LIMIT", error_message="429 rate limited (redacted)",
             started_at=now - timedelta(hours=5), finished_at=now - timedelta(hours=5) + timedelta(seconds=3),
         )
@@ -527,7 +529,7 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
                 ProviderUsageReconciliation(
                     provider=f"{DATASET_TAG.lower()}-provider", model_id=f"{DATASET_TAG.lower()}-image",
                     channel="HTTP_API", billing_account_id=f"{DATASET_TAG.lower()}-billing",
-                    import_batch_id=f"{DATASET_TAG.lower()}-batch-1", idempotency_key=f"{DATASET_TAG.lower()}-line-1",
+                    import_batch_id=f"{DATASET_TAG.lower()}-batch-1", idempotency_key=f"{DATASET_TAG.lower()}-line-{run_tag}",
                     period_start=now - timedelta(days=29), period_end=now - timedelta(days=1),
                     currency="CNY", billed_amount=Decimal("66.00"),
                     source_note="NUI67 离线对账样例,非真实账单", entered_by="nui67-operator",
@@ -633,7 +635,8 @@ def seed_fixed_dataset(db_url: str, storage_root: Path, upload_root: Path | None
         )
 
         # --- 全局设置标记行(可核对种子版本) ---
-        session.add(AppSetting(key=f"{DATASET_TAG.lower()}-marker", value={"seeded": True}))
+        # AppSetting.key 是主键，重跑同样要按轮次区分。
+        session.add(AppSetting(key=f"{DATASET_TAG.lower()}-marker-{run_tag}", value={"seeded": True}))
 
         # --- 第二项目:单章单页(项目切换/首页卡片/空态) ---
         other_chapter = Chapter(project_id=other.id, title="序章", ordinal=1)

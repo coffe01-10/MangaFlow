@@ -9,6 +9,7 @@ See https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import os
@@ -398,10 +399,8 @@ class OwnedProcessTree:
             # died on its own in the failure window, terminate() raises
             # ERROR_ACCESS_DENIED and would replace the original
             # AssignProcessToJobObject/ResumeThread error instead of it.
-            try:
+            with contextlib.suppress(OSError):
                 child.terminate()
-            except OSError:
-                pass
             child.wait(timeout=5)
             raise
         finally:
