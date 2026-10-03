@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
+from app.domain.states import JobStatus
 from app.model_adapters.base import ProviderAdapterError
 from app.models import (
     AIModel,
@@ -44,7 +45,10 @@ from app.services.provider_catalog import mark_credential_decrypt_failed
 from app.services.provider_errors import CREDENTIAL_DECRYPT_FAILED
 from app.services.provider_presets import ensure_provider_presets
 from app.services.usage_ledger import resolve_usage_dimensions
-from app.services.worker_handlers.execution import _ensure_job_not_cancelled
+from app.services.worker_handlers.execution import (
+    JobLeaseLostError,
+    _ensure_job_not_cancelled,
+)
 from app.services.worker_handlers.model_call_audit import (
     ModelCallAttemptMeta,
     attach_attempt_outputs,
@@ -649,14 +653,58 @@ def _lease_reference_assets(db, job: GenerationJob, asset_ids: list[str]) -> Non
         )
     )
     if active_ids != set(unique_ids):
-        raise RuntimeError("参考图已删除、失效或不属于当前项目，已停止模型调用")
+        # Deterministic pre-call failure (#643 class): a retry cannot conjure
+        # lapsed or foreign references — fail terminally instead of landing
+        # in the worker's unclassified retryable WORKER_ERROR loop.
+        raise ProviderAdapterError(
+            "INVALID_INPUT",
+            "参考图已删除、失效或不属于当前项目，已停止模型调用",
+            retryable=False,
+        )
     db.execute(delete(JobAssetReference).where(JobAssetReference.job_id == job.id))
     for asset_id in unique_ids:
         db.add(JobAssetReference(job_id=job.id, asset_id=asset_id))
+    # The JAR writes above and this request_parameters rewrite share the
+    # lease fence from _commit_owned_checkpoint: a worker whose lease was
+    # reclaimed mid-handling loses the CAS below, rolls the JAR rows back
+    # with the transaction, and stops before the paid call. The previous
+    # bare db.commit() had no ownership guard — a loser could still publish
+    # its reference lease plus every unrelated pending write in the caller's
+    # session (prompt snapshot, catalog ids).
+    _ensure_job_not_cancelled(db, job)
+    owner = db.info.get("job_lease_owner")
     parameters = dict(job.request_parameters or {})
     parameters["reference_asset_ids"] = unique_ids
-    job.request_parameters = parameters
+    filters = [
+        GenerationJob.id == job.id,
+        GenerationJob.cancelled_at.is_(None),
+        GenerationJob.status.not_in(
+            {JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED}
+        ),
+    ]
+    if owner:
+        filters.extend(
+            [
+                # Ownership guard, not expiry (the #130 reclaim-grace
+                # contract documented in execution.py).
+                GenerationJob.lease_owner == owner,
+                GenerationJob.lease_expires_at.is_not(None),
+            ]
+        )
+    updated = db.execute(
+        update(GenerationJob)
+        .where(*filters)
+        .values(request_parameters=parameters)
+        .execution_options(synchronize_session=False)
+    )
+    if updated.rowcount != 1:
+        db.rollback()
+        current = db.get(GenerationJob, job.id)
+        if current is not None:
+            _ensure_job_not_cancelled(db, current)
+        raise JobLeaseLostError("任务租约已被其他执行器接管")
     db.commit()
+    db.refresh(job)
 
 
 def _asset_path(asset: Asset) -> Path:

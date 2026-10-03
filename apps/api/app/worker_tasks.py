@@ -2,11 +2,12 @@ import logging
 import os
 import socket
 import time
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from threading import Event, Lock, Thread
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from app.config import get_settings
 from app.database import SessionLocal
@@ -333,6 +334,67 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
         .execution_options(synchronize_session=False)
     )
     if updated.rowcount != 1:
+        # Classify the CAS failure before stamping. Every guarded write below
+        # requires the row to still show expected_status + NULL lease, so a
+        # claim that raced a concurrent claimant (or an expired lease the
+        # recovery sweep is about to re-drive) matches 0 rows and is left
+        # untouched. Inside that set the discriminator is the attempt budget:
+        # a claimable row whose budget is dead must not be parked as
+        # CONCURRENCY_LIMIT — the defer loop and the recovery requeue would
+        # bounce it forever (attempt_count only grows through a successful
+        # claim, so nothing can ever unblock it).
+        try:
+            db.refresh(job)
+        except ObjectDeletedError:
+            db.rollback()
+            return None
+        budget_dead = (
+            job.status == expected_status
+            and job.lease_owner is None
+            and job.lease_expires_at is None
+            and job.attempt_count >= job.max_attempts
+        )
+        if budget_dead:
+            # Terminal, mirroring the recovery sweep's exhausted-lease branch:
+            # FAILED + distinct code leaves the manual retry route (which
+            # resets attempt_count=0) as the revival path.
+            stamped = db.execute(
+                update(GenerationJob)
+                .where(
+                    GenerationJob.id == job_id,
+                    GenerationJob.status == expected_status,
+                    GenerationJob.lease_owner.is_(None),
+                    GenerationJob.lease_expires_at.is_(None),
+                    GenerationJob.attempt_count >= GenerationJob.max_attempts,
+                )
+                .values(
+                    status=JobStatus.FAILED,
+                    error_code="ATTEMPT_BUDGET_EXHAUSTED",
+                    error_message="自动重试预算已耗尽，可在任务列表中手动重试",
+                    finished_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if stamped.rowcount == 1:
+                # A terminal job must not leave its page/asset stuck in the
+                # in-flight status a retryable wait preserves.
+                page_candidate = db.scalar(
+                    select(PageCandidate).where(PageCandidate.job_id == job.id)
+                )
+                if page_candidate:
+                    page_candidate.status = "FAILED"
+                    from app.services.job_service import (
+                        restore_page_after_generation_exit,
+                    )
+
+                    restore_page_after_generation_exit(db, page_candidate)
+                asset_candidate = db.scalar(
+                    select(AssetCandidate).where(AssetCandidate.job_id == job.id)
+                )
+                if asset_candidate:
+                    asset_candidate.status = "FAILED"
+            db.commit()
+            return None
         # 在仍持有锁的事务中通过严格条件更新标记等待状态，绝不释放锁后无条件覆盖新租约。
         # error_code 只写一次（NULL-safe 的 is_distinct_from 在 SQLite/PostgreSQL 均
         # 正确处理 NULL）：本地执行器在并发受限期间每 ≤5s 重试一次，第 2..n 次失败
@@ -493,8 +555,16 @@ def _mark_worker_failure(
     return True, workflow_run_id, not is_retryable
 
 
-def _defer_concurrency_wait(job_id: str) -> None:
-    """Keep a slot-wait job schedulable instead of silently succeeding out of RQ."""
+def _defer_concurrency_wait(job_id: str, slot_wait_deadline: str | None = None) -> None:
+    """Keep a slot-wait job schedulable instead of silently succeeding out of RQ.
+
+    The hop chain is wall-clock bounded — the same ``job_timeout_seconds``
+    budget the LOCAL executor's slot-wait loop gets. The first defer stamps
+    the deadline into the next payload and every hop carries it forward; once
+    it trips, the row is left WAITING+CONCURRENCY_LIMIT for
+    ``recover_pending_jobs``'s periodic requeue instead of minting a fresh
+    RQ job (and a fresh retry budget) every ~3s forever.
+    """
 
     from rq import Queue, get_current_job
 
@@ -514,19 +584,39 @@ def _defer_concurrency_wait(job_id: str) -> None:
         ):
             return
         retry = rq_retry_policy(job)
+    now = utcnow()
+    deadline: datetime | None = None
+    if slot_wait_deadline:
+        try:
+            deadline = datetime.fromisoformat(slot_wait_deadline)
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=UTC)
+        except ValueError:
+            deadline = None
+    if deadline is None:
+        deadline = now + timedelta(seconds=settings.job_timeout_seconds)
+    if now >= deadline:
+        LOGGER.warning(
+            "job %s exhausted its %ss slot-wait budget; leaving the row "
+            "WAITING for recovery's periodic requeue",
+            job_id,
+            settings.job_timeout_seconds,
+        )
+        return
     # Use the running worker's queue/connection. A child-local thread cannot survive RQ exit.
     # Let a scheduling failure reach RQ's retry/error handling instead of hiding it.
     Queue(current.origin, connection=current.connection).enqueue_in(
         timedelta(seconds=3),
         "app.worker_tasks.execute_job",
         job_id,
+        slot_wait_deadline=deadline.isoformat(),
         job_id=f"{job_id}-slot-{uuid4().hex}",
         job_timeout=settings.job_timeout_seconds,
         retry=retry,
     )
 
 
-def execute_job(job_id: str) -> None:
+def execute_job(job_id: str, slot_wait_deadline: str | None = None) -> None:
     db = SessionLocal()
     owner = _worker_id()
     db.info["job_lease_owner"] = owner
@@ -551,7 +641,7 @@ def execute_job(job_id: str) -> None:
         with EXECUTION_RESERVATION_LOCK:
             job = _claim_job(db, job_id, owner)
         if not job:
-            _defer_concurrency_wait(job_id)
+            _defer_concurrency_wait(job_id, slot_wait_deadline)
             return
         # Claim-time backstop for dead runs: the retry route's 409 gate cannot
         # cover legacy stragglers (WAITING/QUEUED rows enqueued before their

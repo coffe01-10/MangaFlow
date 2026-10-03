@@ -464,12 +464,22 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         # CANCELLED; the deleted row is left untouched.
         raise JobCancelledError("候选已删除，任务取消，不再调用模型")
     page = db.get(MangaPage, candidate.page_id)
-    if candidate.based_on_storyboard_version != page.storyboard_version:
+    chapter = db.get(Chapter, page.chapter_id) if page else None
+    if page is None or chapter is None:
+        # Orphaned rows would otherwise convert the fences below into an
+        # AttributeError and a WORKER_ERROR retry loop (mirrors the
+        # inspection.py guard).
+        raise JobCancelledError("候选所属页面或章节不存在，任务取消，不再调用模型")
+    # Legacy rows (NULL fence) pass — the post-call snapshot guards still
+    # cover them; mirrors the #223-4 exemption in inspection.py.
+    if (
+        candidate.based_on_storyboard_version is not None
+        and candidate.based_on_storyboard_version != page.storyboard_version
+    ):
         raise StaleStoryboardVersionError(
             "分镜版本已变化，已在调用模型前取消本次生成；请按当前分镜重新生成"
         )
-    chapter = db.get(Chapter, page.chapter_id)
-    if chapter is not None and chapter.deleted_at is not None:
+    if chapter.deleted_at is not None:
         # delete_chapter is a soft delete with no active-job 409 and cancels
         # nothing, and it bumps only chapter.version — invisible to the
         # candidate and storyboard fences above. A deleted chapter must never
@@ -477,9 +487,16 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         raise JobCancelledError("章节已删除，任务取消，不再调用模型")
     project = db.get(Project, chapter.project_id)
     if not page.scene_ids or not page.beat_ids:
-        raise RuntimeError("页面缺少剧本与分镜来源，禁止生成")
+        # Deterministic pre-call failure (#643 class): automatic retries
+        # cannot conjure the missing sources — fail terminally instead of
+        # burning max_attempts as retryable WORKER_ERROR.
+        raise ProviderAdapterError(
+            "INVALID_INPUT", "页面缺少剧本与分镜来源，禁止生成", retryable=False
+        )
     if not page.source_coverage.get("complete"):
-        raise RuntimeError("页面原文覆盖不完整，禁止生成")
+        raise ProviderAdapterError(
+            "INVALID_INPUT", "页面原文覆盖不完整，禁止生成", retryable=False
+        )
 
     reference_selections = candidate.prompt_snapshot.get("reference_selections", {})
     # The queue-time snapshot is the immutable input contract of this
@@ -503,7 +520,11 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             package_fact.get("package_version_id")
             and db.get(CharacterModelPackageVersion, package_fact["package_version_id"]) is None
         ):
-            raise RuntimeError("角色模型包版本已不存在，已在调用模型前停止任务")
+            raise ProviderAdapterError(
+                "INVALID_INPUT",
+                "角色模型包版本已不存在，已在调用模型前停止任务",
+                retryable=False,
+            )
     prompt, snapshot = compile_page_prompt(
         db,
         page,
@@ -735,7 +756,11 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         )
     )
     if {item.id for item in current_assets} != set(reference_asset_ids):
-        raise RuntimeError("参考图在生成前发生变化，已停止模型调用")
+        # Deterministic pre-call failure: the leased set no longer matches,
+        # a retry would trip the same fence — fail terminally.
+        raise ProviderAdapterError(
+            "INVALID_INPUT", "参考图在生成前发生变化，已停止模型调用", retryable=False
+        )
 
     execution._commit_owned_progress(db, job, status=JobStatus.GENERATING, progress=45)
     response = provider._invoke_provider(
