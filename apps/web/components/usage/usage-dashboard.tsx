@@ -45,11 +45,17 @@ function toIsoLocalMidnight(date: Date) {
 }
 
 // "YYYY-MM-DD" must parse as LOCAL midnight; Date(string) would read it as UTC
-// and shift the range a day early west of Greenwich.
+// and shift the range a day early west of Greenwich. The components must also
+// describe a real calendar day — new Date(2025, 1, 31) silently rolls into
+// March, and the dashboard's contract is fail-visible, never silent-clamp.
 function parseLocalDate(value: string) {
   const [y, m, d] = value.split("-").map(Number);
   if (!y || !m || !d) return null;
-  return new Date(y, m - 1, d);
+  const parsed = new Date(y, m - 1, d);
+  if (parsed.getFullYear() !== y || parsed.getMonth() !== m - 1 || parsed.getDate() !== d) {
+    return null;
+  }
+  return parsed;
 }
 
 export function UsageDashboard() {
@@ -85,8 +91,13 @@ export function UsageDashboard() {
   // An incomplete custom range (cleared or unparsable start date, unparsable
   // end date) must fail VISIBLE: silently dropping both bounds queried
   // all-time totals while the UI still presented the custom-range controls.
+  const customFromDate = parseLocalDate(customFrom);
+  const customToDate = customTo !== "" ? parseLocalDate(customTo) : null;
   const customRangeInvalid = preset === "custom"
-    && (!customFrom || !parseLocalDate(customFrom) || (customTo !== "" && !parseLocalDate(customTo)));
+    && (!customFrom || !customFromDate || (customTo !== "" && !customToDate)
+      // An inverted range (end before start) queries an empty window and reads
+      // as "no calls recorded" — flag it instead of silently failing.
+      || (customToDate !== null && customFromDate !== null && customToDate < customFromDate));
 
   const summaryFilters: UsageFilters = useMemo(
     () => ({

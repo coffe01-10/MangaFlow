@@ -19,7 +19,7 @@ import {
   providerMatchesQuery,
   sortProviders,
 } from "./provider-settings/provider-filters";
-import { validateJsonRecord } from "./provider-settings/provider-json";
+import { isProviderBaseUrl, validateJsonRecord } from "./provider-settings/provider-json";
 
 const providersApi = vi.spyOn(api, "providers");
 const modelsApi = vi.spyOn(api, "models");
@@ -1567,6 +1567,21 @@ describe("加载空错误与 JSON 校验", () => {
       value: { models: "/models" },
     });
     expect(validateJsonRecord("{}", "extra_headers")).toEqual({ ok: true, value: {} });
+  });
+
+  it("base_url 校验：IPv6 回环 [::1] 与 v4 回环同权，其余 http 仍拒绝", () => {
+    // 与后端 validate_provider_url 回环集合 {localhost, 127.0.0.1, ::1} 对齐。
+    expect(isProviderBaseUrl("http://localhost:8000/v1")).toBe(true);
+    expect(isProviderBaseUrl("http://127.0.0.1:8000/v1")).toBe(true);
+    expect(isProviderBaseUrl("http://[::1]:8000/v1")).toBe(true);
+    expect(isProviderBaseUrl("https://api.example.com/v1")).toBe(true);
+    // 非回环 http、内嵌凭据、查询串、hash 仍然拒绝。
+    expect(isProviderBaseUrl("http://192.168.1.10/v1")).toBe(false);
+    expect(isProviderBaseUrl("http://[::ffff:127.0.0.1]/v1")).toBe(false);
+    expect(isProviderBaseUrl("http://user:pass@[::1]:8000/v1")).toBe(false);
+    expect(isProviderBaseUrl("http://[::1]:8000/v1?x=1")).toBe(false);
+    expect(isProviderBaseUrl("ftp://[::1]/v1")).toBe(false);
+    expect(isProviderBaseUrl("not a url")).toBe(false);
   });
 });
 

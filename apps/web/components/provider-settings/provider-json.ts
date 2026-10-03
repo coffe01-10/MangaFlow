@@ -43,7 +43,12 @@ export function isProviderBaseUrl(value: string): boolean {
     if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
     if (parsed.protocol === "https:") return Boolean(parsed.hostname);
     if (parsed.protocol === "http:") {
-      return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+      // Keep the loopback allowlist aligned with the backend validators
+      // (provider_catalog.py / compatible.py): WHATWG URL returns IPv6
+      // hostnames bracketed, so [::1] needs the brackets stripped to match ::1.
+      const host = parsed.hostname.toLowerCase();
+      const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+      return bare === "localhost" || bare === "127.0.0.1" || bare === "::1";
     }
     return false;
   } catch {

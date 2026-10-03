@@ -224,6 +224,21 @@ describe("UsageDashboard cost semantics", () => {
     expect(screen.queryByText("自定义时间范围不完整")).toBeNull();
   });
 
+  it("自定义范围结束早于开始时可见拒绝，而不是静默查询空窗口", async () => {
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText("¥66.00")).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("选择用量统计时间范围"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByLabelText("自定义开始日期"), { target: { value: "2026-09-01" } });
+    // 结束早于开始：倒置区间会查到空窗并显示成「没有调用」，必须拒绝。
+    fireEvent.change(screen.getByLabelText("自定义结束日期"), { target: { value: "2026-08-01" } });
+    expect(await screen.findByText("自定义时间范围不完整")).toBeTruthy();
+    expect(screen.queryByText("¥66.00")).toBeNull();
+    // 合法区间恢复。
+    fireEvent.change(screen.getByLabelText("自定义结束日期"), { target: { value: "2026-09-30" } });
+    await waitFor(() => expect(screen.getByText("¥66.00")).toBeTruthy());
+    expect(screen.queryByText("自定义时间范围不完整")).toBeNull();
+  });
+
   it("opens the attempt drawer from a row and closes on Escape with focus moved to the close button", async () => {
     renderDashboard();
     await waitFor(() => expect(screen.getByText("调用明细")).toBeTruthy());
