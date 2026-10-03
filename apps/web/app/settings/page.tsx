@@ -23,7 +23,8 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { useUnsavedChangesGuard } from "@/lib/unsaved-changes-guard";
 
 const diagnosticIcons: Record<DiagnosticCheck["status"], typeof CheckCircle2> = {
   OK: CheckCircle2, WARNING: TriangleAlert, FAILED: CircleAlert, NOT_CHECKED: RefreshCw,
@@ -110,15 +111,13 @@ export default function SystemSettingsPage() {
     || localDraft.ui_poll_interval_seconds !== runtime.data.ui_poll_interval_seconds
   ));
   const pageDirty = runtimeDraftDirty || providerDirty;
-  useEffect(() => {
-    if (!pageDirty) return;
-    const beforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", beforeUnload);
-    return () => window.removeEventListener("beforeunload", beforeUnload);
-  }, [pageDirty]);
+  // beforeunload 只覆盖刷新/关闭；站内 <Link> 与 CommandPalette 的
+  // router.push 都得由守卫的锚点拦截与 REQUEST_NAVIGATION 事件兜住，
+  // 否则未保存的运行设置/供应商草稿会被静默丢弃。
+  useUnsavedChangesGuard(
+    pageDirty,
+    "当前设置尚未保存，离开页面会丢弃这些修改。仍要离开吗？",
+  );
 
   return (
     <AppShell>

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { requestNavigation } from "@/lib/unsaved-changes-guard";
 import { WorkflowDialog } from "./workflow-dialog";
 import styles from "./workflow-studio.module.css";
 
@@ -20,16 +21,19 @@ export function CommandPalette() {
     let generation = 0;
     const open = () => {
       const request = ++generation;
+      // Dirty pages veto via the cancelable REQUEST_NAVIGATION event —
+      // router.push bypasses their anchor-click guard entirely otherwise.
+      const navigate = (href: string) => { if (requestNavigation(href)) router.push(href); };
       const entries: StudioCommand[] = [
-        { id: "home", label: "项目首页", section: "页面", run: () => router.push("/") },
-        { id: "settings", label: "设置 · 模型与供应商", section: "页面", run: () => router.push("/settings") },
-        { id: "help", label: "帮助与快捷键", section: "页面", run: () => router.push("/help") },
+        { id: "home", label: "项目首页", section: "页面", run: () => navigate("/") },
+        { id: "settings", label: "设置 · 模型与供应商", section: "页面", run: () => navigate("/settings") },
+        { id: "help", label: "帮助与快捷键", section: "页面", run: () => navigate("/help") },
       ];
       const projectId = window.location.pathname.match(/\/projects\/([^/]+)/)?.[1]
         ?? new URLSearchParams(window.location.search).get("projectId");
       if (projectId) {
         for (const [path, label] of [["source", "原作"], ["storyboard", "分镜"], ["generate", "生成与修复"], ["workflow", "流程编排"]]) {
-          entries.push({ id: path, label, section: "项目页面", run: () => router.push(`/projects/${projectId}/${path}`) });
+          entries.push({ id: path, label, section: "项目页面", run: () => navigate(`/projects/${projectId}/${path}`) });
         }
       }
       window.dispatchEvent(new CustomEvent(COLLECT_COMMANDS, { detail: entries }));
@@ -39,7 +43,7 @@ export function CommandPalette() {
           if (request !== generation) return;
           setCommands((current) => current && [...current, ...workflows.map((workflow) => ({
             id: workflow.id, label: workflow.name, section: "工作流",
-            run: () => router.push(`/projects/${projectId}/workflow?workflow=${workflow.id}`),
+            run: () => navigate(`/projects/${projectId}/workflow?workflow=${workflow.id}`),
           }))]);
         }).catch(() => { if (request === generation) setError("工作流搜索暂不可用，请重新打开重试。"); });
       }
