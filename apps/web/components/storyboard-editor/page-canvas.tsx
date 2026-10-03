@@ -1080,9 +1080,11 @@ export function PageCanvas({
       const stop = () => {
         window.removeEventListener("pointermove", drag);
         window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
       };
       window.addEventListener("pointermove", drag);
       window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
       return;
     }
     if (event.button !== 0) return;
@@ -1096,14 +1098,17 @@ export function PageCanvas({
         points.push({ x: clamp01(point.x), y: clamp01(point.y) });
         setDraftStroke(points.slice());
       };
-      const stop = () => {
+      const stop = (upEvent: PointerEvent) => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
         setDraftStroke(null);
-        if (points.length >= 2) onAnnotateStroke?.(points);
+        // pointercancel 同样走 stop：取消的笔画不提交（type 区分 up/cancel）。
+        if (upEvent.type === "pointerup" && points.length >= 2) onAnnotateStroke?.(points);
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
       return;
     }
     if (!hitTestMode) {

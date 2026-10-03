@@ -17,6 +17,7 @@ import {
   type StoryboardPanel,
 } from "@/lib/api";
 import { useLocalStorageValue, writeLocalStorage } from "@/lib/local-storage-store";
+import { useUnsavedChangesGuard } from "@/lib/unsaved-changes-guard";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CircleAlert, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -25,7 +26,6 @@ import type { CSSProperties } from "react";
 import {
   commandsToTarget,
   emptyCommandStack,
-  historyDepth,
   pushCommand,
   redoCommand,
   undoCommand,
@@ -188,7 +188,7 @@ export function StoryboardEditor({
   }, [storedInspectorWidth]);
   const inspectorWidth = dragInspectorWidth ?? persistedInspectorWidth;
   const viewportRef = useRef<HTMLDivElement | null>(null);
-  const geometryRequestRef = useRef<{ id: string; stackIndex: number } | null>(null);
+  const geometryRequestRef = useRef<{ id: string; fingerprint: string } | null>(null);
 
   const panels = useMemo(() => storyboard.data?.panels ?? [], [storyboard.data]);
   const serverPage = storyboard.data?.page ?? null;
@@ -796,39 +796,49 @@ export function StoryboardEditor({
 
   const buildGeometryPayload = (): StoryboardGeometrySavePayload | null => {
     if (!storyboard.data || !currentPage) return null;
+    const panelsPayload = storyboard.data.panels.map((panel) => {
+      const bounds = toPayloadRect(panelRects[panel.id] ?? panelRect(panel));
+      const stored = panelGeometry(panel);
+      const meta = panelMetaDrafts[panel.id];
+      return {
+        panel_id: panel.id,
+        bounds,
+        geometry: isPolygonPanel(panel) && stored
+          ? { ...stored, z_order: meta?.z_order ?? stored.z_order }
+          : {
+            type: "rect",
+            rect: bounds,
+            rotation: meta?.rotation ?? stored?.rotation ?? 0,
+            z_order: meta?.z_order ?? stored?.z_order ?? panel.reading_order,
+          },
+        reading_order: panel.reading_order,
+      };
+    });
+    const dialoguesPayload = storyboard.data.panels.flatMap((panel) => panel.dialogues.map((dialogue) => {
+      const draft = bubbleDrafts[dialogue.id];
+      const bubble = draft !== undefined ? draft : bubbleGeometry(dialogue).shape;
+      return {
+        dialogue_id: dialogue.id,
+        bubble: toPayloadBubble(bubble),
+        reading_order: dialogue.reading_order,
+      };
+    }));
+    // 幂等键按载荷同一性复用，不再按历史栈深度：撤销后做不同编辑回到同一
+    // 深度会带着不同载荷复用旧 request_id，命中服务端「同 id 异内容」409
+    // 并形成死循环。相同载荷的重发（网络重试/重复点击）才允许复用同一 id。
+    const fingerprint = JSON.stringify({
+      storyboard_version: storyboard.data.page.storyboard_version,
+      panels: panelsPayload,
+      dialogues: dialoguesPayload,
+    });
     const reuse = geometryRequestRef.current;
-    const requestId = reuse && reuse.stackIndex === historyDepth(commandStack) ? reuse.id : newRequestId();
-    geometryRequestRef.current = { id: requestId, stackIndex: historyDepth(commandStack) };
+    const requestId = reuse && reuse.fingerprint === fingerprint ? reuse.id : newRequestId();
+    geometryRequestRef.current = { id: requestId, fingerprint };
     return {
       request_id: requestId,
       storyboard_version: storyboard.data.page.storyboard_version,
-      panels: storyboard.data.panels.map((panel) => {
-        const bounds = toPayloadRect(panelRects[panel.id] ?? panelRect(panel));
-        const stored = panelGeometry(panel);
-        const meta = panelMetaDrafts[panel.id];
-        return {
-          panel_id: panel.id,
-          bounds,
-          geometry: isPolygonPanel(panel) && stored
-            ? { ...stored, z_order: meta?.z_order ?? stored.z_order }
-            : {
-              type: "rect",
-              rect: bounds,
-              rotation: meta?.rotation ?? stored?.rotation ?? 0,
-              z_order: meta?.z_order ?? stored?.z_order ?? panel.reading_order,
-            },
-          reading_order: panel.reading_order,
-        };
-      }),
-      dialogues: storyboard.data.panels.flatMap((panel) => panel.dialogues.map((dialogue) => {
-        const draft = bubbleDrafts[dialogue.id];
-        const bubble = draft !== undefined ? draft : bubbleGeometry(dialogue).shape;
-        return {
-          dialogue_id: dialogue.id,
-          bubble: toPayloadBubble(bubble),
-          reading_order: dialogue.reading_order,
-        };
-      })),
+      panels: panelsPayload,
+      dialogues: dialoguesPayload,
     };
   };
 
@@ -888,7 +898,15 @@ export function StoryboardEditor({
     mutationFn: (draft: PanelDraft) => {
       const target = editedPanel;
       if (!target) throw new Error("目标分格已不存在，无法保存");
-      return api.updatePanel(target.id, { version: target.version, ...draft });
+      // 逗号列表输入为保住分隔符允许末尾空段留在草稿里；提交前统一清洗，
+      // 空道具/空拟声词不写进 PATCH。
+      const cleaned: PanelDraft = {
+        ...draft,
+        props: draft.props.filter((item) => item.trim() !== ""),
+        sound_effects: draft.sound_effects.filter((entry) =>
+          (typeof entry === "string" ? entry : String((entry as { text?: unknown }).text ?? "")).trim() !== ""),
+      };
+      return api.updatePanel(target.id, { version: target.version, ...cleaned });
     },
     onSuccess: (_, draft) => {
       // 表单在保存在途时不锁输入:用户继续敲入的内容不能随成功静默丢弃。
@@ -1028,31 +1046,9 @@ export function StoryboardEditor({
 
   // --- leave protection (audit §2.3 J) --------------------------------------
 
-  useEffect(() => {
-    if (!dirty) return;
-    const beforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    const click = (event: MouseEvent) => {
-      if (event.defaultPrevented) return;
-      const target = event.target;
-      const anchor = target instanceof Element ? target.closest("a[href]") : null;
-      if (!anchor) return;
-      const href = anchor.getAttribute("href") ?? "";
-      if (!href.startsWith("/") || href === window.location.pathname) return;
-      if (!window.confirm(storyboardCopy.leaveConfirm)) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    };
-    window.addEventListener("beforeunload", beforeUnload);
-    document.addEventListener("click", click, true);
-    return () => {
-      window.removeEventListener("beforeunload", beforeUnload);
-      document.removeEventListener("click", click, true);
-    };
-  }, [dirty]);
+  // beforeunload + 锚点捕获 + REQUEST_NAVIGATION 事件三路合一：CommandPalette
+  // 的 router.push 不走锚点，没有事件守卫会绕过脏确认静默丢草稿。
+  useUnsavedChangesGuard(dirty, storyboardCopy.leaveConfirm);
 
   const switchPage = (nextPageId: string) => {
     if (!nextPageId || nextPageId === currentPage.id) return;

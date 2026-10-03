@@ -170,7 +170,13 @@ export function PanelInspector({
       <div className="panel-edit-grid"><label><span>景别</span><select value={panelDraft.shot_type} onChange={(event) => onPanelDraftChange({ ...panelDraft, shot_type: event.target.value })}>{shotTypes.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>镜头角度</span><select value={panelDraft.camera_angle} onChange={(event) => onPanelDraftChange({ ...panelDraft, camera_angle: event.target.value })}>{cameraAngles.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>机位高度</span><select value={panelDraft.camera_height} onChange={(event) => onPanelDraftChange({ ...panelDraft, camera_height: event.target.value })}><option value="eye_level">视线高度</option><option value="ground_level">贴地机位</option><option value="waist_level">腰部机位</option><option value="overhead">顶视机位</option></select></label></div>
       <label><span>动作与表演</span><textarea value={panelDraft.actions.script_action ?? ""} onChange={(event) => onPanelDraftChange({ ...panelDraft, actions: { ...panelDraft.actions, script_action: event.target.value } })} /></label>
       <label><span>背景</span><textarea value={panelDraft.background} onChange={(event) => onPanelDraftChange({ ...panelDraft, background: event.target.value })} /></label>
-      <label><span>场景道具（用逗号分隔）</span><input value={panelDraft.props.join("，")} onChange={(event) => onPanelDraftChange({ ...panelDraft, props: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) })} placeholder="例如：爸爸的灵牌、香炉、白菊" /></label>
+      <label><span>场景道具（用逗号分隔）</span><input value={panelDraft.props.join("，")} onChange={(event) => {
+        // 滤空但不能滤掉末尾空段：split 在分隔符结尾会产生 ""——连它一起
+        // 滤掉的话，刚敲入的逗号会被立即吞掉，分隔列表根本打不出来。空项
+        // 由保存侧统一清洗。
+        const items = event.target.value.split(/[，,]/).map((item) => item.trim());
+        onPanelDraftChange({ ...panelDraft, props: items.filter((item, index) => item !== "" || index === items.length - 1) });
+      }} placeholder="例如：爸爸的灵牌、香炉、白菊" /></label>
       <label><span>拟声词（用逗号分隔）</span><input
         // 后端 read_sound_effects 恒返回结构化对象（{text,x,y,rotation,size}，
         // 旧字符串已被包装），直接 String(item) 会显示「[object Object]」且编辑
@@ -181,7 +187,11 @@ export function PanelInspector({
         onChange={(event) => onPanelDraftChange({
           ...panelDraft,
           sound_effects: anchorSoundEffects(
-            event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
+            // 同 props：保留末尾空段，敲入的分隔符才不会被立即吞掉。
+            (() => {
+              const items = event.target.value.split(/[，,]/).map((item) => item.trim());
+              return items.filter((item, index) => item !== "" || index === items.length - 1);
+            })(),
             panelDraft.sound_effects,
           ),
         })}
