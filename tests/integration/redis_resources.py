@@ -207,20 +207,31 @@ class RedisAcceptanceResources:
             if not reader.hget(key, "death"):
                 raise RuntimeError("Worker has not confirmed shutdown; stop it before cleanup")
         for name in self.queues:
-            # rq:scheduler-lock is PID-valued and self-expiring; a force-killed
-            # worker can never release it, so a held lock is not a leak signal.
-            # The key is still cleaned via _queue_keys once workers are dead.
             associated = {_text(key) for key in reader.smembers(f"rq:workers:{name}")}
             # Our own force-killed workers stay registered here (a Job Object
             # kill skips RQ's unregister); they are distinguished by the
             # ownership token and the whole key is cleaned below.
-            foreign = {
+            token_workers = {
                 key
-                for key in associated - worker_keys
-                if not key.startswith(f"rq:worker:acceptance_{self.token}_")
+                for key in associated
+                if key.startswith(f"rq:worker:acceptance_{self.token}_")
+            }
+            foreign = {
+                key for key in associated - worker_keys if key not in token_workers
             }
             if foreign:
                 raise RuntimeError("Unowned worker is registered on the acceptance queue")
+            # rq:scheduler-lock is PID-valued and self-expiring; a Job-killed
+            # worker can never release it, so a leftover lock on a queue
+            # served only by our own spawned workers is expected residue, not
+            # a leak. A held lock on any other queue shape — including an
+            # empty one — still means a live scheduler.
+            if reader.get(f"rq:scheduler-lock:{name}") is not None and not (
+                associated and associated == token_workers
+            ):
+                raise RuntimeError(
+                    "Scheduler lock is still held; stop scheduler before cleanup"
+                )
             # Never silently delete a queue/registry containing untracked jobs.
             if not self._listed_jobs(reader, name) <= jobs:
                 raise RuntimeError("Untracked job found in acceptance queue or registry")
