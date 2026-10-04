@@ -132,6 +132,9 @@ def _spawn_live_worker(
     except BaseException:
         tree.cleanup()
         raise
+    # Cleanup must be able to prove this tree stopped before deleting its
+    # Redis keys — a Job-Object kill leaves no RQ-side death field.
+    tracker.track_spawned_worker(suffix, tree)
     return tree, child
 
 

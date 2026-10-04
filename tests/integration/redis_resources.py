@@ -48,6 +48,11 @@ class RedisAcceptanceResources:
     queues: set[str] = field(default_factory=set)
     jobs: set[str] = field(default_factory=set)
     workers: set[str] = field(default_factory=set)
+    # Spawned worker process trees (OwnedProcessTree), keyed by their
+    # rq:worker:<name> key. Redis-side evidence can never prove a spawned
+    # worker is dead — a Job-Object kill leaves no death field — so the
+    # supervisor's own stopped state is the liveness proof for cleanup.
+    spawned: dict[str, object] = field(default_factory=dict)
     cleaned: bool = False
     sealed: bool = False
 
@@ -94,6 +99,12 @@ class RedisAcceptanceResources:
                 raise RuntimeError("Refusing to adopt a registered RQ queue")
             self.queues.add(name)
         return name
+
+    def track_spawned_worker(self, label: str, tree) -> None:
+        """Bind a spawned acceptance worker's process tree so cleanup can
+        require verified tree.stop() before deleting its Redis state."""
+        self._can_register()
+        self.spawned[f"rq:worker:acceptance_{self.token}_{_identifier(label)}"] = tree
 
     def worker_name(self, label: str) -> str:
         self._can_register()
@@ -181,6 +192,16 @@ class RedisAcceptanceResources:
         # were never registered via worker_name() — a Job-Object kill leaves
         # their worker keys behind.
         keys.update(self._scan(f"rq:worker:acceptance_{self.token}_*"))
+        # A killed worker's hash can expire while its global rq:workers
+        # membership lingers; the hash scan misses those names, so enumerate
+        # the set itself for token-scoped members.
+        keys.update(
+            name
+            for name in (
+                _text(member) for member in self.client.smembers("rq:workers")
+            )
+            if name.startswith(f"rq:worker:acceptance_{self.token}_")
+        )
         keys.update(self._scan(self.prefix + "app:*"))
         return keys, jobs
 
@@ -206,6 +227,14 @@ class RedisAcceptanceResources:
         for key in worker_keys:
             if not reader.hget(key, "death"):
                 raise RuntimeError("Worker has not confirmed shutdown; stop it before cleanup")
+        # A token-named worker key in Redis says nothing about liveness; only
+        # the supervisor's stopped state proves a spawned worker is gone.
+        for worker_key, tree in self.spawned.items():
+            if tree.record.get("state") != "stopped":
+                raise RuntimeError(
+                    f"Spawned worker {worker_key} has not confirmed shutdown; "
+                    "stop it before cleanup"
+                )
         for name in self.queues:
             associated = {_text(key) for key in reader.smembers(f"rq:workers:{name}")}
             # Our own force-killed workers stay registered here (a Job Object

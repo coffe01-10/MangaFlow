@@ -259,7 +259,12 @@ def configure_child(path: Path, *, probe_job: str | None = None):
         storage_root=(
             _safe_path(payload, str(payload / "storage"))
             if record.get("storage_root") is None
-            else Path(record["storage_root"]).resolve()
+            # An explicit root legitimately points into a sibling worker's
+            # payload (the inspection test shares the first worker's
+            # storage). Widen the boundary to the test-owned workspace —
+            # <tmp>/<worker>/mangaflow-process-*/payload/worker.json ->
+            # parents[3] is <tmp> — never to an arbitrary disk location.
+            else _safe_path(path.parents[3], record["storage_root"])
         ),
         upload_root=_safe_path(payload, str(payload / "uploads")),
         queue_enabled=record["mode"] == "live-rq",
