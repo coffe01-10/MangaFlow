@@ -14,16 +14,24 @@ from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
 from app.model_adapters.base import ProviderAdapterError
 from app.models import (
+    AIModel,
     AppSetting,
     Chapter,
     GenerationBatch,
     GenerationJob,
     MangaPage,
     PageCandidate,
+    Panel,
     Project,
+    ProviderConnection,
+    ProviderProfile,
+    StyleProfile,
     utcnow,
 )
+from app.schemas import CandidateCreate
 from app.services.job_service import create_job, enqueue_job, recover_pending_jobs
+from app.services.ordinal_allocator import create_page_candidate
+from app.services.provider_presets import ensure_provider_presets
 from app.worker_tasks import execute_job
 from rq import Queue, SimpleWorker
 from sqlalchemy import select
@@ -36,10 +44,28 @@ ROOT = Path(__file__).resolve().parents[2]
 # The worker child resolves repo/application imports itself; the controller
 # supplies no application environment beyond the bootstrap minimum.
 _LIVE_WORKER_CHILD_CODE = """
-import pathlib, sys
+import os, pathlib, sys, traceback
+_tmp = pathlib.Path(sys.argv[2]).parent.parent.parent
+# CREATE_NO_WINDOW children have nowhere for output to go; horses spawned by
+# this worker inherit these handles, so their stderr lands in the same file.
+try:
+    _log = os.open(
+        str(_tmp / ("worker-" + sys.argv[3] + ".log")),
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+    )
+    os.dup2(_log, 1)
+    os.dup2(_log, 2)
+except BaseException:
+    pass
 sys.path[:0] = [sys.argv[1], str(pathlib.Path(sys.argv[1]) / "apps" / "api")]
-from tests.integration.worker_runtime import run_acceptance_worker
-run_acceptance_worker(pathlib.Path(sys.argv[2]), sys.argv[3])
+try:
+    from tests.integration.worker_runtime import run_acceptance_worker
+    run_acceptance_worker(pathlib.Path(sys.argv[2]), sys.argv[3])
+except BaseException:
+    pathlib.Path(sys.argv[2]).parent.parent.parent.joinpath(
+        "worker-error-" + sys.argv[3] + ".log"
+    ).write_text(traceback.format_exc(), encoding="utf-8")
+    raise
 """
 
 
@@ -72,6 +98,7 @@ def _spawn_live_worker(
     tracker: RedisAcceptanceResources,
     suffix: str = "main",
     lease_seconds: int | None = None,
+    storage_root: str | None = None,
 ):
     from tests.integration.process_resources import OwnedProcessTree
     from tests.integration.worker_runtime import write_worker_config
@@ -81,6 +108,8 @@ def _spawn_live_worker(
             "Independent RQ worker process-tree acceptance requires Windows "
             "Job Objects; NOT RUN on Linux."
         )
+    # OwnedProcessTree resolves its parent strictly; the scratch directory must exist.
+    parent.mkdir(parents=True, exist_ok=True)
     tree = OwnedProcessTree(parent)
     try:
         config = write_worker_config(
@@ -92,6 +121,7 @@ def _spawn_live_worker(
             redis_token=tracker.token,
             queue_name=tracker.queue_name(),
             lease_seconds=lease_seconds,
+            storage_root=storage_root,
         )
         child = tree.start_python(
             "worker",
@@ -102,6 +132,9 @@ def _spawn_live_worker(
     except BaseException:
         tree.cleanup()
         raise
+    # Cleanup must be able to prove this tree stopped before deleting its
+    # Redis keys — a Job-Object kill leaves no RQ-side death field.
+    tracker.track_spawned_worker(suffix, tree)
     return tree, child
 
 
@@ -117,6 +150,7 @@ def _recorded_events(tree) -> list[dict]:
 
 def _seed_redis_acceptance_hierarchy(session_factory: sessionmaker[Session]) -> dict[str, str]:
     with session_factory() as db:
+        ensure_provider_presets(db, get_settings(), auto_commit=True)
         project = Project(name=f"Redis验收项目_{time.time()}", default_concurrency=2)
         db.add(project)
         db.flush()
@@ -140,6 +174,63 @@ def _seed_redis_acceptance_hierarchy(session_factory: sessionmaker[Session]) -> 
         )
         db.add(page)
         db.flush()
+
+        # An enabled image model reachable without credentials: a CLI-protocol
+        # connection only needs health_state=AVAILABLE (CLI_SESSION credential
+        # source), which satisfies both ensure_page_ready in the test process
+        # and resolve_model inside the spawned worker/horse. Reference assets
+        # are deliberately absent — the horse's isolated storage_root holds no
+        # seeded blobs, so the page must not reference any.
+        profile = ProviderProfile(name="RQ验收供应商", enabled=True)
+        db.add(profile)
+        db.flush()
+        connection = ProviderConnection(
+            provider_id=profile.id,
+            name="RQ CLI",
+            protocol="CLI_ANTIGRAVITY",
+            base_url="cli://rq-acceptance",
+            enabled=True,
+            health_state="AVAILABLE",
+        )
+        db.add(connection)
+        db.flush()
+        db.add(
+            AIModel(
+                connection_id=connection.id,
+                provider_model_id="rq-image-model",
+                display_name="RQ验收图像模型",
+                legacy_alias="image.rq_acceptance",
+                model_type="IMAGE",
+                input_modalities=["TEXT", "IMAGE"],
+                output_modalities=["IMAGE"],
+                operations=["image_generate", "image_edit"],
+                capabilities={
+                    "resolutions": ["1K", "2K", "4K"],
+                    "max_reference_images": 14,
+                },
+                enabled=True,
+            )
+        )
+
+        style = StyleProfile(
+            project_id=project.id,
+            name="RQ日漫风",
+            color_mode="color",
+            status="ACTIVE",
+            profile={"palette_confirmed": True, "test_image_approved": True},
+        )
+        db.add(style)
+        db.flush()
+        project.default_style_id = style.id
+
+        db.add(
+            Panel(
+                page_id=page.id,
+                reading_order=1,
+                characters=[],
+                outfits={},
+            )
+        )
 
         batch = GenerationBatch(
             project_id=project.id,
@@ -515,8 +606,6 @@ def test_redis_resource_cleanup_preserves_neighbor_namespace(
     live_redis_resource_tracker,
 ):
     """Real Redis/RQ resource APIs only; not independent worker execution evidence."""
-    from uuid import uuid4
-
     from rq import Worker
     from rq.executions import Execution
     from rq.registry import FinishedJobRegistry
@@ -591,19 +680,22 @@ def _patch_enqueue_settings(monkeypatch: Any, live_redis_url: str, queue_name: s
 
 
 def _create_live_page_job(
-    factory: sessionmaker[Session], project_id: str, label: str, *, max_attempts: int = 1
+    factory: sessionmaker[Session], seeded: dict[str, str], label: str, *, max_attempts: int = 1
 ) -> GenerationJob:
+    del label  # scenarios are keyed by job id; the label only named the fake target
     with factory() as db:
-        job = create_job(
+        _candidate, job = create_page_candidate(
             db,
-            project_id=project_id,
-            target_type="PAGE_CANDIDATE",
-            target_id=f"tl-{label}-{uuid4().hex[:8]}",
-            job_type="PAGE_GENERATE",
-            model_alias="image.nano_banana_2",
-            max_attempts=max_attempts,
-            auto_commit=True,
+            batch_id=seeded["batch_id"],
+            payload=CandidateCreate(
+                model_alias="image.rq_acceptance",
+                resolution=Resolution.DRAFT_1K,
+                storyboard_version=1,
+                reference_selections={},
+            ),
         )
+        job.max_attempts = max_attempts
+        db.commit()
     return job
 
 
@@ -625,7 +717,7 @@ def test_live_independent_worker_completes_real_queue_job(
     worker_tasks.SessionLocal = live_pg_session_factory
     database.SessionLocal = live_pg_session_factory
 
-    job = _create_live_page_job(live_pg_session_factory, seeded["project_id"], "ok")
+    job = _create_live_page_job(live_pg_session_factory, seeded, "ok")
     live_redis_resource_tracker.track_job(job.id)
     with live_pg_session_factory() as db:
         reloaded = db.get(GenerationJob, job.id)
@@ -680,7 +772,7 @@ def test_live_worker_retryable_failure_retries_in_new_horse_process(
     database.SessionLocal = live_pg_session_factory
 
     job = _create_live_page_job(
-        live_pg_session_factory, seeded["project_id"], "retry", max_attempts=3
+        live_pg_session_factory, seeded, "retry", max_attempts=3
     )
     live_redis_resource_tracker.track_job(job.id)
     with live_pg_session_factory() as db:
@@ -721,7 +813,7 @@ def test_live_worker_terminal_failure_marks_failed(
     database.SessionLocal = live_pg_session_factory
 
     job = _create_live_page_job(
-        live_pg_session_factory, seeded["project_id"], "terminal", max_attempts=1
+        live_pg_session_factory, seeded, "terminal", max_attempts=1
     )
     live_redis_resource_tracker.track_job(job.id)
     with live_pg_session_factory() as db:
@@ -764,7 +856,7 @@ def test_live_worker_cancellation_during_execution(
     worker_tasks.SessionLocal = live_pg_session_factory
     database.SessionLocal = live_pg_session_factory
 
-    job = _create_live_page_job(live_pg_session_factory, seeded["project_id"], "cancel")
+    job = _create_live_page_job(live_pg_session_factory, seeded, "cancel")
     live_redis_resource_tracker.track_job(job.id)
     with live_pg_session_factory() as db:
         assert enqueue_job(db, db.get(GenerationJob, job.id)).status == JobStatus.QUEUED
@@ -784,18 +876,32 @@ def test_live_worker_cancellation_during_execution(
         )
         with live_pg_session_factory() as db:
             cancel_job(db, db.get(GenerationJob, job.id))
-        (tree.payload / f"release-{job.id}").touch()
+        # The blocked adapter polls for the release marker inside its event
+        # directory (payload/events), not the payload root.
+        (tree.payload / "events" / f"release-{job.id}").touch()
         cancelled = _wait_job_status(live_pg_session_factory, job.id, {JobStatus.CANCELLED})
         assert cancelled.cancelled_at is not None
-        returned = [event for event in _recorded_events(tree) if event["event"] == "returned"]
-        assert returned == []
+        # The released horse finishes the adapter call and records "returned";
+        # the cancel fence then refuses persistence, so nothing is saved.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            returned = [
+                event for event in _recorded_events(tree) if event["event"] == "returned"
+            ]
+            if returned:
+                break
+            time.sleep(0.5)
+        else:
+            raise AssertionError("released horse never recorded its adapter return")
         with live_pg_session_factory() as verify_db:
             candidates = list(
                 verify_db.scalars(
                     select(PageCandidate).where(PageCandidate.batch_id == seeded["batch_id"])
                 )
             )
-            assert candidates == []
+            # create_page_candidate already minted the job's target row; the
+            # cancelled run must leave it without persisted output.
+            assert len(candidates) == 1 and candidates[0].asset_id is None
     finally:
         tree.stop()
 
@@ -822,8 +928,8 @@ def test_live_worker_concurrency_slot_deferral_with_two_workers(
         project.default_concurrency = 1
         db.commit()
 
-    first = _create_live_page_job(live_pg_session_factory, seeded["project_id"], "slot-a")
-    second = _create_live_page_job(live_pg_session_factory, seeded["project_id"], "slot-b")
+    first = _create_live_page_job(live_pg_session_factory, seeded, "slot-a")
+    second = _create_live_page_job(live_pg_session_factory, seeded, "slot-b")
     for job in (first, second):
         live_redis_resource_tracker.track_job(job.id)
     with live_pg_session_factory() as db:
@@ -852,6 +958,25 @@ def test_live_worker_concurrency_slot_deferral_with_two_workers(
             suffix="b",
         )
         _wait_job_status(live_pg_session_factory, first.id, {JobStatus.GENERATING}, timeout=60)
+        # The second worker's claim must already have hit CONCURRENCY_LIMIT
+        # and scheduled the slot continuation before the slot frees.
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if any(
+                live_redis_resource_tracker.client.scan_iter(
+                    match=f"rq:job:{second.id}-slot-*"
+                )
+            ):
+                break
+            time.sleep(0.5)
+        else:
+            raise AssertionError(
+                "second job never deferred: no slot-continuation RQ job appeared"
+            )
+        # Release the blocked adapter in whichever worker's horse owns it;
+        # the fixture polls for the marker inside its events directory.
+        for worker_tree in (tree_a, tree_b):
+            (worker_tree.payload / "events" / f"release-{first.id}").touch()
         done_first = _wait_job_status(
             live_pg_session_factory, first.id, {JobStatus.COMPLETED}
         )
@@ -888,11 +1013,14 @@ def test_live_worker_lease_recovery_after_forced_exit(
     seeded = _seed_redis_acceptance_hierarchy(live_pg_session_factory)
     queue_name = live_redis_resource_tracker.queue_name()
     _patch_enqueue_settings(monkeypatch, live_redis_url, queue_name)
+    # The #130 reclaim fence otherwise keeps an expired-but-cold lease out of
+    # recover_pending_jobs for 60s+; this test owns expiry timing directly.
+    monkeypatch.setattr(get_settings(), "job_lease_reclaim_grace_seconds", 0)
     worker_tasks.SessionLocal = live_pg_session_factory
     database.SessionLocal = live_pg_session_factory
 
     job = _create_live_page_job(
-        live_pg_session_factory, seeded["project_id"], "lease", max_attempts=3
+        live_pg_session_factory, seeded, "lease", max_attempts=3
     )
     live_redis_resource_tracker.track_job(job.id)
     with live_pg_session_factory() as db:
@@ -906,7 +1034,8 @@ def test_live_worker_lease_recovery_after_forced_exit(
         redis_url=live_redis_url,
         tracker=live_redis_resource_tracker,
         suffix="a",
-        lease_seconds=2,
+        # Settings.validate_lease_geometry floors the lease at 30 seconds.
+        lease_seconds=30,
     )
     try:
         _wait_job_status(live_pg_session_factory, job.id, {JobStatus.GENERATING}, timeout=60)
@@ -927,9 +1056,11 @@ def test_live_worker_lease_recovery_after_forced_exit(
             redis_url=live_redis_url,
             tracker=live_redis_resource_tracker,
             suffix="b",
-            lease_seconds=2,
+            lease_seconds=30,
         )
-        deadline = time.monotonic() + 10
+        # The lease runs claim_time + lease_seconds; allow the full duration
+        # plus heartbeat slack after the forced kill.
+        deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             with live_pg_session_factory() as db:
                 current = db.get(GenerationJob, job.id)
@@ -970,7 +1101,7 @@ def test_live_worker_inspection_records_five_categories(
     database.SessionLocal = live_pg_session_factory
 
     generate_job = _create_live_page_job(
-        live_pg_session_factory, seeded["project_id"], "inspect-gen"
+        live_pg_session_factory, seeded, "inspect-gen"
     )
     live_redis_resource_tracker.track_job(generate_job.id)
     with live_pg_session_factory() as db:
@@ -1004,19 +1135,29 @@ def test_live_worker_inspection_records_five_categories(
             candidate.job_id = inspect_job.id
             db.commit()
         live_redis_resource_tracker.track_job(inspect_job.id)
+        # The still-idle worker would dequeue the inspection instantly; stop it
+        # BEFORE enqueue so the job is not orphaned on its intermediate list —
+        # IntermediateQueue cleanup needs >60s plus another maintenance pass,
+        # which would outlast the status wait below.
+        shared_storage = tree.payload / "storage"
+        tree.stop()
         with live_pg_session_factory() as db:
             assert enqueue_job(
                 db, db.get(GenerationJob, inspect_job.id)
             ).status == JobStatus.QUEUED
-            # The worker config must know the new job before the horse starts.
-        tree.stop()
+        # A hard-stopped worker never registers death, so RQ refuses the same
+        # name on re-spawn ("active worker already exists"); use a fresh one.
+        # It shares the first worker's storage_root: the inspection reads the
+        # generated image through its own settings.storage_root.
         tree, _child = _spawn_live_worker(
-            tmp_path / "worker",
+            tmp_path / "worker-b",
             {generate_job.id: "ok", inspect_job.id: "ok"},
             pg_url=live_pg_url,
             schema=schema,
             redis_url=live_redis_url,
             tracker=live_redis_resource_tracker,
+            suffix="b",
+            storage_root=str(shared_storage),
         )
         _wait_job_status(
             live_pg_session_factory, inspect_job.id, {JobStatus.COMPLETED}, timeout=120

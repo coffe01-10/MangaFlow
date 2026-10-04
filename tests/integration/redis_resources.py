@@ -48,6 +48,11 @@ class RedisAcceptanceResources:
     queues: set[str] = field(default_factory=set)
     jobs: set[str] = field(default_factory=set)
     workers: set[str] = field(default_factory=set)
+    # Spawned worker process trees (OwnedProcessTree), keyed by their
+    # rq:worker:<name> key. Redis-side evidence can never prove a spawned
+    # worker is dead — a Job-Object kill leaves no death field — so the
+    # supervisor's own stopped state is the liveness proof for cleanup.
+    spawned: dict[str, object] = field(default_factory=dict)
     cleaned: bool = False
     sealed: bool = False
 
@@ -94,6 +99,12 @@ class RedisAcceptanceResources:
                 raise RuntimeError("Refusing to adopt a registered RQ queue")
             self.queues.add(name)
         return name
+
+    def track_spawned_worker(self, label: str, tree) -> None:
+        """Bind a spawned acceptance worker's process tree so cleanup can
+        require verified tree.stop() before deleting its Redis state."""
+        self._can_register()
+        self.spawned[f"rq:worker:acceptance_{self.token}_{_identifier(label)}"] = tree
 
     def worker_name(self, label: str) -> str:
         self._can_register()
@@ -177,6 +188,20 @@ class RedisAcceptanceResources:
             keys.update(self._job_keys(job_id))
             keys.update(self._scan(f"rq:execution:{job_id}:*"))
         keys.update(f"rq:worker:{name}" for name in self.workers)
+        # Spawned acceptance workers are token-scoped by name even when they
+        # were never registered via worker_name() — a Job-Object kill leaves
+        # their worker keys behind.
+        keys.update(self._scan(f"rq:worker:acceptance_{self.token}_*"))
+        # A killed worker's hash can expire while its global rq:workers
+        # membership lingers; the hash scan misses those names, so enumerate
+        # the set itself for token-scoped members.
+        keys.update(
+            name
+            for name in (
+                _text(member) for member in self.client.smembers("rq:workers")
+            )
+            if name.startswith(f"rq:worker:acceptance_{self.token}_")
+        )
         keys.update(self._scan(self.prefix + "app:*"))
         return keys, jobs
 
@@ -202,12 +227,40 @@ class RedisAcceptanceResources:
         for key in worker_keys:
             if not reader.hget(key, "death"):
                 raise RuntimeError("Worker has not confirmed shutdown; stop it before cleanup")
+        # A token-named worker key in Redis says nothing about liveness; only
+        # the supervisor's stopped state proves a spawned worker is gone.
+        for worker_key, tree in self.spawned.items():
+            if tree.record.get("state") != "stopped":
+                raise RuntimeError(
+                    f"Spawned worker {worker_key} has not confirmed shutdown; "
+                    "stop it before cleanup"
+                )
         for name in self.queues:
-            if reader.get(f"rq:scheduler-lock:{name}") is not None:
-                raise RuntimeError("Scheduler lock is still held; stop scheduler before cleanup")
             associated = {_text(key) for key in reader.smembers(f"rq:workers:{name}")}
-            if not associated <= worker_keys:
+            # Our own force-killed workers stay registered here (a Job Object
+            # kill skips RQ's unregister); they are distinguished by the
+            # ownership token and the whole key is cleaned below.
+            token_workers = {
+                key
+                for key in associated
+                if key.startswith(f"rq:worker:acceptance_{self.token}_")
+            }
+            foreign = {
+                key for key in associated - worker_keys if key not in token_workers
+            }
+            if foreign:
                 raise RuntimeError("Unowned worker is registered on the acceptance queue")
+            # rq:scheduler-lock is PID-valued and self-expiring; a Job-killed
+            # worker can never release it, so a leftover lock on a queue
+            # served only by our own spawned workers is expected residue, not
+            # a leak. A held lock on any other queue shape — including an
+            # empty one — still means a live scheduler.
+            if reader.get(f"rq:scheduler-lock:{name}") is not None and not (
+                associated and associated == token_workers
+            ):
+                raise RuntimeError(
+                    "Scheduler lock is still held; stop scheduler before cleanup"
+                )
             # Never silently delete a queue/registry containing untracked jobs.
             if not self._listed_jobs(reader, name) <= jobs:
                 raise RuntimeError("Untracked job found in acceptance queue or registry")
@@ -229,6 +282,15 @@ class RedisAcceptanceResources:
                 pipe.srem("rq:queues", *sorted(queue_keys))
             if worker_keys:
                 pipe.srem("rq:workers", *sorted(worker_keys))
+            # Token-scoped spawned workers not registered via worker_name()
+            # leave the same global-set membership; remove it as well.
+            token_workers = {
+                key
+                for key in keys
+                if key.startswith(f"rq:worker:acceptance_{self.token}_")
+            }
+            if token_workers - worker_keys:
+                pipe.srem("rq:workers", *sorted(token_workers - worker_keys))
             if keys:
                 pipe.delete(*sorted(keys))
             pipe.execute()

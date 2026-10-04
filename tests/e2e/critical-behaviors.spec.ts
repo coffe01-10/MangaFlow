@@ -291,7 +291,9 @@ async function assertProductionGate(
     }
   }
   await page.goto(`/projects/${id}/library`);
-  const png = page.getByRole("button", { name: "PNG", exact: true });
+  // The PNG export button renders its localized label ("原图 ZIP"), not the
+  // export-type key — match the accessible name a user sees.
+  const png = page.getByRole("button", { name: "原图 ZIP", exact: true });
   if (expected.exportEnabled) await expect(png).toBeEnabled();
   else await expect(png).toBeDisabled();
 }
