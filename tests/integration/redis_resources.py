@@ -177,6 +177,10 @@ class RedisAcceptanceResources:
             keys.update(self._job_keys(job_id))
             keys.update(self._scan(f"rq:execution:{job_id}:*"))
         keys.update(f"rq:worker:{name}" for name in self.workers)
+        # Spawned acceptance workers are token-scoped by name even when they
+        # were never registered via worker_name() — a Job-Object kill leaves
+        # their worker keys behind.
+        keys.update(self._scan(f"rq:worker:acceptance_{self.token}_*"))
         keys.update(self._scan(self.prefix + "app:*"))
         return keys, jobs
 
@@ -203,10 +207,19 @@ class RedisAcceptanceResources:
             if not reader.hget(key, "death"):
                 raise RuntimeError("Worker has not confirmed shutdown; stop it before cleanup")
         for name in self.queues:
-            if reader.get(f"rq:scheduler-lock:{name}") is not None:
-                raise RuntimeError("Scheduler lock is still held; stop scheduler before cleanup")
+            # rq:scheduler-lock is PID-valued and self-expiring; a force-killed
+            # worker can never release it, so a held lock is not a leak signal.
+            # The key is still cleaned via _queue_keys once workers are dead.
             associated = {_text(key) for key in reader.smembers(f"rq:workers:{name}")}
-            if not associated <= worker_keys:
+            # Our own force-killed workers stay registered here (a Job Object
+            # kill skips RQ's unregister); they are distinguished by the
+            # ownership token and the whole key is cleaned below.
+            foreign = {
+                key
+                for key in associated - worker_keys
+                if not key.startswith(f"rq:worker:acceptance_{self.token}_")
+            }
+            if foreign:
                 raise RuntimeError("Unowned worker is registered on the acceptance queue")
             # Never silently delete a queue/registry containing untracked jobs.
             if not self._listed_jobs(reader, name) <= jobs:
@@ -229,6 +242,15 @@ class RedisAcceptanceResources:
                 pipe.srem("rq:queues", *sorted(queue_keys))
             if worker_keys:
                 pipe.srem("rq:workers", *sorted(worker_keys))
+            # Token-scoped spawned workers not registered via worker_name()
+            # leave the same global-set membership; remove it as well.
+            token_workers = {
+                key
+                for key in keys
+                if key.startswith(f"rq:worker:acceptance_{self.token}_")
+            }
+            if token_workers - worker_keys:
+                pipe.srem("rq:workers", *sorted(token_workers - worker_keys))
             if keys:
                 pipe.delete(*sorted(keys))
             pipe.execute()

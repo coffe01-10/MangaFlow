@@ -45,6 +45,7 @@ def write_worker_config(
     redis_token: str | None = None,
     queue_name: str | None = None,
     lease_seconds: int | None = None,
+    storage_root: str | None = None,
 ) -> Path:
     _validate_directory(tree.directory, tree.token)
     record = {
@@ -64,6 +65,8 @@ def write_worker_config(
         )
     if lease_seconds is not None:
         record["lease_seconds"] = lease_seconds
+    if storage_root is not None:
+        record["storage_root"] = storage_root
     path = tree.payload / "worker.json"
     _validate_config(tree.directory, record)
     with path.open("x", encoding="utf-8") as file:
@@ -253,7 +256,11 @@ def configure_child(path: Path, *, probe_job: str | None = None):
         _env_file=None,
         environment="development",
         database_url=(record["pg_url"] if record["mode"] == "live-rq" else f"sqlite:///{db_path}"),
-        storage_root=_safe_path(payload, str(payload / "storage")),
+        storage_root=(
+            _safe_path(payload, str(payload / "storage"))
+            if record.get("storage_root") is None
+            else Path(record["storage_root"]).resolve()
+        ),
         upload_root=_safe_path(payload, str(payload / "uploads")),
         queue_enabled=record["mode"] == "live-rq",
         queue_name=record.get("queue_name", "offline-probe"),
@@ -362,7 +369,10 @@ def run_rq_horse(path: Path, worker_name: str, rq_job_id: str, execution_id: str
         ):
             raise RuntimeError("RQ horse refuses an unregistered application task")
         application_job_id = job.args[0]
-        if job.kwargs or not (
+        # A slot-continuation job carries slot_wait_deadline (worker_tasks
+        # ._defer_concurrency_wait); it is the only keyword an owned RQ job
+        # legitimately carries.
+        if set(job.kwargs or {}) - {"slot_wait_deadline"} or not (
             job.id == application_job_id
             or re.fullmatch(rf"{re.escape(application_job_id)}-slot-[a-f0-9]{{32}}", job.id)
         ):
@@ -378,14 +388,35 @@ def run_rq_horse(path: Path, worker_name: str, rq_job_id: str, execution_id: str
 
 
 ACCEPTANCE_HORSE_DRIVER = """
-import sys
+import sys, traceback
+from pathlib import Path
 
-root, config_path, worker_name, rq_job_id, execution_id = sys.argv[1:6]
-sys.path.insert(0, root)
-sys.path.insert(0, root + "/apps/api")
-from tests.integration.worker_runtime import run_rq_horse
-
-run_rq_horse(config_path, worker_name, rq_job_id, execution_id)
+try:
+    root, config_path, worker_name, rq_job_id, execution_id = sys.argv[1:6]
+    sys.path.insert(0, root)
+    sys.path.insert(0, root + "/apps/api")
+    from tests.integration.worker_runtime import run_rq_horse
+    run_rq_horse(Path(config_path), worker_name, rq_job_id, execution_id)
+except BaseException:
+    # <tree-dir>/payload/worker.json -> tmp_path/horse-error-<rq_job_id>.log;
+    # payload is removed by OwnedProcessTree cleanup, tmp_path is not.
+    Path(config_path).parent.parent.parent.joinpath(
+        "horse-error-" + rq_job_id + ".log"
+    ).write_text(traceback.format_exc(), encoding="utf-8")
+    raise
+# perform_job handles job failures internally — the traceback only lands in
+# the RQ job's exc_info. Mirror it to disk so test failures are diagnosable.
+import json, redis
+_rec = json.loads(Path(config_path).read_text())
+_c = redis.Redis.from_url(_rec["redis_url"])
+try:
+    _exc = _c.hget("rq:job:" + rq_job_id, "exc_info")
+    if _exc:
+        Path(config_path).parent.parent.parent.joinpath(
+            "horse-error-" + rq_job_id + ".log"
+        ).write_bytes(_exc)
+finally:
+    _c.close()
 """
 
 
@@ -439,12 +470,12 @@ def run_acceptance_worker(
         token = record["redis_token"]
         if client.get(f"mangaflow:acceptance:{token}:owner") != token.encode():
             raise RuntimeError("Redis ownership changed before worker startup")
-        if not re.fullmatch(r"acceptance_[a-zA-Z0-9_-]+", worker_suffix):
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", worker_suffix):
             raise ValueError("Unowned worker name suffix")
         worker_name = f"acceptance_{token}_{worker_suffix}"
 
         class _BoundAcceptanceWorker(AcceptanceWorker):
-            def _horse_environment(self) -> dict[str, str]:
+            def _horse_environment(self, queue) -> dict[str, str]:
                 # The horse entry derives everything from worker.json; keep the
                 # environment minimal and free of connection credentials.
                 return {
@@ -459,6 +490,20 @@ def run_acceptance_worker(
             connection=client,
             config_path=path,
         )
+        _real_execute = worker.execute_job
+
+        def _traced_execute(job, queue):
+            try:
+                _real_execute(job, queue)
+            except BaseException:
+                import traceback as _tb
+
+                path.parent.parent.parent.joinpath(
+                    "worker-execute-error-" + worker_suffix + ".log"
+                ).write_text(_tb.format_exc(), encoding="utf-8")
+                raise
+
+        worker.execute_job = _traced_execute
         worker.work(burst=burst, with_scheduler=with_scheduler)
     finally:
         if client is not None:

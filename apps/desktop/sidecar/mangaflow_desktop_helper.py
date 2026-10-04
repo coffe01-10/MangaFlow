@@ -196,8 +196,10 @@ def _write_journal(journal: Path, record: dict) -> None:
         # #870: tighten the pending mode before the payload is written.
         # umask in main() covers POSIX mkdir/create; fchmod pins the
         # journal itself to 0600 even if umask was looser at open.
-        # Windows ACL tightening is NOT RUN (no fchmod).
-        if hasattr(os, "fchmod"):
+        # Windows ACL tightening is NOT RUN: Python 3.13 exposes os.fchmod
+        # on Windows but it only toggles the read-only attribute — fchmod
+        # (0600) would make the journal read-only and break the next write.
+        if os.name == "posix":
             os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb", closefd=False) as handle:
             handle.write(payload)
@@ -875,9 +877,6 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
     try:
         sock = _bind_loopback()
         port = sock.getsockname()[1]
-        # The web server's compiled rewrites target this exact API origin, so
-        # spawn it only after the API port is bound (plan B, W-15).
-        web = _spawn_web_server(args, port)
         try:
             from alembic import command
             from alembic.config import Config as AlembicConfig
@@ -889,6 +888,12 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             record.update(state="failed", error=f"alembic:{type(error).__name__}")
             _write_journal_uninterruptible(journal, record)
             raise
+        # The web server's compiled rewrites target this exact API origin, so
+        # spawn it only after the API port is bound (plan B, W-15). Spawning
+        # AFTER the migrations keeps the spawned-but-not-yet-verified window
+        # short: a node that dies while alembic runs would otherwise be
+        # misreported as a boot failure by _await_web_server_boot.
+        web = _spawn_web_server(args, port)
 
         if args.fake_channel:
             from fake_channel import install  # provided next to this helper

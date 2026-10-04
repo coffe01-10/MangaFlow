@@ -29,7 +29,9 @@ def test_write_journal_fchmods_pending_to_0600(tmp_path, monkeypatch):
     source = inspect.getsource(helper._write_journal)
     assert "fchmod" in source and "0o600" in source, source
 
-    if not hasattr(os, "fchmod"):
+    if os.name != "posix":
+        # Python 3.13 exposes os.fchmod on Windows too, but it only toggles
+        # the read-only attribute; the 0600 mode assertion is POSIX-only.
         return
 
     journal = _journal(tmp_path)
