@@ -973,6 +973,8 @@ export interface ExportBundle {
 
 export type WebtoonExportPreset = "STANDARD" | "COMPACT" | "HQ_PNG";
 
+export type DisclosurePlatform = "KDP" | "STEAM" | "WEBTOON" | "TAPAS" | "GENERIC";
+
 export interface WebtoonExportOptions {
   preset?: WebtoonExportPreset;
   width?: number;
@@ -980,6 +982,9 @@ export interface WebtoonExportOptions {
   quality?: number;
   gap_px?: number;
   max_slice_height?: number;
+  // P0-3 创作留痕证明包：对全部导出类型生效，不只 WEBTOON。
+  include_provenance?: boolean;
+  disclosure_platform?: DisclosurePlatform;
 }
 
 export type WorkflowPortDataType = "text" | "json" | "image" | "asset" | "report" | "boolean";

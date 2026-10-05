@@ -126,7 +126,7 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 
 ### InspectionResult、RepairPlan、ExportBundle
 
-检查结果关联候选和检查类别，保存识别差异、区域、严重度与建议。修复计划固定按文字区域、气泡区域、单格、整页升级，自动尝试最多三次。`ExportBundle` 保存导出类型、状态、对象键和清单。
+检查结果关联候选和检查类别，保存识别差异、区域、严重度与建议。修复计划固定按文字区域、气泡区域、单格、整页升级，自动尝试最多三次。`ExportBundle` 保存导出类型、状态、对象键和清单。P0-3 创作留痕证明包不改表：留痕元数据在导出时由 `export_provenance.py` 从 `MangaPage`/`PageCandidate`/`InspectionResult`/`PageSourceSegment`/`GenerationRecord` 即时聚合进产物（ZIP 成员 `provenance.json`、PDF 伴随文件、JSON/WEBTOON manifest 的 `provenance` 键）；`ExportRequest.include_provenance`/`disclosure_platform` 是请求字段，并入导出幂等 token 使不同参数产出不同 artifact。
 
 `InspectionResult.storyboard_version` 记录模型实际检查时的分镜版本。生产门禁只聚合当前候选、当前分镜版本下五类各自最新的结果；历史版本和未知版本不能补足当前检查。同一类别的时间戳冲突时失败优先，不把 UUID 大小当作时间顺序。迁移 `20260827_17` 新增可空整数列，旧记录保持 `NULL`，不推断或伪造其版本，保留历史且要求重新质检；downgrade 只移除该列。
 

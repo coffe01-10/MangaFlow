@@ -86,7 +86,7 @@ Windows 原生客户端位于 `apps/desktop/native`，以 WPF 重绘工作台界
 - `jobs`：任务提交、DAG、幂等、取消、重试、超时、租约和并发限制。
 - `usage-ledger`：HTTP/CLI 逐次派发计量、版本化成本估算、资产输出挂接与人工账单对账。
 - `inspection/repair`：文字、说话人、角色、服装、道具和连续性检查及分级修复；文字识别是人工校对辅助项，不自动触发付费修图，采用时需显式人工确认。
-- `library/exports`：批次素材库、PNG、PDF、项目 JSON 和素材清单。
+- `library/exports`：批次素材库、PNG、PDF、项目 JSON 和素材清单；P0-3 创作留痕证明包（`services/export_provenance.py`）在导出时把逐页采用记录、人工校对确认（`select_candidate` 的 `manual_text_confirmed` 回读 `selected_candidate_ack_version`）、五类检查状态（缺检项如实标注 `NOT_RUN`/未完成而非缺省通过）、原作来源片段区间、prompt 校验和与模型身份聚合成脱敏 `provenance.json`——PNG ZIP 追加成员、PDF 写同名伴随文件、JSON 文档与 WEBTOON manifest 追加 `provenance` 键（schema 1.1）；`disclosure_platform` 按 KDP/Steam 官方口径或通用模板（无专条平台标注「无平台背书」）生成 AI 披露文本。留痕参数并入导出幂等 token，不新增表/迁移。
 - `director`：自然语言导演命令 journal（V02-40）。模型只产出受 schema 约束的 envelope；服务端确定性校验、预览 diff、逐条接受/拒绝后，复用现有分镜/场景写入路径落库。命令与业务变更同事务；`command_id` 幂等。`regenerate_region` 在 mask/父候选缺失时 fail-closed，不发起付费调用。派生候选血缘由 `candidate_lineage` 承载（V02-42B 已实现，见 data-model.md）。
 
 所有 AI 创建接口返回 `202 + job_id`；普通查询只读数据库和存储，不触发模型调用。

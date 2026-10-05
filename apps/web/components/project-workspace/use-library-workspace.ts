@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { api, type ExportBundle, type ImageModelAlias, type Resolution, type WebtoonExportOptions } from "@/lib/api";
+import { api, type DisclosurePlatform, type ExportBundle, type ImageModelAlias, type Resolution, type WebtoonExportOptions } from "@/lib/api";
 
 import type { WorkspaceSection } from "./types";
 
@@ -60,6 +60,9 @@ export function useLibraryWorkspace({
   const [libraryDateTo, setLibraryDateTo] = useState("");
   const [libraryCursor, setLibraryCursor] = useState("");
   const [libraryHistory, setLibraryHistory] = useState<string[]>([]);
+  // P0-3 创作留痕证明包：导出桌开关对所有导出类型生效。
+  const [includeProvenance, setIncludeProvenance] = useState(false);
+  const [disclosurePlatform, setDisclosurePlatform] = useState<DisclosurePlatform | "">("");
   // #658：筛选输入是本地日历日，边界按本地墙钟换算成 aware-UTC。
   const libraryDateBoundaries = localDayBoundariesToUtc(libraryDateFrom, libraryDateTo);
 
@@ -93,7 +96,19 @@ export function useLibraryWorkspace({
     }: {
       type: ExportBundle["export_type"];
       options?: WebtoonExportOptions;
-    }) => api.createExport(activeChapterId!, type, options),
+    }) => {
+      // 留痕/披露是导出级选项，与条漫参数合并进同一个请求体；全部关闭时
+      // 保持历史调用形态（options 原样透传，可能是 undefined）。
+      const merged =
+        includeProvenance || disclosurePlatform
+          ? {
+              include_provenance: includeProvenance || undefined,
+              disclosure_platform: disclosurePlatform || undefined,
+              ...(options ?? {}),
+            }
+          : options;
+      return api.createExport(activeChapterId!, type, merged);
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["exports", id] }),
   });
 
@@ -124,6 +139,10 @@ export function useLibraryWorkspace({
     library,
     exportsQuery,
     chapterProduction,
+    includeProvenance,
+    setIncludeProvenance,
+    disclosurePlatform,
+    setDisclosurePlatform,
     createExport,
   };
 }
