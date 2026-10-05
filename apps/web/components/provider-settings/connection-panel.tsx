@@ -469,6 +469,20 @@ export function ConnectionPanel({
                 }[operation],
               }));
           const probePaid = model.model_type === "IMAGE";
+          const lifecycle = model.lifecycle ?? "ACTIVE";
+          const sunsetLabel = (() => {
+            const raw = model.sunset_at;
+            if (!raw) return null;
+            const date = new Date(raw);
+            return Number.isNaN(date.getTime())
+              ? null
+              : date.toLocaleDateString("zh-CN");
+          })();
+          const lifecycleBadge = lifecycle === "EOL"
+            ? "已下线"
+            : lifecycle === "DEPRECATED"
+              ? `已退役${sunsetLabel ? ` ${sunsetLabel}` : ""}`
+              : null;
           return (
             <article key={model.id} className={model.display_enabled ? "" : "provider-model-hidden"}>
               <label className="provider-model-select">
@@ -494,7 +508,15 @@ export function ConnectionPanel({
                   {!model.display_enabled ? " · 已隐藏" : ""}
                   {!model.enabled ? " · 不可调用" : ""}
                   {model.enabled && derivedUnavailable ? " · 未就绪" : ""}
+                  {lifecycleBadge ? ` · ${lifecycleBadge}` : ""}
                 </span>
+                {lifecycle !== "ACTIVE" && (
+                  <small className="provider-model-lifecycle" role="note">
+                    {lifecycle === "EOL"
+                      ? "官方已下线：不可再执行任何调用"
+                      : "已退役：不可用于新任务，已采用候选的修复/升清仍可执行"}
+                  </small>
+                )}
                 <small>
                   {mapConfidence(model.confidence)} · 来源 {model.source}
                   {operations.slice(0, 3).map((label) => ` · ${label}`).join("")}
@@ -520,7 +542,7 @@ export function ConnectionPanel({
                       : probePaid
                         ? "图片模型冒烟测试可能计费"
                         : undefined}
-                    disabled={isCLI || !model.enabled || derivedUnavailable || !connection.configured || modelActionPending}
+                    disabled={isCLI || !model.enabled || derivedUnavailable || lifecycle === "EOL" || !connection.configured || modelActionPending}
                     onClick={(event) => {
                       if (probePaid) {
                         triggerRef.current = event.currentTarget;

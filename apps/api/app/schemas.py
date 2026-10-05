@@ -256,6 +256,12 @@ class ModelCapabilityRead(BaseModel):
     edit_modes: dict[str, CapabilityEntryRead] = Field(default_factory=dict)
     resolution_tiers: list[ResolutionTierRead] = Field(default_factory=list)
     media: dict[str, CapabilityEntryRead] = Field(default_factory=dict)
+    # P0-2 catalog lifecycle: ACTIVE | DEPRECATED | EOL. ``sunset_at`` is the
+    # announced retirement date (stored column or sunset-table entry);
+    # ``successor`` is the migration hint for retired rows.
+    lifecycle: str = "ACTIVE"
+    sunset_at: datetime | None = None
+    successor: str | None = None
     confidence: str = "VERIFIED"
     enabled: bool = True
     display_enabled: bool = True

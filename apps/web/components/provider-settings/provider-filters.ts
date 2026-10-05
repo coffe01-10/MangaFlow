@@ -102,6 +102,7 @@ export function providerMatchesQuery(
 export function filterModels<T extends Pick<
   ModelCapability,
   "model_type" | "operations" | "confidence" | "display_enabled" | "edit_modes"
+  | "lifecycle"
 >>(
   models: T[],
   options: {
@@ -109,9 +110,12 @@ export function filterModels<T extends Pick<
     capability: CapabilityFilter;
     verifiedOnly: boolean;
     showHidden?: boolean;
+    /** P0-2: DEPRECATED/EOL rows fold into a retired group by default. */
+    showRetired?: boolean;
   },
 ) {
   return models.filter((model) => {
+    if (!options.showRetired && (model.lifecycle ?? "ACTIVE") !== "ACTIVE") return false;
     if (!options.showHidden && !model.display_enabled) return false;
     if (options.modelType !== "ALL" && model.model_type !== options.modelType) return false;
     if (options.capability !== "ALL") {

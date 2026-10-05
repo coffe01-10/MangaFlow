@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -41,7 +42,17 @@ from app.services.credential_source import (
     environment_credentials_ready,
 )
 from app.services.model_registry import ModelCapability, build_registry
+from app.services.model_sunsets import (
+    LIFECYCLE_ACTIVE,
+    LIFECYCLE_EOL,
+    lifecycle_successor_hint,
+    lifecycle_sunset_at,
+    model_lifecycle_state,
+    sunset_entry,
+)
 from app.services.provider_presets import ensure_provider_presets, proxy_url_for_connection
+
+LOGGER = logging.getLogger("mangaflow.model_router")
 
 ALIAS_ALIASES = {
     "image.fast": "image.nano_banana_2",
@@ -109,6 +120,72 @@ TASK_KIND_EDIT_MODE = {
 }
 
 
+# P0-2 lifecycle boundary (docs/market-research/功能计划建议.md): task kinds
+# that maintain an already-adopted candidate's lifecycle — repair, upscale
+# and region regeneration enter through inspection.py:247/383 and
+# candidate_lineage REGION_JOB_TYPE — may still dispatch on a DEPRECATED or
+# EOL model with a WARN, because "retired" means "cannot open new pages",
+# not "cannot finish a page already in production". Every other explicit
+# dispatch of a retired model is a new paid artifact and is refused with a
+# migration hint; AUTO candidates exclude non-ACTIVE rows unconditionally.
+LIFECYCLE_DERIVED_TASK_KINDS = frozenset(
+    {"PAGE_REPAIR", "PAGE_UPSCALE", "PAGE_REGION_REGENERATE"}
+)
+
+
+def _lifecycle_refusal_detail(
+    db: Session, model: AIModel, lifecycle: str
+) -> dict[str, Any]:
+    """409 payload for a retired model: which state plus how to migrate.
+
+    The successor hint prefers the hand-maintained sunset table's declared
+    successor; absent that, the same connection's best ACTIVE+VERIFIED row
+    covering the retired model's operations is suggested.
+    """
+
+    hint = lifecycle_successor_hint(model)
+    if hint is None:
+        successors = db.scalars(
+            select(AIModel)
+            .where(
+                AIModel.connection_id == model.connection_id,
+                AIModel.id != model.id,
+                AIModel.lifecycle == LIFECYCLE_ACTIVE,
+                AIModel.confidence == "VERIFIED",
+                AIModel.enabled.is_(True),
+            )
+            .order_by(AIModel.priority.desc(), AIModel.display_name)
+        )
+        wanted = set(model.operations or [])
+        successor = next(
+            (
+                row
+                for row in successors
+                if wanted and wanted.issubset(set(row.operations or []))
+            ),
+            None,
+        )
+        if successor is not None:
+            hint = successor.legacy_alias or successor.provider_model_id
+    sunset_at = lifecycle_sunset_at(model)
+    return {
+        "code": "MODEL_EOL" if lifecycle == LIFECYCLE_EOL else "MODEL_DEPRECATED",
+        "message": (
+            "所选模型已被官方下线，不能再执行生成任务"
+            if lifecycle == LIFECYCLE_EOL
+            else "所选模型已退役，不能用于新的生成任务（已采用候选的修复/升清仍可使用）"
+        ),
+        "lifecycle": lifecycle,
+        "sunset_at": sunset_at.isoformat() if sunset_at is not None else None,
+        "successor": hint,
+        "source_url": (
+            entry.source_url
+            if (entry := sunset_entry(model.provider_model_id)) is not None
+            else None
+        ),
+    }
+
+
 def _required_edit_mode(task_kind: str | None) -> str | None:
     return TASK_KIND_EDIT_MODE.get(task_kind or "")
 
@@ -154,7 +231,9 @@ def resolve_model(
         if model is None:
             raise HTTPException(status_code=422, detail="未识别的模型")
         resolved = _resolved_row(db, model)
-        _require_eligible(resolved, operation, explicit=True, task_kind=task_kind)
+        _require_eligible(
+            resolved, operation, explicit=True, task_kind=task_kind, db=db
+        )
         _require_available_credentials(db, settings, resolved, explicit=True)
         return resolved
 
@@ -162,11 +241,18 @@ def resolve_model(
     if policy and policy.mode == "EXPLICIT":
         raise HTTPException(status_code=409, detail="当前任务策略要求显式选择模型")
     candidates: list[ResolvedModel] = []
-    for model in db.scalars(select(AIModel).where(AIModel.enabled.is_(True))):
+    for model in db.scalars(
+        select(AIModel).where(
+            AIModel.enabled.is_(True),
+            # AUTO routing never touches retired rows — no exception for
+            # derived-maintenance task kinds (P0-2).
+            AIModel.lifecycle == LIFECYCLE_ACTIVE,
+        )
+    ):
         resolved = _resolved_row(db, model)
         try:
             _require_eligible(
-                resolved, operation, explicit=False, task_kind=task_kind
+                resolved, operation, explicit=False, task_kind=task_kind, db=db
             )
         except HTTPException:
             continue
@@ -326,6 +412,7 @@ def _require_eligible(
     *,
     explicit: bool,
     task_kind: str | None = None,
+    db: Session | None = None,
 ) -> None:
     if (
         not resolved.model.enabled
@@ -333,6 +420,40 @@ def _require_eligible(
         or not resolved.provider.enabled
     ):
         raise HTTPException(status_code=409, detail="模型或供应商当前已停用")
+    # P0-2 lifecycle gate. DEPRECATED/EOL rows are refused for new-artifact
+    # dispatches and always excluded from AUTO; derived maintenance kinds
+    # (repair/upscale/region of an adopted candidate) pass with a WARN so an
+    # in-production page keeps its repair channel. ``model_lifecycle_state``
+    # reads the sunset table first, so a row stamped ACTIVE but officially
+    # shut down still refuses here.
+    lifecycle = model_lifecycle_state(resolved.model)
+    if lifecycle != LIFECYCLE_ACTIVE:
+        if explicit and task_kind in LIFECYCLE_DERIVED_TASK_KINDS:
+            LOGGER.warning(
+                "dispatching %s on %s model %s (%s); "
+                "successor=%s",
+                task_kind,
+                lifecycle,
+                resolved.model.id,
+                resolved.model.provider_model_id,
+                lifecycle_successor_hint(resolved.model) or "-",
+            )
+        elif db is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=_lifecycle_refusal_detail(db, resolved.model, lifecycle),
+            )
+        else:
+            # Callers without a session (none today) get the string detail —
+            # same refusal, degraded migration hint.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "所选模型已被官方下线"
+                    if lifecycle == LIFECYCLE_EOL
+                    else "所选模型已退役，不能用于新的生成任务"
+                ),
+            )
     if operation not in (resolved.model.operations or []):
         raise HTTPException(status_code=422, detail="所选模型不支持当前任务")
     if resolved.connection.protocol == "ANTHROPIC" and operation.startswith("image_"):

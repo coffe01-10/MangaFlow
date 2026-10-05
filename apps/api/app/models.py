@@ -1594,6 +1594,13 @@ class AIModel(Timestamped, Base):
     __table_args__ = (
         UniqueConstraint("connection_id", "provider_model_id"),
         Index("ix_ai_models_type_enabled", "model_type", "enabled"),
+        Index("ix_ai_models_lifecycle", "lifecycle"),
+        # P0-2 模型目录生命周期: ACTIVE(可选可生成) / DEPRECATED(历史可读,
+        # 新产物生成被路由拒绝, 派生修复 WARN 通行) / EOL(官方下线, 只读)。
+        CheckConstraint(
+            "lifecycle IN ('ACTIVE', 'DEPRECATED', 'EOL')",
+            name="ck_ai_models_lifecycle",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -1616,6 +1623,17 @@ class AIModel(Timestamped, Base):
     source: Mapped[str] = mapped_column(String(24), default="DISCOVERED")
     confidence: Mapped[str] = mapped_column(String(24), default="DECLARED")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # P0-2 lifecycle state persisted per catalog row. ACTIVE rows dispatch
+    # normally; DEPRECATED stays history-readable but refuses new-artifact
+    # task kinds (repair/upscale/region of an adopted candidate still pass
+    # with a WARN); EOL mirrors the provider's announced shutdown and is
+    # refused everywhere. The authoritative EOL source is the hand-maintained
+    # sunset table in ``services/model_sunsets.py``; ``sunset_at`` records the
+    # announced retirement date when one is known.
+    lifecycle: Mapped[str] = mapped_column(String(16), default="ACTIVE")
+    sunset_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Creator-facing display preference only. It must not participate in
     # availability, routing, or provider-preset synchronization.
     display_enabled: Mapped[bool] = mapped_column(Boolean, default=True)

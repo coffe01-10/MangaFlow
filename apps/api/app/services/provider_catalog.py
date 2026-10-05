@@ -54,6 +54,9 @@ from app.services.credential_source import (
     default_cli_executable_for_protocol,
     environment_credentials_ready,
 )
+from app.services.model_sunsets import (
+    sunset_state,
+)
 from app.services.provider_presets import (
     ANTHROPIC_ENDPOINTS,
     OPENAI_ENDPOINTS,
@@ -1116,6 +1119,11 @@ def _upsert_discovered_models(
         if not provider_model_id:
             continue
         metadata = _infer_model(entry, provider_model_id, connection)
+        # P0-2: the hand-maintained sunset table overrides whatever lifecycle
+        # the row carried — a listed model stamps DEPRECATED/EOL (its history
+        # stays readable; ``enabled`` is untouched), and a maintained ACTIVE
+        # row is never auto-revived when the provider re-lists the id.
+        sunset_lifecycle = sunset_state(provider_model_id)
         model = existing.get(provider_model_id)
         if model is None:
             model = AIModel(
@@ -1127,6 +1135,8 @@ def _upsert_discovered_models(
                 source="DISCOVERED",
                 **metadata,
             )
+            if sunset_lifecycle is not None:
+                model.lifecycle = sunset_lifecycle
             db.add(model)
         elif model.source != "MANUAL":
             current_capabilities = dict(model.capabilities or {})
@@ -1175,6 +1185,11 @@ def _upsert_discovered_models(
             )
             for key, value in metadata.items():
                 setattr(model, key, value)
+            if sunset_lifecycle is not None:
+                model.lifecycle = sunset_lifecycle
+            # No else: lifecycle is never auto-revived by rediscovery — an
+            # operator-set DEPRECATED/EOL row on an unlisted model stays
+            # retired, and a listed row only ever moves toward retirement.
         result.append(model)
     db.flush()
     return result

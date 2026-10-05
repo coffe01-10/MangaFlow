@@ -150,6 +150,11 @@ class ProviderModelRead(BaseModel):
     source: str
     confidence: str
     enabled: bool
+    # P0-2 catalog lifecycle (services/model_sunsets.py): ACTIVE rows are
+    # dispatchable, DEPRECATED stays readable but refuses new-artifact task
+    # kinds, EOL mirrors a provider shutdown.
+    lifecycle: str = "ACTIVE"
+    sunset_at: datetime | None = None
     display_enabled: bool
     priority: int
     success_rate: float | None
@@ -292,12 +297,26 @@ class ProviderModelUpdate(BaseModel):
     pricing: dict[str, Any] | None = None
     enabled: bool | None = None
     display_enabled: bool | None = None
+    # P0-2 lifecycle management: operators retire/reactivate catalog rows
+    # through PATCH; sunset_at records the announced retirement date.
+    lifecycle: Literal["ACTIVE", "DEPRECATED", "EOL"] | None = None
+    sunset_at: datetime | None = None
     priority: int | None = Field(default=None, ge=0, le=100)
     version: VersionToken
 
     _validated_capabilities = field_validator("capabilities", mode="after")(
         validate_model_capabilities_payload
     )
+
+    @model_validator(mode="after")
+    def validate_lifecycle_sunset(self):
+        # Naive datetimes would silently lose the operator's intended zone;
+        # the pricing validator above sets the same precedent.
+        if self.sunset_at is not None:
+            if self.sunset_at.utcoffset() is None:
+                raise ValueError("sunset_at 必须包含明确时区")
+            self.sunset_at = self.sunset_at.astimezone(UTC)
+        return self
 
 
 class ModelVisibilityBatchItem(BaseModel):

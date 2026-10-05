@@ -84,6 +84,18 @@ export type { AssetWorkspaceView, WorkspaceSection } from "./project-workspace/t
  * gate stays the authoritative fence.
  */
 function editModeGate(model: ModelCapability): { disabled: boolean; disabledReason?: string } {
+  // P0-2 lifecycle gate first: a DEPRECATED/EOL row that survived filtering
+  // only because it is bound to this project must not be a new-pick option —
+  // it renders disabled with the migration hint instead.
+  const lifecycle = model.lifecycle ?? "ACTIVE";
+  if (lifecycle !== "ACTIVE") {
+    return {
+      disabled: true,
+      disabledReason: lifecycle === "EOL"
+        ? `模型已被官方下线${model.successor ? `，建议迁移到 ${model.successor}` : ""}`
+        : `模型已退役${model.sunset_at ? `（${model.sunset_at.slice(0, 10)}）` : ""}，建议迁移${model.successor ? `到 ${model.successor}` : "到其他可用模型"}`,
+    };
+  }
   if (editModeSupported(model, "whole_image_reference")) return { disabled: false };
   return {
     disabled: true,

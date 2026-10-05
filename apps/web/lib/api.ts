@@ -62,6 +62,15 @@ export interface ModelCapability {
   edit_modes?: Record<string, { supported: boolean; source: string }>;
   resolution_tiers?: { name: string; supported: boolean; source: string }[];
   media?: Record<string, { supported: boolean; source: string }>;
+  /**
+   * P0-2 catalog lifecycle: ACTIVE rows are dispatchable; DEPRECATED stays
+   * readable but refuses new-artifact task kinds (repair/upscale of an
+   * adopted candidate still pass); EOL is a provider shutdown. `sunset_at`
+   * is the announced retirement date, `successor` the migration hint.
+   */
+  lifecycle?: "ACTIVE" | "DEPRECATED" | "EOL";
+  sunset_at?: string | null;
+  successor?: string | null;
   confidence: string;
   enabled: boolean;
   display_enabled: boolean;
@@ -175,6 +184,9 @@ export interface ProviderModel {
   api_surfaces: string[];
   capabilities: Record<string, unknown>;
   enabled: boolean;
+  /** P0-2 catalog lifecycle state; see ModelCapability.lifecycle. */
+  lifecycle?: "ACTIVE" | "DEPRECATED" | "EOL";
+  sunset_at?: string | null;
   display_enabled: boolean;
   priority: number;
   confidence: string;
@@ -1689,6 +1701,13 @@ export const api = {
     request<ModelVisibilityBatchResult>("/providers/models/visibility", {
       method: "PATCH",
       body: JSON.stringify({ items, display_enabled: displayEnabled }),
+    }),
+  // P0-2 lifecycle management: retire/reactivate a catalog row and record
+  // the announced sunset date.
+  updateProviderModelLifecycle: (modelId: string, lifecycle: "ACTIVE" | "DEPRECATED" | "EOL", version: number, sunsetAt?: string | null) =>
+    request<ProviderModel>(`/providers/models/${modelId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ lifecycle, sunset_at: sunsetAt ?? undefined, version }),
     }),
   testProviderConnection: (connectionId: string, payload: { test_type: "CREDENTIALS" | "TEXT" | "VISION" | "IMAGE" | "BENCHMARK"; model_id?: string; acknowledge_cost?: boolean; runs?: number }) =>
     request<ModelProbe>(`/providers/connections/${connectionId}/test`, { method: "POST", body: JSON.stringify(payload) }),

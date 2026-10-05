@@ -54,6 +54,10 @@ API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标�
 
 设置页通过 `GET /providers/connections/{id}/models` 读取连接下的完整管理目录。单行偏好沿用 `PATCH /providers/models/{id}` 的乐观版本锁；批量偏好使用 `PATCH /providers/models/visibility`，每项携带期望版本并独立提交。批量响应分别列出成功项以及模型缺失、连接缺失、版本冲突项；重复写入相同目标值不会增加版本。`GET /models` 始终返回包含隐藏模型的完整目录，并分别提供 `enabled` 与 `display_enabled`。
 
+## 模型生命周期
+
+目录模型除 `enabled`/`display_enabled` 外有第三个正交状态 `lifecycle`（`ACTIVE`/`DEPRECATED`/`EOL`）与 `sunset_at` 退役日期。EOL 的权威来源是 `services/model_sunsets.py` 中人工维护的 sunset 表（随版本发布更新，不写进数据库），读口 `model_lifecycle_state` 先查表后读列；`DEPRECATED`/`EOL` 行历史可读（`enabled` 不动、审计与引用保留），但 `resolve_model` 对显式新产物任务返回 409 并携带迁移提示（sunset 表 `successor_hint` 或同连接同操作的 ACTIVE+VERIFIED 行），`PAGE_REPAIR`/`PAGE_UPSCALE`/`PAGE_REGION_REGENERATE` 派生维护任务以 WARN 放行，AUTO 候选循环无条件排除非 ACTIVE 行。模型发现同步把 sunset 表命中行自动标为 `EOL`/`DEPRECATED`，同名模型重新发现不自动复活。EOL 行的 `MODEL_SMOKE` 探测直接拒绝而不把健康状态写成故障。
+
 ## 路由与审计
 
 显式选择使用模型目录 ID 或兼容旧别名；选择 `auto` 时按可靠性、优先级、延迟和相对成本评分。项目可保存默认文字模型及上次图片模型。每次生成记录实际供应商、协议、目录模型、上游模型 ID、路由原因、提示词校验和、引用资产、用量和输出。

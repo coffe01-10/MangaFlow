@@ -169,6 +169,8 @@ stateDiagram-v2
 
 `AIModel.capabilities` 在 V02-44B 四个区域编辑布尔位之外承载结构化能力维度（P0-1，契约见 `docs/v02-image-edit-capability-matrix.md` §9）：`edit_modes`（mask/instruction_region/whole_image_reference/in_image_text_edit）、`resolution_tiers`（每档 `{supported, source}`）、`media`（video/audio 预留 UNKNOWN 槽位），来源统一挂在 `capability_sources` 图；所有维度 fail-closed，缺失/UNSPECIFIED 一律按不支持读取，迁移 `20261005_32` 不改表结构也不回填——读路径兜底。
 
+`AIModel.lifecycle`（P0-2，`20261005_33` 迁移，表上首个 `CheckConstraint`）区分 `ACTIVE`/`DEPRECATED`/`EOL`：`sunset_at` 记录官方公告的退役日期，`services/model_sunsets.py` 的人工维护表（`provider_model_id → sunset_date/eol_date/source_url/successor_hint`）是 EOL 的权威来源并在读口覆盖列值；`DEPRECATED`/`EOL` 行不删数据、不改 `enabled`，新产物生成任务被 `model_router` 以 409+迁移提示拒绝，`PAGE_REPAIR`/`PAGE_UPSCALE`/`PAGE_REGION_REGENERATE` 以 WARN 放行，AUTO 候选循环在 SQL 层 `lifecycle == 'ACTIVE'` 排除；`catalog_model_is_available` 以 `phase` 参数区分 catalog（计数仍含退役行）与 dispatch 语义。
+
 `CLIExecutionRun` 保存一次外部 CLI 派发的持久状态，并关联 `GenerationJob`、唯一的 `ModelCallAttempt`、连接和目录模型。数据库只保存 run token、相对目录、请求 checksum、输出清单、日志 checksum、退出码、错误与清理状态；prompt、参考图和诊断正文留在受控 run 目录。`(connection_id, lease_slot)` 唯一约束提供硬并发名额，终态释放槽位。迁移 `20260831_22` 新建该表；存在审计行时拒绝降级。
 
 ```json

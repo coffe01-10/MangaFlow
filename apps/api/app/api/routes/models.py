@@ -19,6 +19,11 @@ from app.services.model_capabilities import (
     region_capability_source,
     resolution_tier_map,
 )
+from app.services.model_sunsets import (
+    lifecycle_successor_hint,
+    lifecycle_sunset_at,
+    model_lifecycle_state,
+)
 from app.services.provider_presets import ensure_provider_presets
 
 router = APIRouter()
@@ -67,6 +72,7 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                 settings, connection.protocol
             ),
         )
+        lifecycle = model_lifecycle_state(model)
         catalog.append(
             {
                 "catalog_id": model.id,
@@ -114,6 +120,16 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                     ).items()
                 ],
                 "media": media_capability_summary(model.capabilities),
+                # P0-2 lifecycle: sunset table overrides the stored column
+                # (a provider shutdown is factual even before an operator
+                # flips the row); ``successor`` carries the migration hint.
+                "lifecycle": lifecycle,
+                "sunset_at": lifecycle_sunset_at(model),
+                "successor": (
+                    lifecycle_successor_hint(model)
+                    if lifecycle != "ACTIVE"
+                    else None
+                ),
                 "confidence": model.confidence,
                 "enabled": available,
                 "display_enabled": model.display_enabled,

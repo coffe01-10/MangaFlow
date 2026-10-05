@@ -657,6 +657,11 @@ def test_model_display_preference_migration_preserves_existing_model(
             ).mappings().one()
         )
     assert after.pop("display_enabled") == 1
+    # P0-2 (20261005_33) added lifecycle/sunset_at as nullable/defaulted
+    # columns after this test's snapshot point — additive schema, so the
+    # preserved-data assertion compares only the pre-existing columns.
+    assert after.pop("lifecycle") == "ACTIVE"
+    assert after.pop("sunset_at") is None
     assert after == before
     engine.dispose()
 
