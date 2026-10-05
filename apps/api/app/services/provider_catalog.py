@@ -1076,6 +1076,29 @@ def discover_models(
         raise HTTPException(status_code=502, detail="无法读取供应商模型列表") from error
 
 
+# Capability keys ``_infer_model`` writes from a provider listing. The
+# verification-preserving compare below fingerprints only these keys, so
+# admin-declared or preset-declared dimensions (region bits, edit_modes,
+# resolution_tiers, media, provenance maps, verified_operations) never read
+# as capability drift on rediscovery.
+_DISCOVERY_CAPABILITY_KEYS: tuple[str, ...] = (
+    "structured_output_mode",
+    "supported_parameters",
+    "context_length",
+    "resolutions",
+    "max_reference_images",
+    "size_map",
+)
+
+
+def _discovery_capability_fingerprint(capabilities: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: capabilities.get(key)
+        for key in _DISCOVERY_CAPABILITY_KEYS
+        if key in capabilities
+    }
+
+
 def _upsert_discovered_models(
     db: Session, connection: ProviderConnection, entries: list[dict]
 ) -> list[AIModel]:
@@ -1117,9 +1140,29 @@ def _upsert_discovered_models(
                     "operations",
                     "api_surfaces",
                 )
-            ) and current_capabilities == metadata["capabilities"]
+            # P0-1: compare only the dimensions discovery itself infers.
+            # Admin/preset-declared keys (edit_modes, resolution_tiers,
+            # media, the region bits and both provenance maps) must not look
+            # like capability drift and wipe a real VERIFIED verdict.
+            ) and _discovery_capability_fingerprint(
+                current_capabilities
+            ) == _discovery_capability_fingerprint(metadata["capabilities"])
             if preserve_verification:
                 metadata["confidence"] = model.confidence
+                # Non-discovery keys are declaration-only dimensions (admin
+                # or preset writes): keep them across the fresh inference so
+                # rediscovery does not silently strip edit_modes/media/
+                # provenance declarations off a VERIFIED row.
+                declared_extras = {
+                    key: value
+                    for key, value in current_capabilities.items()
+                    if key not in _DISCOVERY_CAPABILITY_KEYS
+                    and key != "verified_operations"
+                }
+                metadata["capabilities"] = {
+                    **metadata["capabilities"],
+                    **declared_extras,
+                }
                 if verified_operations is not None:
                     metadata["capabilities"] = {
                         **metadata["capabilities"],

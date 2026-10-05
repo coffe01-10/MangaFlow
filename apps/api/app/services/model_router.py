@@ -79,6 +79,16 @@ def get_catalog_model(db: Session, reference: str) -> AIModel | None:
 
 
 def model_supports_resolution(model: AIModel, resolution: str) -> bool:
+    # The structured resolution_tiers map (P0-1) is authoritative when
+    # declared: only tiers explicitly marked supported pass, so a declared
+    # map that omits a resolution refuses it. When the map is absent the
+    # legacy ``resolutions`` list keeps its "absent = no constraint"
+    # semantics.
+    declared_tiers = (model.capabilities or {}).get("resolution_tiers")
+    if isinstance(declared_tiers, dict):
+        tiers = model_capabilities.resolution_tier_map(model.capabilities)
+        entry = tiers.get(resolution)
+        return bool(entry and entry["supported"])
     supported = (model.capabilities or {}).get("resolutions") or []
     if isinstance(supported, str):
         supported = [supported]
@@ -87,6 +97,20 @@ def model_supports_resolution(model: AIModel, resolution: str) -> bool:
     if not isinstance(supported, (list, tuple, set)):
         return False
     return resolution in supported
+
+
+# task_kind → required structured edit mode (P0-1). Region regeneration is
+# the only dispatch that requires explicit-mask editing; other image tasks
+# either generate from scratch or degrade to whole-image reference edits,
+# which stay governed by the operation gate. The worker re-checks the same
+# bit before the paid call (worker_handlers/page_generate.py).
+TASK_KIND_EDIT_MODE = {
+    "PAGE_REGION_REGENERATE": model_capabilities.EDIT_MODE_MASK,
+}
+
+
+def _required_edit_mode(task_kind: str | None) -> str | None:
+    return TASK_KIND_EDIT_MODE.get(task_kind or "")
 
 
 def model_supports_explicit_mask(model: AIModel) -> bool:
@@ -130,7 +154,7 @@ def resolve_model(
         if model is None:
             raise HTTPException(status_code=422, detail="未识别的模型")
         resolved = _resolved_row(db, model)
-        _require_eligible(resolved, operation, explicit=True)
+        _require_eligible(resolved, operation, explicit=True, task_kind=task_kind)
         _require_available_credentials(db, settings, resolved, explicit=True)
         return resolved
 
@@ -141,7 +165,9 @@ def resolve_model(
     for model in db.scalars(select(AIModel).where(AIModel.enabled.is_(True))):
         resolved = _resolved_row(db, model)
         try:
-            _require_eligible(resolved, operation, explicit=False)
+            _require_eligible(
+                resolved, operation, explicit=False, task_kind=task_kind
+            )
         except HTTPException:
             continue
         if policy and not set(policy.required_operations or []).issubset(
@@ -295,7 +321,11 @@ def _resolved_row(db: Session, model: AIModel) -> ResolvedModel:
 
 
 def _require_eligible(
-    resolved: ResolvedModel, operation: str, *, explicit: bool
+    resolved: ResolvedModel,
+    operation: str,
+    *,
+    explicit: bool,
+    task_kind: str | None = None,
 ) -> None:
     if (
         not resolved.model.enabled
@@ -307,6 +337,22 @@ def _require_eligible(
         raise HTTPException(status_code=422, detail="所选模型不支持当前任务")
     if resolved.connection.protocol == "ANTHROPIC" and operation.startswith("image_"):
         raise HTTPException(status_code=422, detail="Anthropic 协议连接不支持图片生成任务")
+    required_edit_mode = _required_edit_mode(task_kind)
+    if required_edit_mode and not model_capabilities.model_edit_mode_supported(
+        resolved.model, required_edit_mode
+    ):
+        # P0-1 fail-closed edit-mode gate: a region task bound to a model
+        # whose catalog row does not declare the required edit mode refuses
+        # here — before any paid call — instead of degrading to a whole-page
+        # edit. The worker re-checks the same bit at dispatch time.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "所选模型不具备本任务所需的编辑模式（"
+                f"{model_capabilities.EDIT_MODE_LABELS.get(required_edit_mode, required_edit_mode)}"
+                "）"
+            ),
+        )
     if not explicit and not model_operation_verified(resolved.model, operation):
         raise HTTPException(status_code=409, detail="未经能力测试的模型不能参与自动路由")
     if not explicit and resolved.connection.health_state != "HEALTHY":
@@ -404,6 +450,31 @@ def _declared_or_fallback_references(capabilities: dict, fallback: int) -> int:
     return int(fallback or 0)
 
 
+def _catalog_resolutions(capabilities: dict, fallback: tuple) -> tuple:
+    """Supported resolution names for the adapter request surface.
+
+    The structured ``resolution_tiers`` map (P0-1) is authoritative when
+    declared; otherwise the legacy ``resolutions`` list — then the registry
+    fallback — supplies the names. A declared tier map that supports nothing
+    correctly yields an empty tuple (the adapter refuses every resolution).
+    """
+
+    if isinstance(capabilities.get("resolution_tiers"), dict):
+        return tuple(
+            name
+            for name, entry in model_capabilities.resolution_tier_map(
+                capabilities
+            ).items()
+            if entry["supported"]
+        )
+    raw = capabilities.get("resolutions", fallback)
+    if isinstance(raw, str):
+        return (raw,)
+    if isinstance(raw, (list, tuple)):
+        return tuple(item for item in raw if isinstance(item, str))
+    return tuple(fallback or ())
+
+
 def _catalog_capability(
     model: AIModel,
     provider_name: str,
@@ -421,7 +492,7 @@ def _catalog_capability(
         logical_alias=model.legacy_alias or model.id,
         display_name=model.display_name,
         operations=tuple(model.operations or []),
-        resolutions=tuple(capabilities.get("resolutions", fallback_resolutions) or ()),
+        resolutions=_catalog_resolutions(capabilities, fallback_resolutions),
         preview_resolutions=tuple(
             capabilities.get("preview_resolutions", fallback_preview_resolutions) or ()
         ),

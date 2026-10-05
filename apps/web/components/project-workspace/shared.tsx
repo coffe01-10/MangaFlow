@@ -12,12 +12,41 @@ export function ImageModelPicker({
 }: {
   selected: ImageModelAlias | null;
   onSelect: (model: ImageModelAlias) => void;
-  options: { alias: ImageModelAlias; name: string; id: string; provider: string }[];
+  options: {
+    alias: ImageModelAlias;
+    name: string;
+    id: string;
+    provider: string;
+    /** P0-1: mark options whose declared edit modes do not satisfy the
+     * current task — they stay visible but cannot be picked. */
+    disabled?: boolean;
+    disabledReason?: string;
+  }[];
   label?: string;
 }) {
   return <div className="model-picker">
     {label && <p>{label}</p>}
-    <div className="model-duel">{options.map((option) => <button type="button" aria-pressed={selected === option.alias} key={option.alias} className={selected === option.alias ? "model-choice active" : "model-choice"} onClick={() => onSelect(option.alias)}><Sparkles size={18} /><span><strong>{option.name}</strong><small>{option.provider} · {option.id}</small></span>{selected === option.alias && <Check size={15} />}</button>)}</div>
+    <div className="model-duel">{options.map((option) => (
+      <button
+        type="button"
+        aria-pressed={selected === option.alias}
+        key={option.alias}
+        className={selected === option.alias ? "model-choice active" : "model-choice"}
+        disabled={option.disabled}
+        title={option.disabled ? option.disabledReason : undefined}
+        onClick={() => onSelect(option.alias)}
+      >
+        <Sparkles size={18} />
+        <span>
+          <strong>{option.name}</strong>
+          <small>{option.provider} · {option.id}</small>
+          {option.disabled && option.disabledReason
+            ? <small className="model-choice-blocked">{option.disabledReason}</small>
+            : null}
+        </span>
+        {selected === option.alias && <Check size={15} />}
+      </button>
+    ))}</div>
     {!options.length && <p className="form-error"><CircleAlert size={14} />暂无已启用且支持参考图编辑的图片模型，请先到系统设置配置供应商。</p>}
   </div>;
 }

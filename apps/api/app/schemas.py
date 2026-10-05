@@ -215,6 +215,17 @@ class AssetUpdate(BaseModel):
         return self
 
 
+class CapabilityEntryRead(BaseModel):
+    """One ``{supported, source}`` structured capability declaration (P0-1)."""
+
+    supported: bool = False
+    source: str = "UNSPECIFIED"
+
+
+class ResolutionTierRead(CapabilityEntryRead):
+    name: str
+
+
 class ModelCapabilityRead(BaseModel):
     catalog_id: str | None = None
     connection_id: str | None = None
@@ -239,6 +250,12 @@ class ModelCapabilityRead(BaseModel):
     preserves_outside_region: bool = False
     whole_image_reference_only: bool = False
     region_capability_sources: dict[str, str] = Field(default_factory=dict)
+    # P0-1 structured dimensions: normalized edit modes, per-resolution
+    # tiers, and reserved video/audio media slots — every entry carries
+    # supported+source and undeclared values stay UNSPECIFIED.
+    edit_modes: dict[str, CapabilityEntryRead] = Field(default_factory=dict)
+    resolution_tiers: list[ResolutionTierRead] = Field(default_factory=list)
+    media: dict[str, CapabilityEntryRead] = Field(default_factory=dict)
     confidence: str = "VERIFIED"
     enabled: bool = True
     display_enabled: bool = True

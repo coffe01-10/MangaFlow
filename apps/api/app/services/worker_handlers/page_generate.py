@@ -42,9 +42,10 @@ from app.services.media import (
     remove_thumbnails,
 )
 from app.services.model_capabilities import (
+    EDIT_MODE_MASK,
     REGION_EDIT_SURFACE_LABELS,
+    model_edit_mode_supported,
     model_region_edit_surface,
-    model_supports_explicit_mask,
 )
 from app.services.model_router import model_supports_resolution
 from app.services.ordinal_allocator import lock_entity
@@ -726,10 +727,12 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     )
     candidate.catalog_model_id = binding.resolved.model.id
     job.catalog_model_id = binding.resolved.model.id
-    if job.job_type == "PAGE_REGION_REGENERATE" and not model_supports_explicit_mask(
-        binding.resolved.model
+    if job.job_type == "PAGE_REGION_REGENERATE" and not model_edit_mode_supported(
+        binding.resolved.model, EDIT_MODE_MASK
     ):
-        # V02-44B defense in depth: a region job whose model lost (or never
+        # V02-44B defense in depth, re-read through the P0-1 structured
+        # edit_modes contract (the read port still honors the legacy
+        # accepts_explicit_mask bit): a region job whose model lost (or never
         # had) the explicit-mask capability fails closed before the paid call
         # — no attempt, no artifact, never a silent whole-page degrade and
         # never a fallback onto another model/provider.

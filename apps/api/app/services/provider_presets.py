@@ -13,7 +13,11 @@ from app.services.credential_source import (
     credential_source_for_protocol,
     default_cli_executable_for_protocol,
 )
-from app.services.model_capabilities import whole_image_reference_edit_capabilities
+from app.services.model_capabilities import (
+    declare_resolution_tiers,
+    merge_capability_fragments,
+    whole_image_reference_edit_capabilities,
+)
 
 OPENAI_ENDPOINTS = {
     "models": "/models",
@@ -521,15 +525,20 @@ def _ensure_vertex_models(db: Session, settings: Settings) -> None:
             "output_modalities": ["IMAGE"],
             "operations": ["image_generate", "image_edit"],
             "api_surfaces": ["GOOGLE_GENERATE_CONTENT"],
-            "capabilities": {
-                "resolutions": ["1K", "2K", "4K"],
-                "preview_resolutions": ["4K"],
-                "max_reference_images": 14,
+            "capabilities": merge_capability_fragments(
+                {
+                    "resolutions": ["1K", "2K", "4K"],
+                    "preview_resolutions": ["4K"],
+                    "max_reference_images": 14,
+                },
+                # P0-1: the declared resolution list is mirrored into the
+                # structured tier map; video/audio stay explicit UNKNOWN.
+                declare_resolution_tiers({"1K": True, "2K": True, "4K": True}),
                 # V02-44B matrix §1.2/§6: the adapter surface has no mask
                 # parameter, so the preset declares whole-image-reference-only
                 # instead of pretending native inpaint exists.
-                **whole_image_reference_edit_capabilities(),
-            },
+                whole_image_reference_edit_capabilities(),
+            ),
         },
         {
             "legacy_alias": "image.nano_banana_pro",
@@ -540,12 +549,15 @@ def _ensure_vertex_models(db: Session, settings: Settings) -> None:
             "output_modalities": ["IMAGE"],
             "operations": ["image_generate", "image_edit"],
             "api_surfaces": ["GOOGLE_GENERATE_CONTENT"],
-            "capabilities": {
-                "resolutions": ["1K", "2K", "4K"],
-                "preview_resolutions": ["4K"],
-                "max_reference_images": 14,
-                **whole_image_reference_edit_capabilities(),
-            },
+            "capabilities": merge_capability_fragments(
+                {
+                    "resolutions": ["1K", "2K", "4K"],
+                    "preview_resolutions": ["4K"],
+                    "max_reference_images": 14,
+                },
+                declare_resolution_tiers({"1K": True, "2K": True, "4K": True}),
+                whole_image_reference_edit_capabilities(),
+            ),
         },
     )
     for definition in definitions:
@@ -595,14 +607,17 @@ def _ensure_codex_cli_model(db: Session) -> None:
             output_modalities=["IMAGE"],
             operations=["image_generate", "image_edit"],
             api_surfaces=["CODEX_EXEC_IMAGEGEN"],
-            capabilities={
-                "resolutions": ["1K"],
-                "max_reference_images": 5,
-                "cost_source": "CLI_EXTERNAL",
+            capabilities=merge_capability_fragments(
+                {
+                    "resolutions": ["1K"],
+                    "max_reference_images": 5,
+                    "cost_source": "CLI_EXTERNAL",
+                },
+                declare_resolution_tiers({"1K": True}),
                 # V02-44B: CLI image edit is a whole-image reference call with
                 # no mask request surface.
-                **whole_image_reference_edit_capabilities(),
-            },
+                whole_image_reference_edit_capabilities(),
+            ),
             pricing={"mode": "UNKNOWN"},
             source="PRESET",
             confidence="DECLARED",
@@ -641,13 +656,16 @@ def _ensure_antigravity_cli_model(db: Session) -> None:
             output_modalities=["IMAGE"],
             operations=["image_generate", "image_edit"],
             api_surfaces=["ANTIGRAVITY_HEADLESS_GENERATE_IMAGE"],
-            capabilities={
-                "resolutions": ["1K"],
-                "max_reference_images": 1,
-                "cost_source": "CLI_EXTERNAL",
+            capabilities=merge_capability_fragments(
+                {
+                    "resolutions": ["1K"],
+                    "max_reference_images": 1,
+                    "cost_source": "CLI_EXTERNAL",
+                },
+                declare_resolution_tiers({"1K": True}),
                 # V02-44B: single-reference whole-image edit, no mask surface.
-                **whole_image_reference_edit_capabilities(),
-            },
+                whole_image_reference_edit_capabilities(),
+            ),
             pricing={"mode": "UNKNOWN"},
             source="PRESET",
             confidence="DECLARED",
@@ -686,14 +704,17 @@ def _ensure_grok_build_cli_model(db: Session) -> None:
             output_modalities=["IMAGE"],
             operations=["image_generate", "image_edit"],
             api_surfaces=["GROK_BUILD_MEDIA_TOOLS"],
-            capabilities={
-                "resolutions": ["1K"],
-                "max_reference_images": 5,
-                "cost_source": "CLI_EXTERNAL",
+            capabilities=merge_capability_fragments(
+                {
+                    "resolutions": ["1K"],
+                    "max_reference_images": 5,
+                    "cost_source": "CLI_EXTERNAL",
+                },
+                declare_resolution_tiers({"1K": True}),
                 # V02-44B: media-tool image edit is whole-image reference, no
                 # mask request surface.
-                **whole_image_reference_edit_capabilities(),
-            },
+                whole_image_reference_edit_capabilities(),
+            ),
             pricing={"mode": "UNKNOWN"},
             source="PRESET",
             confidence="DECLARED",

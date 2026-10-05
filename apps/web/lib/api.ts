@@ -53,6 +53,15 @@ export interface ModelCapability {
   preserves_outside_region?: boolean;
   whole_image_reference_only?: boolean;
   region_capability_sources?: Record<string, string>;
+  /**
+   * P0-1 structured capability dimensions. Every entry is
+   * `{ supported, source }`; absent/UNSPECIFIED never reads as supported.
+   * `edit_modes` keys: mask | instruction_region | whole_image_reference |
+   * in_image_text_edit. `media` holds the reserved video/audio slots.
+   */
+  edit_modes?: Record<string, { supported: boolean; source: string }>;
+  resolution_tiers?: { name: string; supported: boolean; source: string }[];
+  media?: Record<string, { supported: boolean; source: string }>;
   confidence: string;
   enabled: boolean;
   display_enabled: boolean;

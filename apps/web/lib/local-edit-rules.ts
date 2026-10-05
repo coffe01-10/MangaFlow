@@ -320,6 +320,54 @@ export function maskCapabilityNotice(models: MaskModel[]): string | null {
   return "当前模型不能按选区重绘：目录中没有已启用且声明显式 mask 能力（accepts_explicit_mask）的模型。可选：到系统设置更换/启用支持 mask 局部编辑的模型，或取消本次局部编辑。局部编辑不会按整页重绘降级。";
 }
 
+/**
+ * P0-1 structured edit modes (services/model_capabilities.py mirror).
+ * `edit_modes` is authoritative when declared; an absent map falls back to
+ * the V02-44B boolean bits so pre-P0-1 catalog rows keep meaning. Anything
+ * undeclared/UNSPECIFIED reads as unsupported — never guessed true.
+ */
+export type EditMode =
+  | "mask"
+  | "instruction_region"
+  | "whole_image_reference"
+  | "in_image_text_edit";
+
+export type EditModeCapableModel = Pick<ModelCapability, "edit_modes"> &
+  Partial<Pick<
+    ModelCapability,
+    | "accepts_explicit_mask"
+    | "supports_instruction_region_edit"
+    | "whole_image_reference_only"
+  >>;
+
+const EDIT_MODE_LEGACY_BIT: Record<
+  EditMode,
+  | "accepts_explicit_mask"
+  | "supports_instruction_region_edit"
+  | "whole_image_reference_only"
+  | null
+> = {
+  mask: "accepts_explicit_mask",
+  instruction_region: "supports_instruction_region_edit",
+  whole_image_reference: "whole_image_reference_only",
+  in_image_text_edit: null,
+};
+
+export const EDIT_MODE_LABELS: Record<EditMode, string> = {
+  mask: "显式 mask 局部编辑",
+  instruction_region: "instruction 区域编辑",
+  whole_image_reference: "整图参考编辑",
+  in_image_text_edit: "图中文字原位编辑",
+};
+
+export function editModeSupported(model: EditModeCapableModel, mode: EditMode): boolean {
+  const declared = model.edit_modes?.[mode];
+  if (declared !== undefined) return declared.supported === true;
+  const legacy = EDIT_MODE_LEGACY_BIT[mode];
+  if (!legacy) return false;
+  return model[legacy] === true;
+}
+
 export interface LocalEditGateInput {
   hasMask: boolean;
   instruction: string;

@@ -83,6 +83,10 @@ export function ProviderToolbar({
             <option value="multimodal_analysis">视觉理解</option>
             <option value="image_generate">图片生成</option>
             <option value="image_edit">图片编辑</option>
+            <option value="edit_mask">编辑模式：mask 局部</option>
+            <option value="edit_instruction_region">编辑模式：instruction 区域</option>
+            <option value="edit_whole_image_reference">编辑模式：整图参考</option>
+            <option value="edit_in_image_text">编辑模式：图中文字</option>
           </select>
         </label>
         <label className="provider-check" title="自动路由只使用已验证模型">

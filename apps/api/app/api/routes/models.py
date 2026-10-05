@@ -13,8 +13,11 @@ from app.services.model_availability import (
 from app.services.model_capabilities import (
     REGION_CAPABILITY_KEYS,
     capability_reference_limit,
+    edit_mode_summary,
+    media_capability_summary,
     region_capability_enabled,
     region_capability_source,
+    resolution_tier_map,
 )
 from app.services.provider_presets import ensure_provider_presets
 
@@ -99,6 +102,18 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                     key: region_capability_source(model.capabilities, key)
                     for key in REGION_CAPABILITY_KEYS
                 },
+                # P0-1 structured capability dimensions: normalized edit
+                # modes (with legacy-bit fallback), resolution tiers and the
+                # reserved video/audio slots — all fail-closed with
+                # provenance.
+                "edit_modes": edit_mode_summary(model.capabilities),
+                "resolution_tiers": [
+                    {"name": name, **entry}
+                    for name, entry in resolution_tier_map(
+                        model.capabilities
+                    ).items()
+                ],
+                "media": media_capability_summary(model.capabilities),
                 "confidence": model.confidence,
                 "enabled": available,
                 "display_enabled": model.display_enabled,

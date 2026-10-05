@@ -167,6 +167,8 @@ stateDiagram-v2
 
 `AIModel.enabled` 是持久的调用开关，目录响应的 `enabled` 是当前可用性的派生值，`display_enabled` 只是 UI 展示偏好。三者不得互相覆盖；隐藏模型仍保留真实目录 ID、路由资格、任务引用和审计历史。既有模型经 `20260830_20` 迁移默认回填为展示，新建与发现模型也默认展示。存在隐藏偏好时迁移拒绝降级，避免静默丢失用户设置。
 
+`AIModel.capabilities` 在 V02-44B 四个区域编辑布尔位之外承载结构化能力维度（P0-1，契约见 `docs/v02-image-edit-capability-matrix.md` §9）：`edit_modes`（mask/instruction_region/whole_image_reference/in_image_text_edit）、`resolution_tiers`（每档 `{supported, source}`）、`media`（video/audio 预留 UNKNOWN 槽位），来源统一挂在 `capability_sources` 图；所有维度 fail-closed，缺失/UNSPECIFIED 一律按不支持读取，迁移 `20261005_32` 不改表结构也不回填——读路径兜底。
+
 `CLIExecutionRun` 保存一次外部 CLI 派发的持久状态，并关联 `GenerationJob`、唯一的 `ModelCallAttempt`、连接和目录模型。数据库只保存 run token、相对目录、请求 checksum、输出清单、日志 checksum、退出码、错误与清理状态；prompt、参考图和诊断正文留在受控 run 目录。`(connection_id, lease_slot)` 唯一约束提供硬并发名额，终态释放槽位。迁移 `20260831_22` 新建该表；存在审计行时拒绝降级。
 
 ```json
@@ -181,7 +183,10 @@ stateDiagram-v2
   "operations": ["image_generate", "image_edit"],
   "resolutions": ["1K", "2K", "4K"],
   "preview_resolutions": ["4K"],
-  "regions": ["global"]
+  "regions": ["global"],
+  "edit_modes": {"mask": {"supported": false, "source": "DECLARED"}, "whole_image_reference": {"supported": true, "source": "DECLARED"}},
+  "resolution_tiers": {"1K": {"supported": true, "source": "DECLARED"}},
+  "media": {"video": {"supported": false, "source": "UNSPECIFIED"}}
 }
 ```
 

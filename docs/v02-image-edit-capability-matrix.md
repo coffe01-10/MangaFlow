@@ -91,6 +91,24 @@
 3. `NOT RUN`：未调用任何真实供应商（无 mask/inpaint 实测、无计费实测）；未运行真实 PostgreSQL/Redis/生产 Worker；未运行浏览器 E2E。
 4. "落盘失败后重试重新付费"与"未决 attempt 无补偿扫描"为现状已知缺口，本轮只记录不修复。
 
+## 9. 结构化能力维度（P0-1，2026-10-05 落地）
+
+在 §7.2 冻结位之上新增结构化维度，全部继续挂在 `ai_models.capabilities` JSON、全部 fail-closed；**初值口径**：新维度一律 UNKNOWN/UNSPECIFIED 起步，仅官方文档或适配器请求表面可核实项由实现侧填 `DECLARED`，无法核实的留 UNSPECIFIED 由能力探针按 VERIFIED 机制补齐。
+
+| 维度 | 键 | 取值 | 读口 | 语义 |
+| --- | --- | --- | --- | --- |
+| 编辑模式 | `edit_modes` | `{mask, instruction_region, whole_image_reference, in_image_text_edit}` → `{supported, source}` | `edit_mode_supported` / `edit_mode_summary`（`model_capabilities.py`） | 声明模型可表达的编辑请求表面；`mask`/`instruction_region`/`whole_image_reference` 与 §7.2 三个布尔位一一对应（缺省时读口回退旧位），`in_image_text_edit` 无旧位、只走结构化键 |
+| 分辨率档位 | `resolution_tiers` | `{分辨率名: {supported, source}}` | `resolution_tier_map` / `capability_resolution_supported` / `model_router.model_supports_resolution` | 声明档位存在且受支持；声明过的 tier map 为权威，缺省仍回落旧 `resolutions` 列表语义（空=不限） |
+| 媒体槽位 | `media` | `{video, audio}` → `{supported, source}` | `media_capability_summary` | 预留位，默认 `{supported: false, source: UNSPECIFIED}` |
+| 统一 provenance | `capability_sources` | `{维度[.子键]: DECLARED|DISCOVERED|VERIFIED|UNSPECIFIED}` | `_structured_source` | 与 `region_capability_sources` 并存；新维度的来源统一挂此图 |
+
+- **写路径**：`provider_schemas.validate_model_capabilities_payload` 对 `edit_modes`/`resolution_tiers`/`media`/两个 source 图做形状与枚举校验，毒值 422。
+- **路由消费**：`model_router.TASK_KIND_EDIT_MODE` 把 `PAGE_REGION_REGENERATE` 映射到 `mask` 并在 `_require_eligible` 做编辑模式门禁；`model_supports_resolution` 与 `_catalog_capability` 优先读 `resolution_tiers`。
+- **Worker 消费**：`page_generate` 局部重抽卡 mask 门改经 `model_edit_mode_supported` 读新位（旧位回退保持既有行为）；`provider._validate_reference_capacity` 继续按 `max_reference_images` 槽位上限比对。
+- **发现合并**：`provider_catalog._discovery_capability_fingerprint` 只比较发现推断出的键（`structured_output_mode`/`supported_parameters`/`context_length`/`resolutions`/`max_reference_images`/`size_map`），管理端声明的新维度不再触发"能力漂移"误判而清掉 VERIFIED。
+- **序列化**：`GET /models` 输出 `edit_modes`（每模式 `{supported, source}`）、`resolution_tiers`（`{name, supported, source}` 列表）、`media`；旧位与 `region_capability_sources` 原样保留。
+- **前端**：`api.ts ModelCapability` 增加 `edit_modes`/`resolution_tiers`/`media`；`provider-filters` 的 `CapabilityFilter` 增加 `edit_mask`/`edit_instruction_region`/`edit_whole_image_reference`/`edit_in_image_text` 四个编辑模式筛选项；`connection-panel` 手工添加图片模型时可勾选编辑模式声明；`project-workspace` 的选择器把"本页所需编辑模式不满足"的模型渲染为禁用态而非静默隐藏。
+
 ## 8. 验收矩阵（可拆实现 Issue）
 
 | # | 层 | 场景 | 环境 |

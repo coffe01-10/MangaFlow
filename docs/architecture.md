@@ -139,7 +139,7 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 ## 7. 多供应商模型适配
 
-`ProviderProfile → ProviderConnection → ProviderKey / AIModel` 构成供应商目录。连接定义协议、Base URL、端点模板、非敏感请求头、余额规则和唯一健康状态；协议能力声明模型发现与支持的模型类型，凭据来源声明为连接 Key、服务端环境账号或第三方管理的 CLI 会话。模型定义文字/图片类型、模态、操作、能力置信度与探测指标。区域编辑能力位（`accepts_explicit_mask` 等，见 `services/model_capabilities.py`）按模型逐位声明且 fail-closed，路由层与 Worker 在付费调用前按位门禁，缺能力一律确定性拒绝，不自动换模型或整页降级。所有协议使用相同的连接健康、目录、验证和任务绑定契约；适配器内部保留真实传输差异，但不形成 UI 排名、默认模型或自动路由加分。详细规则见 [`provider-platform.md`](provider-platform.md)。
+`ProviderProfile → ProviderConnection → ProviderKey / AIModel` 构成供应商目录。连接定义协议、Base URL、端点模板、非敏感请求头、余额规则和唯一健康状态；协议能力声明模型发现与支持的模型类型，凭据来源声明为连接 Key、服务端环境账号或第三方管理的 CLI 会话。模型定义文字/图片类型、模态、操作、能力置信度与探测指标。区域编辑能力位（`accepts_explicit_mask` 等，见 `services/model_capabilities.py`）按模型逐位声明且 fail-closed，路由层与 Worker 在付费调用前按位门禁，缺能力一律确定性拒绝，不自动换模型或整页降级。能力声明已细化为结构化维度（P0-1）：`edit_modes`（mask/instruction_region/whole_image_reference/in_image_text_edit）、`resolution_tiers`、预留 `media`（video/audio）槽位与统一 `capability_sources` 来源图；读口对缺省维度一律 UNSPECIFIED/不支持，写路径经 `validate_model_capabilities_payload` 校验，路由按任务所需编辑模式（`PAGE_REGION_REGENERATE` → mask）门禁，发现合并只比较探测键指纹而不把管理端声明误判为能力漂移。所有协议使用相同的连接健康、目录、验证和任务绑定契约；适配器内部保留真实传输差异，但不形成 UI 排名、默认模型或自动路由加分。详细规则见 [`provider-platform.md`](provider-platform.md)。
 
 | 协议 | 凭据来源 | 模型发现 | 目录模型类型 |
 | --- | --- | --- | --- |

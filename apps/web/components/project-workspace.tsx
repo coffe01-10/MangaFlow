@@ -1,7 +1,8 @@
 "use client";
 
 import { AppShell } from "@/components/shell";
-import { api, type ImageModelAlias, type PageCandidate, type Project, type Script } from "@/lib/api";
+import { api, type ImageModelAlias, type ModelCapability, type PageCandidate, type Project, type Script } from "@/lib/api";
+import { EDIT_MODE_LABELS, editModeSupported } from "@/lib/local-edit-rules";
 import { useLocalStorageValue, writeLocalStorage } from "@/lib/local-storage-store";
 import { creatorVisibleModels } from "@/lib/model-visibility";
 import { clampSidebarWidth, storedSidebarWidth } from "@/lib/workspace-layout";
@@ -73,6 +74,22 @@ import {
 } from "./project-workspace/workspace-chrome";
 
 export type { AssetWorkspaceView, WorkspaceSection } from "./project-workspace/types";
+
+/**
+ * P0-1 edit-mode gate for workspace model pickers. The pickers feed
+ * reference-driven edit/generate dispatch, so the required mode is
+ * `whole_image_reference` (the lowest-declared reference-edit surface).
+ * Fail-closed mirrors the backend: a catalog row that never declares the
+ * mode is shown disabled instead of being silently picked — the backend
+ * gate stays the authoritative fence.
+ */
+function editModeGate(model: ModelCapability): { disabled: boolean; disabledReason?: string } {
+  if (editModeSupported(model, "whole_image_reference")) return { disabled: false };
+  return {
+    disabled: true,
+    disabledReason: `本页所需编辑模式不满足：目录未声明「${EDIT_MODE_LABELS.whole_image_reference}」`,
+  };
+}
 
 export default function ProjectWorkspace({
   section,
@@ -193,6 +210,7 @@ export default function ProjectWorkspace({
         name: model.display_name,
         id: model.model_id,
         provider: model.provider,
+        ...editModeGate(model),
       }));
     },
     [models.data],
@@ -206,6 +224,7 @@ export default function ProjectWorkspace({
       name: model.display_name,
       id: model.model_id,
       provider: model.provider,
+      ...editModeGate(model),
     })),
     [drawModel, models.data],
   );
