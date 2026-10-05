@@ -122,7 +122,16 @@ def mask_capable_model(db_session):
     capable = db_session.scalar(
         select(AIModel).where(AIModel.legacy_alias == "image.nano_banana_2")
     )
-    capable.capabilities = {**(capable.capabilities or {}), "accepts_explicit_mask": True}
+    capable.capabilities = {
+        **(capable.capabilities or {}),
+        "accepts_explicit_mask": True,
+        # P0-1: the structured edit_modes map is authoritative when declared,
+        # so the preset row's mask grant must move into edit_modes.mask too.
+        "edit_modes": {
+            **((capable.capabilities or {}).get("edit_modes") or {}),
+            "mask": {"supported": True, "source": "DECLARED"},
+        },
+    }
     db_session.commit()
     return capable
 
@@ -318,7 +327,16 @@ def test_l3_b2_region_requests_fail_closed_without_mask_or_capability(
     capable = db_session.scalar(
         select(AIModel).where(AIModel.legacy_alias == unsupported_alias)
     )
-    capable.capabilities = {**(capable.capabilities or {}), "accepts_explicit_mask": True}
+    capable.capabilities = {
+        **(capable.capabilities or {}),
+        "accepts_explicit_mask": True,
+        # P0-1: the structured edit_modes map is authoritative when declared,
+        # so the preset row's mask grant must move into edit_modes.mask too.
+        "edit_modes": {
+            **((capable.capabilities or {}).get("edit_modes") or {}),
+            "mask": {"supported": True, "source": "DECLARED"},
+        },
+    }
     db_session.commit()
     retry_command_id = _uid()
     retry = _envelope(
