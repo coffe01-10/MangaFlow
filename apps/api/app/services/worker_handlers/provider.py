@@ -470,12 +470,23 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
         if binding.selected_key:
             _record_key_and_connection_failure(db, binding, error)
             if error.code in {"AUTHENTICATION", "PERMISSION", "RATE_LIMIT"}:
+                # The key-swap retry must rebind under the same task kind as
+                # the initial dispatch: derived-maintenance kinds
+                # (PAGE_REPAIR/PAGE_UPSCALE/PAGE_REGION_REGENERATE) pass the
+                # lifecycle gate on a retired model via task_kind — omitting
+                # it here would turn a retryable key failure into a 409 and
+                # strand a job the entry dispatch deliberately allowed.
+                retry_task_kind = None
+                if job_id:
+                    job = db.get(GenerationJob, job_id)
+                    retry_task_kind = job.job_type if job is not None else None
                 try:
                     replacement = bind_adapter(
                         db,
                         get_settings(),
                         operation=binding.resolved.model.operations[0],
                         explicit_reference=binding.resolved.model.id,
+                        task_kind=retry_task_kind,
                     )
                 except HTTPException:
                     replacement = None
@@ -633,6 +644,17 @@ def _text_model_reference(job: GenerationJob, project: Project) -> str | None:
 
 
 def _validate_reference_capacity(binding: AdapterBinding, count: int) -> None:
+    """Compare this page's reference-image slot count against the catalog's
+    declared multi-image input limit (P0-1).
+
+    ``max_reference_images`` is a slot bound: the caller passes the number of
+    reference slots this task's request occupies (original page + selected
+    character/outfit/scene/style references), and a catalog declaration below
+    that fails closed before the paid call. Undeclared/malformed limits keep
+    the documented "no declared bound" semantics — readers must not invent a
+    ceiling for a model that never stated one.
+    """
+
     configured = capability_reference_limit(binding.resolved.model.capabilities)
     if configured is not None and count > configured:
         raise ProviderAdapterError(

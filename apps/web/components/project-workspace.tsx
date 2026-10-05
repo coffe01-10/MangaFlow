@@ -1,7 +1,8 @@
 "use client";
 
 import { AppShell } from "@/components/shell";
-import { api, type ImageModelAlias, type PageCandidate, type Project, type Script } from "@/lib/api";
+import { api, type ImageModelAlias, type ModelCapability, type PageCandidate, type Project, type Script } from "@/lib/api";
+import { EDIT_MODE_LABELS, editModeSupported } from "@/lib/local-edit-rules";
 import { useLocalStorageValue, writeLocalStorage } from "@/lib/local-storage-store";
 import { creatorVisibleModels } from "@/lib/model-visibility";
 import { clampSidebarWidth, storedSidebarWidth } from "@/lib/workspace-layout";
@@ -73,6 +74,41 @@ import {
 } from "./project-workspace/workspace-chrome";
 
 export type { AssetWorkspaceView, WorkspaceSection } from "./project-workspace/types";
+
+/**
+ * P0-1 edit-mode gate for workspace model pickers. The pickers feed
+ * reference-driven edit/generate dispatch, so the required mode is
+ * `whole_image_reference` (the lowest-declared reference-edit surface).
+ * Fail-closed mirrors the backend: a catalog row that never declares the
+ * mode is shown disabled instead of being silently picked — the backend
+ * gate stays the authoritative fence.
+ *
+ * Deliberate declaration-forcing policy (P0-1): models that declare
+ * `image_edit` without any edit-mode surface are disabled here even though
+ * the backend only gates PAGE_REGION_REGENERATE on edit modes. The reason
+ * copy stays neutral — "not declared yet" rather than a capability verdict —
+ * so an undeclared-but-workable model reads as a catalog-hygiene task, not a
+ * broken model.
+ */
+function editModeGate(model: ModelCapability): { disabled: boolean; disabledReason?: string } {
+  // P0-2 lifecycle gate first: a DEPRECATED/EOL row that survived filtering
+  // only because it is bound to this project must not be a new-pick option —
+  // it renders disabled with the migration hint instead.
+  const lifecycle = model.lifecycle ?? "ACTIVE";
+  if (lifecycle !== "ACTIVE") {
+    return {
+      disabled: true,
+      disabledReason: lifecycle === "EOL"
+        ? `模型已被官方下线${model.successor ? `，建议迁移到 ${model.successor}` : ""}`
+        : `模型已退役${model.sunset_at ? `（${model.sunset_at.slice(0, 10)}）` : ""}，建议迁移${model.successor ? `到 ${model.successor}` : "到其他可用模型"}`,
+    };
+  }
+  if (editModeSupported(model, "whole_image_reference")) return { disabled: false };
+  return {
+    disabled: true,
+    disabledReason: `模型未声明编辑模式（「${EDIT_MODE_LABELS.whole_image_reference}」等）；请先在设置页为该模型补充编辑模式声明后再选`,
+  };
+}
 
 export default function ProjectWorkspace({
   section,
@@ -193,6 +229,7 @@ export default function ProjectWorkspace({
         name: model.display_name,
         id: model.model_id,
         provider: model.provider,
+        ...editModeGate(model),
       }));
     },
     [models.data],
@@ -206,6 +243,7 @@ export default function ProjectWorkspace({
       name: model.display_name,
       id: model.model_id,
       provider: model.provider,
+      ...editModeGate(model),
     })),
     [drawModel, models.data],
   );

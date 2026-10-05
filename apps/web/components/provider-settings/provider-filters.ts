@@ -7,7 +7,20 @@ export type CapabilityFilter =
   | "structured_text"
   | "multimodal_analysis"
   | "image_generate"
-  | "image_edit";
+  | "image_edit"
+  // P0-1 structured edit-mode filters: match on the normalized edit_modes
+  // declaration (fail-closed — absent/UNSPECIFIED never counts).
+  | "edit_mask"
+  | "edit_instruction_region"
+  | "edit_whole_image_reference"
+  | "edit_in_image_text";
+
+const EDIT_MODE_FILTER_MAP: Record<string, string> = {
+  edit_mask: "mask",
+  edit_instruction_region: "instruction_region",
+  edit_whole_image_reference: "whole_image_reference",
+  edit_in_image_text: "in_image_text_edit",
+};
 
 const healthOrder: Record<string, number> = {
   HEALTHY: 0,
@@ -88,7 +101,8 @@ export function providerMatchesQuery(
 
 export function filterModels<T extends Pick<
   ModelCapability,
-  "model_type" | "operations" | "confidence" | "display_enabled"
+  "model_type" | "operations" | "confidence" | "display_enabled" | "edit_modes"
+  | "lifecycle"
 >>(
   models: T[],
   options: {
@@ -96,12 +110,22 @@ export function filterModels<T extends Pick<
     capability: CapabilityFilter;
     verifiedOnly: boolean;
     showHidden?: boolean;
+    /** P0-2: DEPRECATED/EOL rows fold into a retired group by default. */
+    showRetired?: boolean;
   },
 ) {
   return models.filter((model) => {
+    if (!options.showRetired && (model.lifecycle ?? "ACTIVE") !== "ACTIVE") return false;
     if (!options.showHidden && !model.display_enabled) return false;
     if (options.modelType !== "ALL" && model.model_type !== options.modelType) return false;
-    if (options.capability !== "ALL" && !model.operations.includes(options.capability)) return false;
+    if (options.capability !== "ALL") {
+      const editMode = EDIT_MODE_FILTER_MAP[options.capability];
+      if (editMode) {
+        if (model.edit_modes?.[editMode]?.supported !== true) return false;
+      } else if (!model.operations.includes(options.capability)) {
+        return false;
+      }
+    }
     if (options.verifiedOnly && model.confidence !== "VERIFIED") return false;
     return true;
   });

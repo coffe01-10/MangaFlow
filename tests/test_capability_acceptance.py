@@ -528,7 +528,16 @@ def test_region_job_with_declared_capability_keeps_ledger_consistent(
     model = db_session.scalar(
         select(AIModel).where(AIModel.legacy_alias == "image.nano_banana_2")
     )
-    model.capabilities = {**(model.capabilities or {}), "accepts_explicit_mask": True}
+    model.capabilities = {
+        **(model.capabilities or {}),
+        "accepts_explicit_mask": True,
+        # P0-1: the structured edit_modes map is authoritative when declared,
+        # so the preset row's mask grant must move into edit_modes.mask too.
+        "edit_modes": {
+            **((model.capabilities or {}).get("edit_modes") or {}),
+            "mask": {"supported": True, "source": "DECLARED"},
+        },
+    }
     db_session.commit()
 
     adapter = FakeAcceptanceImageAdapter()
@@ -573,7 +582,16 @@ def test_cancelled_region_job_stops_before_paid_call(
     model = db_session.scalar(
         select(AIModel).where(AIModel.legacy_alias == "image.nano_banana_2")
     )
-    model.capabilities = {**(model.capabilities or {}), "accepts_explicit_mask": True}
+    model.capabilities = {
+        **(model.capabilities or {}),
+        "accepts_explicit_mask": True,
+        # P0-1: the structured edit_modes map is authoritative when declared,
+        # so the preset row's mask grant must move into edit_modes.mask too.
+        "edit_modes": {
+            **((model.capabilities or {}).get("edit_modes") or {}),
+            "mask": {"supported": True, "source": "DECLARED"},
+        },
+    }
     db_session.commit()
 
     adapter = FakeAcceptanceImageAdapter()
@@ -603,7 +621,16 @@ def test_region_job_does_not_clobber_final_ready_page_status(
     model = db_session.scalar(
         select(AIModel).where(AIModel.legacy_alias == "image.nano_banana_2")
     )
-    model.capabilities = {**(model.capabilities or {}), "accepts_explicit_mask": True}
+    model.capabilities = {
+        **(model.capabilities or {}),
+        "accepts_explicit_mask": True,
+        # P0-1: the structured edit_modes map is authoritative when declared,
+        # so the preset row's mask grant must move into edit_modes.mask too.
+        "edit_modes": {
+            **((model.capabilities or {}).get("edit_modes") or {}),
+            "mask": {"supported": True, "source": "DECLARED"},
+        },
+    }
     db_session.commit()
 
     adapter = FakeAcceptanceImageAdapter()
@@ -642,7 +669,16 @@ def test_cancel_landing_after_paid_call_keeps_ledger_consistent(
     model = db_session.scalar(
         select(AIModel).where(AIModel.legacy_alias == "image.nano_banana_2")
     )
-    model.capabilities = {**(model.capabilities or {}), "accepts_explicit_mask": True}
+    model.capabilities = {
+        **(model.capabilities or {}),
+        "accepts_explicit_mask": True,
+        # P0-1: the structured edit_modes map is authoritative when declared,
+        # so the preset row's mask grant must move into edit_modes.mask too.
+        "edit_modes": {
+            **((model.capabilities or {}).get("edit_modes") or {}),
+            "mask": {"supported": True, "source": "DECLARED"},
+        },
+    }
     db_session.commit()
 
     adapter = FakeAcceptanceImageAdapter()

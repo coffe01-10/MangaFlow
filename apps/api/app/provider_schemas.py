@@ -150,6 +150,11 @@ class ProviderModelRead(BaseModel):
     source: str
     confidence: str
     enabled: bool
+    # P0-2 catalog lifecycle (services/model_sunsets.py): ACTIVE rows are
+    # dispatchable, DEPRECATED stays readable but refuses new-artifact task
+    # kinds, EOL mirrors a provider shutdown.
+    lifecycle: str = "ACTIVE"
+    sunset_at: datetime | None = None
     display_enabled: bool
     priority: int
     success_rate: float | None
@@ -162,6 +167,22 @@ class ProviderModelRead(BaseModel):
 
 _CAPABILITY_LIMIT_MAX = 100
 _CAPABILITY_LIST_MAX = 32
+
+_STRUCTURED_SOURCE_VALUES = ("DECLARED", "DISCOVERED", "VERIFIED", "UNSPECIFIED")
+_EDIT_MODE_KEYS = ("mask", "instruction_region", "whole_image_reference", "in_image_text_edit")
+_MEDIA_SLOTS = ("video", "audio")
+
+
+def _validate_capability_entry(value: Any, label: str) -> None:
+    """One ``{"supported": bool, "source": str}`` structured entry."""
+
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} 必须是包含 supported/source 的对象")
+    if not isinstance(value.get("supported"), bool):
+        raise ValueError(f"{label}.supported 必须是布尔值")
+    source = value.get("source")
+    if source is not None and source not in _STRUCTURED_SOURCE_VALUES:
+        raise ValueError(f"{label}.source 必须是 DECLARED/DISCOVERED/VERIFIED/UNSPECIFIED")
 
 
 def validate_model_capabilities_payload(
@@ -205,6 +226,44 @@ def validate_model_capabilities_payload(
             capabilities[key] = [declared]
         else:
             raise ValueError(f"{key} 必须是字符串列表")
+    # P0-1 structured dimensions (services/model_capabilities.py): validate
+    # entry shapes at the write boundary; readers stay fail-closed.
+    edit_modes = capabilities.get("edit_modes")
+    if edit_modes is not None:
+        if not isinstance(edit_modes, dict) or len(edit_modes) > _CAPABILITY_LIST_MAX:
+            raise ValueError("edit_modes 必须是编辑模式字典")
+        for mode, entry in edit_modes.items():
+            if not isinstance(mode, str) or mode not in _EDIT_MODE_KEYS:
+                raise ValueError(f"edit_modes 包含未知编辑模式：{mode!r}")
+            _validate_capability_entry(entry, f"edit_modes.{mode}")
+    tiers = capabilities.get("resolution_tiers")
+    if tiers is not None:
+        if not isinstance(tiers, dict) or len(tiers) > _CAPABILITY_LIST_MAX:
+            raise ValueError("resolution_tiers 必须是分辨率档位字典")
+        for name, entry in tiers.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("resolution_tiers 键必须是非空字符串")
+            _validate_capability_entry(entry, f"resolution_tiers.{name}")
+    media = capabilities.get("media")
+    if media is not None:
+        if not isinstance(media, dict):
+            raise ValueError("media 必须是槽位字典")
+        for slot, entry in media.items():
+            if slot not in _MEDIA_SLOTS:
+                raise ValueError(f"media 包含未知槽位：{slot!r}")
+            _validate_capability_entry(entry, f"media.{slot}")
+    for source_key in ("capability_sources", "region_capability_sources"):
+        sources = capabilities.get(source_key)
+        if sources is not None:
+            if not isinstance(sources, dict) or len(sources) > _CAPABILITY_LIMIT_MAX:
+                raise ValueError(f"{source_key} 必须是来源字典")
+            for path, source in sources.items():
+                if not isinstance(path, str):
+                    raise ValueError(f"{source_key} 键必须是字符串")
+                if source not in _STRUCTURED_SOURCE_VALUES:
+                    raise ValueError(
+                        f"{source_key}.{path} 必须是 DECLARED/DISCOVERED/VERIFIED/UNSPECIFIED"
+                    )
     return capabilities
 
 
@@ -238,12 +297,26 @@ class ProviderModelUpdate(BaseModel):
     pricing: dict[str, Any] | None = None
     enabled: bool | None = None
     display_enabled: bool | None = None
+    # P0-2 lifecycle management: operators retire/reactivate catalog rows
+    # through PATCH; sunset_at records the announced retirement date.
+    lifecycle: Literal["ACTIVE", "DEPRECATED", "EOL"] | None = None
+    sunset_at: datetime | None = None
     priority: int | None = Field(default=None, ge=0, le=100)
     version: VersionToken
 
     _validated_capabilities = field_validator("capabilities", mode="after")(
         validate_model_capabilities_payload
     )
+
+    @model_validator(mode="after")
+    def validate_lifecycle_sunset(self):
+        # Naive datetimes would silently lose the operator's intended zone;
+        # the pricing validator above sets the same precedent.
+        if self.sunset_at is not None:
+            if self.sunset_at.utcoffset() is None:
+                raise ValueError("sunset_at 必须包含明确时区")
+            self.sunset_at = self.sunset_at.astimezone(UTC)
+        return self
 
 
 class ModelVisibilityBatchItem(BaseModel):

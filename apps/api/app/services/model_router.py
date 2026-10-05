@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -41,7 +42,17 @@ from app.services.credential_source import (
     environment_credentials_ready,
 )
 from app.services.model_registry import ModelCapability, build_registry
+from app.services.model_sunsets import (
+    LIFECYCLE_ACTIVE,
+    LIFECYCLE_EOL,
+    lifecycle_successor_hint,
+    lifecycle_sunset_at,
+    model_lifecycle_state,
+    sunset_entry,
+)
 from app.services.provider_presets import ensure_provider_presets, proxy_url_for_connection
+
+LOGGER = logging.getLogger("mangaflow.model_router")
 
 ALIAS_ALIASES = {
     "image.fast": "image.nano_banana_2",
@@ -79,6 +90,16 @@ def get_catalog_model(db: Session, reference: str) -> AIModel | None:
 
 
 def model_supports_resolution(model: AIModel, resolution: str) -> bool:
+    # The structured resolution_tiers map (P0-1) is authoritative when
+    # declared: only tiers explicitly marked supported pass, so a declared
+    # map that omits a resolution refuses it. When the map is absent the
+    # legacy ``resolutions`` list keeps its "absent = no constraint"
+    # semantics.
+    declared_tiers = (model.capabilities or {}).get("resolution_tiers")
+    if isinstance(declared_tiers, dict):
+        tiers = model_capabilities.resolution_tier_map(model.capabilities)
+        entry = tiers.get(resolution)
+        return bool(entry and entry["supported"])
     supported = (model.capabilities or {}).get("resolutions") or []
     if isinstance(supported, str):
         supported = [supported]
@@ -87,6 +108,86 @@ def model_supports_resolution(model: AIModel, resolution: str) -> bool:
     if not isinstance(supported, (list, tuple, set)):
         return False
     return resolution in supported
+
+
+# task_kind → required structured edit mode (P0-1). Region regeneration is
+# the only dispatch that requires explicit-mask editing; other image tasks
+# either generate from scratch or degrade to whole-image reference edits,
+# which stay governed by the operation gate. The worker re-checks the same
+# bit before the paid call (worker_handlers/page_generate.py).
+TASK_KIND_EDIT_MODE = {
+    "PAGE_REGION_REGENERATE": model_capabilities.EDIT_MODE_MASK,
+}
+
+
+# P0-2 lifecycle boundary (docs/market-research/功能计划建议.md): task kinds
+# that maintain an already-adopted candidate's lifecycle — repair, upscale
+# and region regeneration enter through inspection.py:247/383 and
+# candidate_lineage REGION_JOB_TYPE — may still dispatch on a DEPRECATED or
+# EOL model with a WARN, because "retired" means "cannot open new pages",
+# not "cannot finish a page already in production". Every other explicit
+# dispatch of a retired model is a new paid artifact and is refused with a
+# migration hint; AUTO candidates exclude non-ACTIVE rows unconditionally.
+LIFECYCLE_DERIVED_TASK_KINDS = frozenset(
+    {"PAGE_REPAIR", "PAGE_UPSCALE", "PAGE_REGION_REGENERATE"}
+)
+
+
+def _lifecycle_refusal_detail(
+    db: Session, model: AIModel, lifecycle: str
+) -> dict[str, Any]:
+    """409 payload for a retired model: which state plus how to migrate.
+
+    The successor hint prefers the hand-maintained sunset table's declared
+    successor; absent that, the same connection's best ACTIVE+VERIFIED row
+    covering the retired model's operations is suggested.
+    """
+
+    hint = lifecycle_successor_hint(model)
+    if hint is None:
+        successors = db.scalars(
+            select(AIModel)
+            .where(
+                AIModel.connection_id == model.connection_id,
+                AIModel.id != model.id,
+                AIModel.lifecycle == LIFECYCLE_ACTIVE,
+                AIModel.confidence == "VERIFIED",
+                AIModel.enabled.is_(True),
+            )
+            .order_by(AIModel.priority.desc(), AIModel.display_name)
+        )
+        wanted = set(model.operations or [])
+        successor = next(
+            (
+                row
+                for row in successors
+                if wanted and wanted.issubset(set(row.operations or []))
+            ),
+            None,
+        )
+        if successor is not None:
+            hint = successor.legacy_alias or successor.provider_model_id
+    sunset_at = lifecycle_sunset_at(model)
+    return {
+        "code": "MODEL_EOL" if lifecycle == LIFECYCLE_EOL else "MODEL_DEPRECATED",
+        "message": (
+            "所选模型已被官方下线，不能再执行生成任务"
+            if lifecycle == LIFECYCLE_EOL
+            else "所选模型已退役，不能用于新的生成任务（已采用候选的修复/升清仍可使用）"
+        ),
+        "lifecycle": lifecycle,
+        "sunset_at": sunset_at.isoformat() if sunset_at is not None else None,
+        "successor": hint,
+        "source_url": (
+            entry.source_url
+            if (entry := sunset_entry(model.provider_model_id)) is not None
+            else None
+        ),
+    }
+
+
+def _required_edit_mode(task_kind: str | None) -> str | None:
+    return TASK_KIND_EDIT_MODE.get(task_kind or "")
 
 
 def model_supports_explicit_mask(model: AIModel) -> bool:
@@ -130,7 +231,9 @@ def resolve_model(
         if model is None:
             raise HTTPException(status_code=422, detail="未识别的模型")
         resolved = _resolved_row(db, model)
-        _require_eligible(resolved, operation, explicit=True)
+        _require_eligible(
+            resolved, operation, explicit=True, task_kind=task_kind, db=db
+        )
         _require_available_credentials(db, settings, resolved, explicit=True)
         return resolved
 
@@ -138,10 +241,19 @@ def resolve_model(
     if policy and policy.mode == "EXPLICIT":
         raise HTTPException(status_code=409, detail="当前任务策略要求显式选择模型")
     candidates: list[ResolvedModel] = []
-    for model in db.scalars(select(AIModel).where(AIModel.enabled.is_(True))):
+    for model in db.scalars(
+        select(AIModel).where(
+            AIModel.enabled.is_(True),
+            # AUTO routing never touches retired rows — no exception for
+            # derived-maintenance task kinds (P0-2).
+            AIModel.lifecycle == LIFECYCLE_ACTIVE,
+        )
+    ):
         resolved = _resolved_row(db, model)
         try:
-            _require_eligible(resolved, operation, explicit=False)
+            _require_eligible(
+                resolved, operation, explicit=False, task_kind=task_kind, db=db
+            )
         except HTTPException:
             continue
         if policy and not set(policy.required_operations or []).issubset(
@@ -295,7 +407,12 @@ def _resolved_row(db: Session, model: AIModel) -> ResolvedModel:
 
 
 def _require_eligible(
-    resolved: ResolvedModel, operation: str, *, explicit: bool
+    resolved: ResolvedModel,
+    operation: str,
+    *,
+    explicit: bool,
+    task_kind: str | None = None,
+    db: Session | None = None,
 ) -> None:
     if (
         not resolved.model.enabled
@@ -303,10 +420,60 @@ def _require_eligible(
         or not resolved.provider.enabled
     ):
         raise HTTPException(status_code=409, detail="模型或供应商当前已停用")
+    # P0-2 lifecycle gate. DEPRECATED/EOL rows are refused for new-artifact
+    # dispatches and always excluded from AUTO; derived maintenance kinds
+    # (repair/upscale/region of an adopted candidate) pass with a WARN so an
+    # in-production page keeps its repair channel. ``model_lifecycle_state``
+    # reads the sunset table first, so a row stamped ACTIVE but officially
+    # shut down still refuses here.
+    lifecycle = model_lifecycle_state(resolved.model)
+    if lifecycle != LIFECYCLE_ACTIVE:
+        if explicit and task_kind in LIFECYCLE_DERIVED_TASK_KINDS:
+            LOGGER.warning(
+                "dispatching %s on %s model %s (%s); "
+                "successor=%s",
+                task_kind,
+                lifecycle,
+                resolved.model.id,
+                resolved.model.provider_model_id,
+                lifecycle_successor_hint(resolved.model) or "-",
+            )
+        elif db is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=_lifecycle_refusal_detail(db, resolved.model, lifecycle),
+            )
+        else:
+            # Callers without a session (none today) get the string detail —
+            # same refusal, degraded migration hint.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "所选模型已被官方下线"
+                    if lifecycle == LIFECYCLE_EOL
+                    else "所选模型已退役，不能用于新的生成任务"
+                ),
+            )
     if operation not in (resolved.model.operations or []):
         raise HTTPException(status_code=422, detail="所选模型不支持当前任务")
     if resolved.connection.protocol == "ANTHROPIC" and operation.startswith("image_"):
         raise HTTPException(status_code=422, detail="Anthropic 协议连接不支持图片生成任务")
+    required_edit_mode = _required_edit_mode(task_kind)
+    if required_edit_mode and not model_capabilities.model_edit_mode_supported(
+        resolved.model, required_edit_mode
+    ):
+        # P0-1 fail-closed edit-mode gate: a region task bound to a model
+        # whose catalog row does not declare the required edit mode refuses
+        # here — before any paid call — instead of degrading to a whole-page
+        # edit. The worker re-checks the same bit at dispatch time.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "所选模型不具备本任务所需的编辑模式（"
+                f"{model_capabilities.EDIT_MODE_LABELS.get(required_edit_mode, required_edit_mode)}"
+                "）"
+            ),
+        )
     if not explicit and not model_operation_verified(resolved.model, operation):
         raise HTTPException(status_code=409, detail="未经能力测试的模型不能参与自动路由")
     if not explicit and resolved.connection.health_state != "HEALTHY":
@@ -404,6 +571,31 @@ def _declared_or_fallback_references(capabilities: dict, fallback: int) -> int:
     return int(fallback or 0)
 
 
+def _catalog_resolutions(capabilities: dict, fallback: tuple) -> tuple:
+    """Supported resolution names for the adapter request surface.
+
+    The structured ``resolution_tiers`` map (P0-1) is authoritative when
+    declared; otherwise the legacy ``resolutions`` list — then the registry
+    fallback — supplies the names. A declared tier map that supports nothing
+    correctly yields an empty tuple (the adapter refuses every resolution).
+    """
+
+    if isinstance(capabilities.get("resolution_tiers"), dict):
+        return tuple(
+            name
+            for name, entry in model_capabilities.resolution_tier_map(
+                capabilities
+            ).items()
+            if entry["supported"]
+        )
+    raw = capabilities.get("resolutions", fallback)
+    if isinstance(raw, str):
+        return (raw,)
+    if isinstance(raw, (list, tuple)):
+        return tuple(item for item in raw if isinstance(item, str))
+    return tuple(fallback or ())
+
+
 def _catalog_capability(
     model: AIModel,
     provider_name: str,
@@ -421,7 +613,7 @@ def _catalog_capability(
         logical_alias=model.legacy_alias or model.id,
         display_name=model.display_name,
         operations=tuple(model.operations or []),
-        resolutions=tuple(capabilities.get("resolutions", fallback_resolutions) or ()),
+        resolutions=_catalog_resolutions(capabilities, fallback_resolutions),
         preview_resolutions=tuple(
             capabilities.get("preview_resolutions", fallback_preview_resolutions) or ()
         ),

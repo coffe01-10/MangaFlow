@@ -54,6 +54,9 @@ from app.services.credential_source import (
     default_cli_executable_for_protocol,
     environment_credentials_ready,
 )
+from app.services.model_sunsets import (
+    sunset_state,
+)
 from app.services.provider_presets import (
     ANTHROPIC_ENDPOINTS,
     OPENAI_ENDPOINTS,
@@ -1076,6 +1079,29 @@ def discover_models(
         raise HTTPException(status_code=502, detail="无法读取供应商模型列表") from error
 
 
+# Capability keys ``_infer_model`` writes from a provider listing. The
+# verification-preserving compare below fingerprints only these keys, so
+# admin-declared or preset-declared dimensions (region bits, edit_modes,
+# resolution_tiers, media, provenance maps, verified_operations) never read
+# as capability drift on rediscovery.
+_DISCOVERY_CAPABILITY_KEYS: tuple[str, ...] = (
+    "structured_output_mode",
+    "supported_parameters",
+    "context_length",
+    "resolutions",
+    "max_reference_images",
+    "size_map",
+)
+
+
+def _discovery_capability_fingerprint(capabilities: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: capabilities.get(key)
+        for key in _DISCOVERY_CAPABILITY_KEYS
+        if key in capabilities
+    }
+
+
 def _upsert_discovered_models(
     db: Session, connection: ProviderConnection, entries: list[dict]
 ) -> list[AIModel]:
@@ -1093,6 +1119,11 @@ def _upsert_discovered_models(
         if not provider_model_id:
             continue
         metadata = _infer_model(entry, provider_model_id, connection)
+        # P0-2: the hand-maintained sunset table overrides whatever lifecycle
+        # the row carried — a listed model stamps DEPRECATED/EOL (its history
+        # stays readable; ``enabled`` is untouched), and a maintained ACTIVE
+        # row is never auto-revived when the provider re-lists the id.
+        sunset_lifecycle = sunset_state(provider_model_id)
         model = existing.get(provider_model_id)
         if model is None:
             model = AIModel(
@@ -1104,6 +1135,8 @@ def _upsert_discovered_models(
                 source="DISCOVERED",
                 **metadata,
             )
+            if sunset_lifecycle is not None:
+                model.lifecycle = sunset_lifecycle
             db.add(model)
         elif model.source != "MANUAL":
             current_capabilities = dict(model.capabilities or {})
@@ -1117,7 +1150,29 @@ def _upsert_discovered_models(
                     "operations",
                     "api_surfaces",
                 )
-            ) and current_capabilities == metadata["capabilities"]
+            # P0-1: compare only the dimensions discovery itself infers.
+            # Admin/preset-declared keys (edit_modes, resolution_tiers,
+            # media, the region bits and both provenance maps) must not look
+            # like capability drift and wipe a real VERIFIED verdict.
+            ) and _discovery_capability_fingerprint(
+                current_capabilities
+            ) == _discovery_capability_fingerprint(metadata["capabilities"])
+            # Non-discovery keys are declaration-only dimensions (admin or
+            # preset writes): they must survive every rediscovery — not just
+            # the VERIFIED path. A drifted fingerprint (preserve=False) or a
+            # DECLARED-confidence row would otherwise have edit_modes/media/
+            # provenance silently stripped by the fresh ``_infer_model`` dict,
+            # disabling mask/edit declarations the operator already approved.
+            declared_extras = {
+                key: value
+                for key, value in current_capabilities.items()
+                if key not in _DISCOVERY_CAPABILITY_KEYS
+                and key != "verified_operations"
+            }
+            metadata["capabilities"] = {
+                **metadata["capabilities"],
+                **declared_extras,
+            }
             if preserve_verification:
                 metadata["confidence"] = model.confidence
                 if verified_operations is not None:
@@ -1132,6 +1187,11 @@ def _upsert_discovered_models(
             )
             for key, value in metadata.items():
                 setattr(model, key, value)
+            if sunset_lifecycle is not None:
+                model.lifecycle = sunset_lifecycle
+            # No else: lifecycle is never auto-revived by rediscovery — an
+            # operator-set DEPRECATED/EOL row on an unlisted model stays
+            # retired, and a listed row only ever moves toward retirement.
         result.append(model)
     db.flush()
     return result

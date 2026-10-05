@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -11,6 +12,18 @@ from app.services.credential_source import (
     connection_credential_source,
     environment_credentials_ready,
 )
+from app.services.model_sunsets import (
+    LIFECYCLE_ACTIVE,
+    model_lifecycle_state,
+)
+
+# Availability phases (P0-2): "catalog" answers "is this row usable/managed"
+# for catalog and readiness surfaces — DEPRECATED/EOL rows still count so the
+# user sees "我有 N 个已退役模型" rather than a quietly shrinking number.
+# "dispatch" answers "may this row accept a new-artifact dispatch" and refuses
+# anything not ACTIVE. The AUTO router applies the same predicate at the
+# query level (model_router.resolve_model).
+AvailabilityPhase = Literal["catalog", "dispatch"]
 
 
 def catalog_model_is_available(
@@ -21,6 +34,7 @@ def catalog_model_is_available(
     credentials_writable: bool,
     has_usable_key: bool,
     environment_credentials_ready: bool,
+    phase: AvailabilityPhase = "catalog",
 ) -> bool:
     """Return whether a catalog model should be treated as enabled.
 
@@ -28,9 +42,17 @@ def catalog_model_is_available(
     enabled. Environment-account protocols require their runtime credentials
     to be ready. Connection-key protocols require writable encrypted storage
     and at least one enabled key that is not in cooldown.
+
+    ``phase="catalog"`` (default, used by GET /models and page readiness)
+    ignores lifecycle: a retired row is still "available" in the sense of
+    being readable and managed. ``phase="dispatch"`` additionally requires
+    ``lifecycle == "ACTIVE"``, so DEPRECATED/EOL rows are excluded from new
+    work without hiding them from the catalog.
     """
 
     if not (model.enabled and connection.enabled and profile.enabled):
+        return False
+    if phase == "dispatch" and model_lifecycle_state(model) != LIFECYCLE_ACTIVE:
         return False
     if connection_credential_source(connection) == ENV_SERVICE_ACCOUNT:
         return environment_credentials_ready

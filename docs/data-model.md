@@ -126,7 +126,7 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 
 ### InspectionResult、RepairPlan、ExportBundle
 
-检查结果关联候选和检查类别，保存识别差异、区域、严重度与建议。修复计划固定按文字区域、气泡区域、单格、整页升级，自动尝试最多三次。`ExportBundle` 保存导出类型、状态、对象键和清单。
+检查结果关联候选和检查类别，保存识别差异、区域、严重度与建议。修复计划固定按文字区域、气泡区域、单格、整页升级，自动尝试最多三次。`ExportBundle` 保存导出类型、状态、对象键和清单。P0-3 创作留痕证明包不改表：留痕元数据在导出时由 `export_provenance.py` 从 `MangaPage`/`PageCandidate`/`InspectionResult`/`PageSourceSegment`/`GenerationRecord` 即时聚合进产物（ZIP 成员 `provenance.json`、PDF 伴随文件、JSON/WEBTOON manifest 的 `provenance` 键）；`ExportRequest.include_provenance`/`disclosure_platform` 是请求字段，并入导出幂等 token 使不同参数产出不同 artifact。
 
 `InspectionResult.storyboard_version` 记录模型实际检查时的分镜版本。生产门禁只聚合当前候选、当前分镜版本下五类各自最新的结果；历史版本和未知版本不能补足当前检查。同一类别的时间戳冲突时失败优先，不把 UUID 大小当作时间顺序。迁移 `20260827_17` 新增可空整数列，旧记录保持 `NULL`，不推断或伪造其版本，保留历史且要求重新质检；downgrade 只移除该列。
 
@@ -167,6 +167,10 @@ stateDiagram-v2
 
 `AIModel.enabled` 是持久的调用开关，目录响应的 `enabled` 是当前可用性的派生值，`display_enabled` 只是 UI 展示偏好。三者不得互相覆盖；隐藏模型仍保留真实目录 ID、路由资格、任务引用和审计历史。既有模型经 `20260830_20` 迁移默认回填为展示，新建与发现模型也默认展示。存在隐藏偏好时迁移拒绝降级，避免静默丢失用户设置。
 
+`AIModel.capabilities` 在 V02-44B 四个区域编辑布尔位之外承载结构化能力维度（P0-1，契约见 `docs/v02-image-edit-capability-matrix.md` §9）：`edit_modes`（mask/instruction_region/whole_image_reference/in_image_text_edit）、`resolution_tiers`（每档 `{supported, source}`）、`media`（video/audio 预留 UNKNOWN 槽位），来源统一挂在 `capability_sources` 图；所有维度 fail-closed，缺失/UNSPECIFIED 一律按不支持读取，迁移 `20261005_32` 不改表结构也不回填——读路径兜底。
+
+`AIModel.lifecycle`（P0-2，`20261005_33` 迁移，表上首个 `CheckConstraint`）区分 `ACTIVE`/`DEPRECATED`/`EOL`：`sunset_at` 记录官方公告的退役日期，`services/model_sunsets.py` 的人工维护表（`provider_model_id → sunset_date/eol_date/source_url/successor_hint`）是 EOL 的权威来源并在读口覆盖列值；`DEPRECATED`/`EOL` 行不删数据、不改 `enabled`，新产物生成任务被 `model_router` 以 409+迁移提示拒绝，`PAGE_REPAIR`/`PAGE_UPSCALE`/`PAGE_REGION_REGENERATE` 以 WARN 放行，AUTO 候选循环在 SQL 层 `lifecycle == 'ACTIVE'` 排除；`catalog_model_is_available` 以 `phase` 参数区分 catalog（计数仍含退役行）与 dispatch 语义。
+
 `CLIExecutionRun` 保存一次外部 CLI 派发的持久状态，并关联 `GenerationJob`、唯一的 `ModelCallAttempt`、连接和目录模型。数据库只保存 run token、相对目录、请求 checksum、输出清单、日志 checksum、退出码、错误与清理状态；prompt、参考图和诊断正文留在受控 run 目录。`(connection_id, lease_slot)` 唯一约束提供硬并发名额，终态释放槽位。迁移 `20260831_22` 新建该表；存在审计行时拒绝降级。
 
 ```json
@@ -181,7 +185,10 @@ stateDiagram-v2
   "operations": ["image_generate", "image_edit"],
   "resolutions": ["1K", "2K", "4K"],
   "preview_resolutions": ["4K"],
-  "regions": ["global"]
+  "regions": ["global"],
+  "edit_modes": {"mask": {"supported": false, "source": "DECLARED"}, "whole_image_reference": {"supported": true, "source": "DECLARED"}},
+  "resolution_tiers": {"1K": {"supported": true, "source": "DECLARED"}},
+  "media": {"video": {"supported": false, "source": "UNSPECIFIED"}}
 }
 ```
 

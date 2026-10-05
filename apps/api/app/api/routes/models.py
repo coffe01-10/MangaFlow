@@ -13,8 +13,16 @@ from app.services.model_availability import (
 from app.services.model_capabilities import (
     REGION_CAPABILITY_KEYS,
     capability_reference_limit,
+    edit_mode_summary,
+    media_capability_summary,
     region_capability_enabled,
     region_capability_source,
+    resolution_tier_map,
+)
+from app.services.model_sunsets import (
+    lifecycle_successor_hint,
+    lifecycle_sunset_at,
+    model_lifecycle_state,
 )
 from app.services.provider_presets import ensure_provider_presets
 
@@ -64,6 +72,7 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                 settings, connection.protocol
             ),
         )
+        lifecycle = model_lifecycle_state(model)
         catalog.append(
             {
                 "catalog_id": model.id,
@@ -99,6 +108,28 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                     key: region_capability_source(model.capabilities, key)
                     for key in REGION_CAPABILITY_KEYS
                 },
+                # P0-1 structured capability dimensions: normalized edit
+                # modes (with legacy-bit fallback), resolution tiers and the
+                # reserved video/audio slots — all fail-closed with
+                # provenance.
+                "edit_modes": edit_mode_summary(model.capabilities),
+                "resolution_tiers": [
+                    {"name": name, **entry}
+                    for name, entry in resolution_tier_map(
+                        model.capabilities
+                    ).items()
+                ],
+                "media": media_capability_summary(model.capabilities),
+                # P0-2 lifecycle: sunset table overrides the stored column
+                # (a provider shutdown is factual even before an operator
+                # flips the row); ``successor`` carries the migration hint.
+                "lifecycle": lifecycle,
+                "sunset_at": lifecycle_sunset_at(model),
+                "successor": (
+                    lifecycle_successor_hint(model)
+                    if lifecycle != "ACTIVE"
+                    else None
+                ),
                 "confidence": model.confidence,
                 "enabled": available,
                 "display_enabled": model.display_enabled,

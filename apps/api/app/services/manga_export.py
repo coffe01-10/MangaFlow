@@ -200,6 +200,7 @@ def build_webtoon_zip(
     chapter_id: str,
     chapter_title: str,
     project_id: str,
+    provenance: dict | None = None,
 ) -> None:
     """把采用页流式渲染成分片 ZIP 写入 ``destination_tmp``（契约 §5/§6）。
 
@@ -284,7 +285,9 @@ def build_webtoon_zip(
             current_image.close()
             current_image = None
         manifest = {
-            "schema_version": "1.0",
+            # schema 1.1: 携带留痕证明包时 manifest 追加顶层 "provenance" 键
+            # （P0-3，契约 docs/pub-01b-webtoon-export-contract.md §4）。
+            "schema_version": "1.1" if provenance is not None else "1.0",
             "generator": "mangaflow-webtoon-export",
             "export_type": "WEBTOON",
             "project": {"id": project_id, "name": project_name},
@@ -301,6 +304,8 @@ def build_webtoon_zip(
             "total_height": sum(heights) + params.gap_px * max(0, len(heights) - 1),
             "slices": manifest_slices,
         }
+        if provenance is not None:
+            manifest["provenance"] = provenance
         with zipfile.ZipFile(destination_tmp, "w", zipfile.ZIP_DEFLATED) as archive:
             for entry in manifest_slices:
                 archive.write(slices_dir / entry["file"], arcname=entry["file"])

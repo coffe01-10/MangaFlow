@@ -528,6 +528,12 @@ def _ensure_mask_capable_model(db_session):
     model.capabilities = {
         **(model.capabilities or {}),
         "accepts_explicit_mask": True,
+        # P0-1: the structured edit_modes map is authoritative when declared,
+        # so the preset row's mask grant must move into edit_modes.mask too.
+        "edit_modes": {
+            **((model.capabilities or {}).get("edit_modes") or {}),
+            "mask": {"supported": True, "source": "DECLARED"},
+        },
     }
     db_session.commit()
     return model

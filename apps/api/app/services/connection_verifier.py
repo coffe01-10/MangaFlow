@@ -40,6 +40,11 @@ from app.services.credential_source import (
     connection_protocol_capabilities,
 )
 from app.services.model_router import bind_adapter
+from app.services.model_sunsets import (
+    LIFECYCLE_EOL,
+    lifecycle_successor_hint,
+    model_lifecycle_state,
+)
 from app.services.provider_catalog import (
     connection_is_configured,
     create_probe,
@@ -319,6 +324,19 @@ def _verify_model_smoke(
     model: AIModel,
     payload: ConnectionVerifyRequest,
 ) -> ModelProbe:
+    # P0-2: a sunset-table EOL is a provider shutdown, not a failure — skip
+    # the paid capability probe entirely so health semantics stay "RETIRED"
+    # (probe refused) instead of masquerading as OFFLINE/DEGRADED.
+    if model_lifecycle_state(model) == LIFECYCLE_EOL:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "MODEL_EOL",
+                "message": "所选模型已被官方下线，跳过能力探测",
+                "lifecycle": LIFECYCLE_EOL,
+                "successor": lifecycle_successor_hint(model),
+            },
+        )
     if connection_credential_source(connection) == CLI_SESSION:
         raise HTTPException(
             status_code=409,

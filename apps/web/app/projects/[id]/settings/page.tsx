@@ -206,7 +206,7 @@ export default function ProjectSettingsPage() {
               const selectingLegacyAlias = Boolean(selected && value === selected.logical_alias && value !== selected.catalog_id);
               update("default_text_model_id", value === "auto" || selectingLegacyAlias ? null : value);
               update("text_model_alias", selectingLegacyAlias ? value : null);
-            }}><option value="auto">自动路由 · 已验证文字/视觉模型</option>{currentTextModelMissing ? <option value={currentTextModelValue}>当前配置 · {currentTextModelValue}</option> : null}{textModels.map((model) => <option key={model.catalog_id} value={textModelOptionValue(model.catalog_id, model.logical_alias)}>{model.provider} · {model.display_name}{!model.display_enabled ? "（已隐藏）" : ""}</option>)}</select></label>
+            }}><option value="auto">自动路由 · 已验证文字/视觉模型</option>{currentTextModelMissing ? <option value={currentTextModelValue}>当前配置 · {currentTextModelValue}</option> : null}{textModels.map((model) => <option key={model.catalog_id} value={textModelOptionValue(model.catalog_id, model.logical_alias)}>{model.provider} · {model.display_name}{!model.display_enabled ? "（已隐藏）" : ""}{(model.lifecycle ?? "ACTIVE") === "EOL" ? "（已下线）" : (model.lifecycle ?? "ACTIVE") === "DEPRECATED" ? "（已退役）" : ""}</option>)}</select></label>
           </section>
         </div> : <div className="loading-panel"><LoaderCircle className="spin" />读取项目设置…</div>}
         {savedNotice && <p className="save-success floating" role="status"><Check size={15} />{savedNotice}</p>}

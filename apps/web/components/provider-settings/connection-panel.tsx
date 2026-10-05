@@ -63,6 +63,9 @@ export function ConnectionPanel({
   const [manualId, setManualId] = useState("");
   const [manualName, setManualName] = useState("");
   const [manualType, setManualType] = useState<"TEXT" | "IMAGE">("TEXT");
+  // P0-1: manual rows declare only what the operator has verified from
+  // provider docs — unchecked modes stay UNSPECIFIED/unsupported.
+  const [manualEditModes, setManualEditModes] = useState<Record<string, boolean>>({});
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [advancedDirty, setAdvancedDirty] = useState(false);
@@ -100,7 +103,8 @@ export function ConnectionPanel({
     || keyLabel !== "default"
     || manualId.trim() !== ""
     || manualName.trim() !== ""
-    || manualType !== "TEXT";
+    || manualType !== "TEXT"
+    || Object.values(manualEditModes).some(Boolean);
   useEffect(() => { onDirtyChange?.(draftDirty); }, [draftDirty, onDirtyChange]);
 
   function refresh() {
@@ -187,12 +191,31 @@ export function ConnectionPanel({
         : ["structured_text"],
       api_surfaces: manualType === "IMAGE" ? ["IMAGES"] : [connection.use_responses_api ? "RESPONSES" : "CHAT"],
       capabilities: manualType === "IMAGE"
-        ? { resolutions: ["1K"], max_reference_images: 1 }
+        ? {
+            resolutions: ["1K"],
+            max_reference_images: 1,
+            // P0-1 structured edit modes: only the modes the operator ticked
+            // are DECLARED; every unticked mode is written as an explicit
+            // UNSPECIFIED entry so the catalog never guesses support.
+            edit_modes: {
+              mask: { supported: !!manualEditModes.mask, source: manualEditModes.mask ? "DECLARED" : "UNSPECIFIED" },
+              instruction_region: { supported: !!manualEditModes.instruction_region, source: manualEditModes.instruction_region ? "DECLARED" : "UNSPECIFIED" },
+              whole_image_reference: { supported: !!manualEditModes.whole_image_reference, source: manualEditModes.whole_image_reference ? "DECLARED" : "UNSPECIFIED" },
+              in_image_text_edit: { supported: !!manualEditModes.in_image_text_edit, source: manualEditModes.in_image_text_edit ? "DECLARED" : "UNSPECIFIED" },
+            },
+            capability_sources: {
+              "edit_modes.mask": manualEditModes.mask ? "DECLARED" : "UNSPECIFIED",
+              "edit_modes.instruction_region": manualEditModes.instruction_region ? "DECLARED" : "UNSPECIFIED",
+              "edit_modes.whole_image_reference": manualEditModes.whole_image_reference ? "DECLARED" : "UNSPECIFIED",
+              "edit_modes.in_image_text_edit": manualEditModes.in_image_text_edit ? "DECLARED" : "UNSPECIFIED",
+            },
+          }
         : { structured_output_mode: "JSON_MODE" },
     }),
     onSuccess: () => {
       setManualId("");
       setManualName("");
+      setManualEditModes({});
       // 类型选择已随模型提交：不回位 "TEXT" 会让 draftDirty 永远为真（同
       // saveKey 的标签回位）。
       setManualType("TEXT");
@@ -446,6 +469,20 @@ export function ConnectionPanel({
                 }[operation],
               }));
           const probePaid = model.model_type === "IMAGE";
+          const lifecycle = model.lifecycle ?? "ACTIVE";
+          const sunsetLabel = (() => {
+            const raw = model.sunset_at;
+            if (!raw) return null;
+            const date = new Date(raw);
+            return Number.isNaN(date.getTime())
+              ? null
+              : date.toLocaleDateString("zh-CN");
+          })();
+          const lifecycleBadge = lifecycle === "EOL"
+            ? "已下线"
+            : lifecycle === "DEPRECATED"
+              ? `已退役${sunsetLabel ? ` ${sunsetLabel}` : ""}`
+              : null;
           return (
             <article key={model.id} className={model.display_enabled ? "" : "provider-model-hidden"}>
               <label className="provider-model-select">
@@ -471,7 +508,15 @@ export function ConnectionPanel({
                   {!model.display_enabled ? " · 已隐藏" : ""}
                   {!model.enabled ? " · 不可调用" : ""}
                   {model.enabled && derivedUnavailable ? " · 未就绪" : ""}
+                  {lifecycleBadge ? ` · ${lifecycleBadge}` : ""}
                 </span>
+                {lifecycle !== "ACTIVE" && (
+                  <small className="provider-model-lifecycle" role="note">
+                    {lifecycle === "EOL"
+                      ? "官方已下线：不可再执行任何调用"
+                      : "已退役：不可用于新任务，已采用候选的修复/升清仍可执行"}
+                  </small>
+                )}
                 <small>
                   {mapConfidence(model.confidence)} · 来源 {model.source}
                   {operations.slice(0, 3).map((label) => ` · ${label}`).join("")}
@@ -497,7 +542,7 @@ export function ConnectionPanel({
                       : probePaid
                         ? "图片模型冒烟测试可能计费"
                         : undefined}
-                    disabled={isCLI || !model.enabled || derivedUnavailable || !connection.configured || modelActionPending}
+                    disabled={isCLI || !model.enabled || derivedUnavailable || lifecycle === "EOL" || !connection.configured || modelActionPending}
                     onClick={(event) => {
                       if (probePaid) {
                         triggerRef.current = event.currentTarget;
@@ -558,6 +603,28 @@ export function ConnectionPanel({
           <option value="TEXT">文字模型</option>
           {connection.supported_model_types.includes("IMAGE") && <option value="IMAGE">图片模型</option>}
         </select>
+        {manualType === "IMAGE" && (
+          <fieldset className="provider-manual-edit-modes">
+            <legend>编辑模式声明（按官方文档勾选，未勾选项按不支持处理）</legend>
+            {([
+              ["mask", "mask 局部编辑"],
+              ["instruction_region", "instruction 区域"],
+              ["whole_image_reference", "整图参考"],
+              ["in_image_text_edit", "图中文字"],
+            ] as const).map(([mode, label]) => (
+              <label key={mode} className="provider-check">
+                <input
+                  type="checkbox"
+                  checked={!!manualEditModes[mode]}
+                  onChange={(event) =>
+                    setManualEditModes((prev) => ({ ...prev, [mode]: event.target.checked }))
+                  }
+                />
+                {label}
+              </label>
+            ))}
+          </fieldset>
+        )}
         <button type="submit" disabled={!manualId.trim() || addModel.isPending}>
           <Plus size={14} />添加模型
         </button>

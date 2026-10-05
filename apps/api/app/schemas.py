@@ -215,6 +215,17 @@ class AssetUpdate(BaseModel):
         return self
 
 
+class CapabilityEntryRead(BaseModel):
+    """One ``{supported, source}`` structured capability declaration (P0-1)."""
+
+    supported: bool = False
+    source: str = "UNSPECIFIED"
+
+
+class ResolutionTierRead(CapabilityEntryRead):
+    name: str
+
+
 class ModelCapabilityRead(BaseModel):
     catalog_id: str | None = None
     connection_id: str | None = None
@@ -239,6 +250,18 @@ class ModelCapabilityRead(BaseModel):
     preserves_outside_region: bool = False
     whole_image_reference_only: bool = False
     region_capability_sources: dict[str, str] = Field(default_factory=dict)
+    # P0-1 structured dimensions: normalized edit modes, per-resolution
+    # tiers, and reserved video/audio media slots — every entry carries
+    # supported+source and undeclared values stay UNSPECIFIED.
+    edit_modes: dict[str, CapabilityEntryRead] = Field(default_factory=dict)
+    resolution_tiers: list[ResolutionTierRead] = Field(default_factory=list)
+    media: dict[str, CapabilityEntryRead] = Field(default_factory=dict)
+    # P0-2 catalog lifecycle: ACTIVE | DEPRECATED | EOL. ``sunset_at`` is the
+    # announced retirement date (stored column or sunset-table entry);
+    # ``successor`` is the migration hint for retired rows.
+    lifecycle: str = "ACTIVE"
+    sunset_at: datetime | None = None
+    successor: str | None = None
     confidence: str = "VERIFIED"
     enabled: bool = True
     display_enabled: bool = True
@@ -1298,6 +1321,12 @@ class ExportRequest(BaseModel):
     quality: int | None = Field(default=None, ge=50, le=100)
     gap_px: int | None = Field(default=None, ge=0, le=128)
     max_slice_height: int | None = Field(default=None, ge=512, le=16384)
+    # P0-3 创作留痕证明包：对全部导出类型生效；开/关与平台选择改变产物
+    # 内容，已并入 create_export 的 token_material 幂等键。
+    include_provenance: bool = False
+    disclosure_platform: str | None = Field(
+        default=None, pattern="^(KDP|STEAM|WEBTOON|TAPAS|GENERIC)$"
+    )
 
     @model_validator(mode="after")
     def webtoon_params_only_on_webtoon(self):
@@ -1313,6 +1342,12 @@ class ExportRequest(BaseModel):
             )
         ):
             raise ValueError("条漫导出参数仅对 WEBTOON 类型有效")
+        return self
+
+    @model_validator(mode="after")
+    def disclosure_platform_requires_provenance(self):
+        if self.disclosure_platform is not None and not self.include_provenance:
+            raise ValueError("披露模板需要同时开启创作留痕（include_provenance）")
         return self
 
 

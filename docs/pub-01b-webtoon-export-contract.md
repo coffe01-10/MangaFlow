@@ -23,6 +23,10 @@ manifest.json         # 最后写入，见 §4
 - ZIP 内不出现嵌套目录、不出现非 `slice-*`/`manifest.json` 成员。
 - `ExportBundle.export_type = "WEBTOON"`；下载 media type = `application/zip`；
   现有 PNG/PDF/JSON 三类的请求格式、文件名规则与门禁语义保持不变。
+- P0-3 修订：请求携带 `include_provenance=true` 时，manifest.json 追加顶层
+  `provenance` 键（创作留痕证明包，`export_provenance.py` 生成），
+  `schema_version` 升至 `"1.1"`；不带留痕仍为 `"1.0"`。WEBTOON 的留痕走
+  manifest 通道，不新增 ZIP 成员；披露文本在 `provenance.disclosure[].text`。
 
 ## 2. 参数与预设
 
@@ -39,6 +43,14 @@ manifest.json         # 最后写入，见 §4
 | `gap_px` | 0–128 | 16 |
 | `max_slice_height` | 512–16384 | 4096 |
 
+P0-3 新增两个对全部导出类型生效的请求字段：`include_provenance`
+（bool，默认 false）在产物内嵌脱敏制作元数据；`disclosure_platform`
+（`KDP`/`STEAM`/`WEBTOON`/`TAPAS`/`GENERIC`）随包生成平台 AI 披露模板
+文本，仅在 `include_provenance=true` 时合法。KDP/Steam 模板头注引用官方
+条款口径；无公开专条平台用通用模板并显式标注「无平台背书」。这两个参数
+改变产物内容，已并入幂等 token：`token = sha256(candidate_ids |
+canonical_params | prov={0,1} | disc={platform|-})[:12]`。
+
 预设表（实现侧常量，非数据模型；平台限值以后以新增预设名的方式接入，
 不把某个平台写死进 schema）：
 
@@ -50,9 +62,10 @@ manifest.json         # 最后写入，见 §4
 
 `ExportRequest` 只携带参数，不持久化参数列：本次导出的完整参数快照写进
 ZIP 内 `manifest.json`；`ExportBundle` 行维持既有列（不改 schema、不加迁移）。
-幂等键由「采用候选集合 + 规范化参数」共同决定：`token = sha256(candidate_ids
-| canonical_params)[:12]`，沿用既有 `{token}-{serial}-{suffix}` 命名与
-`reuse_existing` 前缀匹配语义。
+幂等键由「采用候选集合 + 规范化参数 + 留痕参数」共同决定：`token =
+sha256(candidate_ids | canonical_params | prov={0,1} | disc={platform|-})[:12]`，
+沿用既有 `{token}-{serial}-{suffix}` 命名与 `reuse_existing` 前缀匹配语义。
+（留痕分量自 P0-3 起追加；旧 token 无前缀，行为不变。）
 
 ## 3. 切片规则（与 PUB-01A 预览一致的唯一算法）
 
@@ -114,6 +127,14 @@ ZIP 内 `manifest.json`；`ExportBundle` 行维持既有列（不改 schema、�
   相邻两片各出现一次（`src_rect`/`dst_rect` 记录各自段）。
 - `sha256` 逐片记录，供「导出后逐片检查」验收与下载端校验。
 - 分片内顶部为最早页码，`dst_rect` y 值随片内顺序递增且间距等于 `gap_px`。
+- P0-3：`include_provenance=true` 时追加顶层 `provenance` 键
+  （`schema_version` 随之升 `"1.1"`）：逐页采用记录、人工校对确认
+  （`manual_text_confirmed` 回读 `selected_candidate_ack_version`）、五类
+  检查状态（缺检项 `outcome:"NOT_RUN"`/`complete:false`，不缺省通过）、
+  原作来源片段区间（`source_segment_id`+偏移+sha256）、prompt 模板版本与
+  校验和（不含原文）、模型身份（别名/目录模型/GenerationRecord 四元组，
+  不含凭据、base_url、本地路径）；`disclosure_platform` 非空时附
+  `provenance.disclosure[]` 披露文本，无专条平台 `platform_endorsed:false`。
 
 ## 5. 内存上限与流式生成
 
