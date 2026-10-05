@@ -99,22 +99,35 @@ def _as_date(value: Any) -> date | None:
     return None
 
 
-def model_lifecycle_state(model: Any, *, today: date | None = None) -> str:
-    """Effective lifecycle: sunset table overrides the stored column.
+_LIFECYCLE_SEVERITY: Final[dict[str, int]] = {
+    LIFECYCLE_ACTIVE: 0,
+    LIFECYCLE_DEPRECATED: 1,
+    LIFECYCLE_EOL: 2,
+}
 
-    The sunset table wins over ``AIModel.lifecycle`` because a provider
-    shutdown is factual regardless of when an operator flips the column; a
-    DEPRECATED/EOL column value is otherwise the source of truth (an
-    operator may deprecate a model the sunset table has not listed yet).
-    A poisoned/missing column reads ACTIVE — fail-open on the catalog side
-    is deliberate, dispatch still gates on the resolved value.
+
+def model_lifecycle_state(model: Any, *, today: date | None = None) -> str:
+    """Effective lifecycle: the *stricter* of the sunset table and column wins.
+
+    The sunset table can raise a row to DEPRECATED/EOL without waiting for an
+    operator edit, and an operator's stored column can retire a model the
+    table has not listed yet. Severity only ever escalates: a column ``EOL``
+    (operator confirmed the shutdown) must not be read back as the table's
+    weaker ``DEPRECATED``, just as a table ``EOL`` overrides a stored
+    ``DEPRECATED``. A poisoned/missing column reads ACTIVE — fail-open on the
+    catalog side is deliberate, dispatch still gates on the resolved value.
     """
 
     forced = sunset_state(getattr(model, "provider_model_id", None), today=today)
-    if forced is not None:
-        return forced
     stored = getattr(model, "lifecycle", None)
-    return stored if stored in LIFECYCLE_STATES else LIFECYCLE_ACTIVE
+    stored = stored if stored in LIFECYCLE_STATES else LIFECYCLE_ACTIVE
+    if forced is None:
+        return stored
+    return (
+        stored
+        if _LIFECYCLE_SEVERITY[stored] > _LIFECYCLE_SEVERITY[forced]
+        else forced
+    )
 
 
 def lifecycle_sunset_at(model: Any) -> Any:

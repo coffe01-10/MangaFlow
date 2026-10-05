@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from PIL import Image
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from app.api.helpers import ensure_project_scope
 from app.config import get_settings
@@ -28,8 +29,10 @@ from app.models import (
 from app.schemas import ExportRead, ExportRequest
 from app.services.export_provenance import (
     build_export_provenance,
+    build_provenance_zip,
     disclosure_files,
     provenance_json_bytes,
+    provenance_sidecar_for,
     provenance_token_fragment,
     remove_provenance_sidecar,
     write_provenance_sidecar,
@@ -169,6 +172,12 @@ def _hash_file(path: Path) -> tuple[int, str]:
             digest.update(chunk)
             size += len(chunk)
     return size, digest.hexdigest()
+
+
+def _cleanup_temp(path: Path) -> BackgroundTask:
+    """Background task for FileResponse: remove a per-download temp file."""
+
+    return BackgroundTask(path.unlink, missing_ok=True)
 
 
 @router.post(
@@ -332,8 +341,14 @@ def create_export(
         _write_export_atomically(destination, _write_pdf)
         if provenance_document is not None:
             # PDF 无法内嵌 JSON 成员，留痕走同名伴随文件；该文件是导出产物
-            # 的一部分，失败时让整次导出失败而不是静默丢失证据链。
-            write_provenance_sidecar(destination, provenance_document)
+            # 的一部分，失败时让整次导出失败而不是静默丢失证据链。此时主 PDF
+            # 已 rename 到位但 bundle 行尚未写入——不清理会变成无任何登记的
+            # 孤儿文件（_prune_superseded_exports 只认有行的 storage_key）。
+            try:
+                write_provenance_sidecar(destination, provenance_document)
+            except BaseException:
+                destination.unlink(missing_ok=True)
+                raise
     else:
         destination = output_dir / f"{token}-{serial}-project.json"
         manifest: dict[str, dict] = {}
@@ -479,6 +494,27 @@ def download_export(
     path = (root / bundle.storage_key).resolve()
     if not path.is_relative_to(root) or not path.is_file():
         raise HTTPException(status_code=404, detail="导出文件不存在")
+    # P0-3: a PDF export written with include_provenance owns a server-side
+    # ``{name}.provenance.json`` sidecar. The proof bundle must reach the user
+    # — a bare FileResponse would strand it on the server — so the download
+    # repacks PDF + provenance.json + disclosure-<platform>.txt into a zip.
+    # Other types embed provenance inside the main artifact already.
+    sidecar = (
+        provenance_sidecar_for(path) if bundle.export_type == "PDF" else None
+    )
+    if sidecar is not None:
+        zip_temp = path.with_name(f".{path.stem}.{uuid4().hex}.zip")
+        try:
+            build_provenance_zip(zip_temp, path, sidecar)
+        except BaseException:
+            zip_temp.unlink(missing_ok=True)
+            raise
+        return FileResponse(
+            zip_temp,
+            media_type="application/zip",
+            filename=f"{path.stem}-with-provenance.zip",
+            background=_cleanup_temp(zip_temp),
+        )
     media_types = {
         "PNG": "application/zip",
         "PDF": "application/pdf",

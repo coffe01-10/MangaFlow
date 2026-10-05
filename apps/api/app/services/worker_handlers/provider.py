@@ -470,12 +470,23 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
         if binding.selected_key:
             _record_key_and_connection_failure(db, binding, error)
             if error.code in {"AUTHENTICATION", "PERMISSION", "RATE_LIMIT"}:
+                # The key-swap retry must rebind under the same task kind as
+                # the initial dispatch: derived-maintenance kinds
+                # (PAGE_REPAIR/PAGE_UPSCALE/PAGE_REGION_REGENERATE) pass the
+                # lifecycle gate on a retired model via task_kind — omitting
+                # it here would turn a retryable key failure into a 409 and
+                # strand a job the entry dispatch deliberately allowed.
+                retry_task_kind = None
+                if job_id:
+                    job = db.get(GenerationJob, job_id)
+                    retry_task_kind = job.job_type if job is not None else None
                 try:
                     replacement = bind_adapter(
                         db,
                         get_settings(),
                         operation=binding.resolved.model.operations[0],
                         explicit_reference=binding.resolved.model.id,
+                        task_kind=retry_task_kind,
                     )
                 except HTTPException:
                     replacement = None

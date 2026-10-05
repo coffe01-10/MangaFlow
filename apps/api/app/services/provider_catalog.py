@@ -1157,22 +1157,24 @@ def _upsert_discovered_models(
             ) and _discovery_capability_fingerprint(
                 current_capabilities
             ) == _discovery_capability_fingerprint(metadata["capabilities"])
+            # Non-discovery keys are declaration-only dimensions (admin or
+            # preset writes): they must survive every rediscovery — not just
+            # the VERIFIED path. A drifted fingerprint (preserve=False) or a
+            # DECLARED-confidence row would otherwise have edit_modes/media/
+            # provenance silently stripped by the fresh ``_infer_model`` dict,
+            # disabling mask/edit declarations the operator already approved.
+            declared_extras = {
+                key: value
+                for key, value in current_capabilities.items()
+                if key not in _DISCOVERY_CAPABILITY_KEYS
+                and key != "verified_operations"
+            }
+            metadata["capabilities"] = {
+                **metadata["capabilities"],
+                **declared_extras,
+            }
             if preserve_verification:
                 metadata["confidence"] = model.confidence
-                # Non-discovery keys are declaration-only dimensions (admin
-                # or preset writes): keep them across the fresh inference so
-                # rediscovery does not silently strip edit_modes/media/
-                # provenance declarations off a VERIFIED row.
-                declared_extras = {
-                    key: value
-                    for key, value in current_capabilities.items()
-                    if key not in _DISCOVERY_CAPABILITY_KEYS
-                    and key != "verified_operations"
-                }
-                metadata["capabilities"] = {
-                    **metadata["capabilities"],
-                    **declared_extras,
-                }
                 if verified_operations is not None:
                     metadata["capabilities"] = {
                         **metadata["capabilities"],

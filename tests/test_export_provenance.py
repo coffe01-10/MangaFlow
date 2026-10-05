@@ -391,6 +391,83 @@ def test_pdf_export_writes_provenance_sidecar(client, db_session, storage_root, 
     assert provenance["pages"][0]["model"]["model_alias"] == "image.test_model"
 
 
+def test_pdf_download_repackages_provenance_into_zip(
+    client, db_session, storage_root, tmp_path
+):
+    """P0-3 留痕证明包必须随下载到用户手上：PDF 导出带 sidecar 时下载返回
+    PDF + provenance.json + disclosure-<platform>.txt 的 zip，而非裸 PDF。"""
+    seeded = _seed_ready_chapter(db_session)
+    from PIL import Image
+
+    blob = tmp_path / "page-0001.png"
+    Image.new("RGB", (512, 512), color="navy").save(blob, format="PNG")
+    asset = db_session.scalars(select(Asset)).first()
+    asset.storage_key = "page-0001.png"
+    blob.rename(storage_root / "page-0001.png")
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/chapters/{seeded['chapter'].id}/exports",
+        json={
+            "export_type": "PDF",
+            "include_provenance": True,
+            "disclosure_platform": "KDP",
+        },
+    )
+    assert response.status_code == 201, response.json()
+    bundle = db_session.get(ExportBundle, response.json()["id"])
+    pdf_path = storage_root / bundle.storage_key
+    assert pdf_path.suffix == ".pdf"
+
+    downloaded = client.get(f"/api/v1/exports/{bundle.id}/download")
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"] == "application/zip"
+    assert downloaded.headers["content-disposition"].endswith(
+        f'filename="{pdf_path.stem}-with-provenance.zip"'
+    )
+    import io
+
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        names = archive.namelist()
+        assert pdf_path.name in names
+        assert "provenance.json" in names
+        assert "disclosure-kdp.txt" in names
+        provenance = json.loads(archive.read("provenance.json"))
+        disclosure = archive.read("disclosure-kdp.txt").decode("utf-8")
+    assert provenance["pages"][0]["model"]["model_alias"] == "image.test_model"
+    assert provenance["disclosure"][0]["platform"] == "KDP"
+    assert "AI 使用披露声明" in disclosure
+    # The server-side sidecar stays in place — the zip is a per-download repack.
+    assert (pdf_path.with_name(f"{pdf_path.stem}.provenance.json")).is_file()
+
+
+def test_pdf_download_without_provenance_serves_raw_pdf(
+    client, db_session, storage_root, tmp_path
+):
+    """未开留痕的 PDF 导出仍按原样返回 application/pdf。"""
+    seeded = _seed_ready_chapter(db_session)
+    from PIL import Image
+
+    blob = tmp_path / "page-0001.png"
+    Image.new("RGB", (512, 512), color="navy").save(blob, format="PNG")
+    asset = db_session.scalars(select(Asset)).first()
+    asset.storage_key = "page-0001.png"
+    blob.rename(storage_root / "page-0001.png")
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/chapters/{seeded['chapter'].id}/exports",
+        json={"export_type": "PDF"},
+    )
+    assert response.status_code == 201, response.json()
+    bundle = db_session.get(ExportBundle, response.json()["id"])
+
+    downloaded = client.get(f"/api/v1/exports/{bundle.id}/download")
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"] == "application/pdf"
+    assert downloaded.content[:5] == b"%PDF-"
+
+
 def test_webtoon_manifest_embeds_provenance_schema_11(
     client, db_session, storage_root, tmp_path
 ):

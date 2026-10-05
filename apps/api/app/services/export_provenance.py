@@ -343,8 +343,9 @@ def write_provenance_sidecar(
 ) -> Path:
     """PDF 无随包通道，写 ``{name}-provenance.json`` 伴随文件。
 
-    伴随文件是导出会话的产物（UUID 唯一名），不在 ExportBundle 行登记、
-    不参与下载路由；删除导出时由调用方按同目录前缀清理（见
+    伴随文件是导出会话的产物（UUID 唯一名），不在 ExportBundle 行登记；
+    下载时由 ``provenance_sidecar_for`` 定位后与主文件一起打包（见
+    ``build_provenance_zip``）；删除导出时由调用方按同目录前缀清理（见
     ``remove_provenance_sidecar``）。
     """
 
@@ -359,6 +360,13 @@ def write_provenance_sidecar(
     return sidecar
 
 
+def provenance_sidecar_for(main_path: Path) -> Path | None:
+    """主导出文件旁已写就的 provenance 伴随文件（无则 None）。"""
+
+    sidecar = main_path.with_name(f"{main_path.stem}.provenance.json")
+    return sidecar if sidecar.is_file() else None
+
+
 def remove_provenance_sidecar(storage_root: Path, storage_key: str) -> None:
     """导出记录清理时同步删除 PDF 伴随留痕文件（若存在）。"""
 
@@ -367,6 +375,25 @@ def remove_provenance_sidecar(storage_root: Path, storage_key: str) -> None:
     exports_root = (storage_root / "exports").resolve()
     if sidecar.is_relative_to(exports_root):
         sidecar.unlink(missing_ok=True)
+
+
+def build_provenance_zip(zip_path: Path, main_path: Path, sidecar_path: Path) -> None:
+    """把 PDF 主文件 + provenance sidecar 打包成 zip 供下载。
+
+    包内成员：原始文件名（``{token}-{serial}-chapter.pdf``）、
+    ``provenance.json``、以及 ``disclosure-<platform>.txt`` 成员——披露文本
+    从 sidecar 内 ``provenance.disclosure[]`` 提取，与 ZIP 导出的随包成员
+    同名同内容口径。
+    """
+
+    import zipfile
+
+    document = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.write(main_path, arcname=main_path.name)
+        archive.writestr(PROVENANCE_FILENAME, provenance_json_bytes(document))
+        for name, content in disclosure_files(document):
+            archive.writestr(name, content)
 
 
 def disclosure_files(document: dict[str, Any]) -> list[tuple[str, bytes]]:

@@ -82,6 +82,13 @@ export type { AssetWorkspaceView, WorkspaceSection } from "./project-workspace/t
  * Fail-closed mirrors the backend: a catalog row that never declares the
  * mode is shown disabled instead of being silently picked — the backend
  * gate stays the authoritative fence.
+ *
+ * Deliberate declaration-forcing policy (P0-1): models that declare
+ * `image_edit` without any edit-mode surface are disabled here even though
+ * the backend only gates PAGE_REGION_REGENERATE on edit modes. The reason
+ * copy stays neutral — "not declared yet" rather than a capability verdict —
+ * so an undeclared-but-workable model reads as a catalog-hygiene task, not a
+ * broken model.
  */
 function editModeGate(model: ModelCapability): { disabled: boolean; disabledReason?: string } {
   // P0-2 lifecycle gate first: a DEPRECATED/EOL row that survived filtering
@@ -99,7 +106,7 @@ function editModeGate(model: ModelCapability): { disabled: boolean; disabledReas
   if (editModeSupported(model, "whole_image_reference")) return { disabled: false };
   return {
     disabled: true,
-    disabledReason: `本页所需编辑模式不满足：目录未声明「${EDIT_MODE_LABELS.whole_image_reference}」`,
+    disabledReason: `模型未声明编辑模式（「${EDIT_MODE_LABELS.whole_image_reference}」等）；请先在设置页为该模型补充编辑模式声明后再选`,
   };
 }
 

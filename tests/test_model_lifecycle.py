@@ -154,6 +154,86 @@ def test_lifecycle_state_unknown_column_reads_active():
     assert model_lifecycle_state(_Row()) == LIFECYCLE_ACTIVE
 
 
+def test_lifecycle_state_takes_stricter_of_column_and_sunset_table():
+    """Severity only escalates: an operator-set EOL column must not be read
+    back as the table's weaker DEPRECATED, and a table EOL overrides a stored
+    DEPRECATED."""
+    class _Row:
+        provider_model_id = "windowed"
+        lifecycle = LIFECYCLE_EOL
+        sunset_at = None
+
+    # Table is mid-window (DEPRECATED) but the operator already confirmed EOL.
+    entry = ModelSunset(
+        sunset_date=date(2026, 10, 1), eol_date=date(2027, 1, 1)
+    )
+    with patch("app.services.model_sunsets.MODEL_SUNSETS", {"windowed": entry}):
+        assert model_lifecycle_state(_Row(), today=date(2026, 10, 5)) == LIFECYCLE_EOL
+
+        deprecated_row = _Row()
+        deprecated_row.lifecycle = LIFECYCLE_DEPRECATED
+        assert (
+            model_lifecycle_state(deprecated_row, today=date(2026, 10, 5))
+            == LIFECYCLE_DEPRECATED
+        )
+
+    # Reverse direction: table EOL past its date outranks a stored DEPRECATED.
+    eol_entry = ModelSunset(eol_date=date(2026, 10, 1))
+    stored_deprecated = _Row()
+    stored_deprecated.lifecycle = LIFECYCLE_DEPRECATED
+    with patch("app.services.model_sunsets.MODEL_SUNSETS", {"windowed": eol_entry}):
+        assert (
+            model_lifecycle_state(stored_deprecated, today=date(2026, 10, 5))
+            == LIFECYCLE_EOL
+        )
+
+
+def test_discovery_rediscovery_keeps_declared_capability_dimensions(db_session):
+    """P0-1: rediscovery merges fresh inference with admin/preset declarations.
+
+    ``_infer_model`` rewrites the discovery-owned keys only — declaration-only
+    dimensions (edit_modes, media, region bits, provenance maps) must survive
+    on every row, including DECLARED-confidence rows that never enter the
+    preserve_verification branch.
+    """
+    connection = _connection(db_session)
+    model = _model(
+        db_session,
+        connection,
+        "rediscovered-image",
+        capabilities={
+            "resolutions": ["1K"],
+            "edit_modes": {
+                "mask": {"supported": True, "source": "DECLARED"},
+            },
+            "capability_sources": {"edit_modes.mask": "DECLARED"},
+            "accepts_explicit_mask": True,
+        },
+    )
+    from app.services.provider_catalog import _upsert_discovered_models
+
+    _upsert_discovered_models(
+        db_session,
+        connection,
+        [
+            {
+                "id": "rediscovered-image",
+                "architecture": {
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["image"],
+                },
+            }
+        ],
+    )
+    db_session.commit()
+    db_session.refresh(model)
+    assert model.capabilities["edit_modes"]["mask"]["supported"] is True
+    assert model.capabilities["accepts_explicit_mask"] is True
+    assert model.capabilities["capability_sources"]["edit_modes.mask"] == "DECLARED"
+    # Fresh inference still rewrites the discovery-owned keys.
+    assert model.capabilities["resolutions"] == ["1K"]
+
+
 # ---------------------------------------------------------------------------
 # Availability phases: catalog counts retired rows, dispatch refuses them.
 # ---------------------------------------------------------------------------
